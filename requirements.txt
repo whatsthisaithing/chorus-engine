@@ -1,0 +1,45 @@
+# Chorus Engine - Local AI Character Orchestration System
+#
+# NOTE: PyTorch with CUDA support is NOT in this file!
+# It must be installed separately before other dependencies:
+#
+#   For CUDA 13.0 (RECOMMENDED - supports ALL RTX 30/40/50 series, PyTorch 2.9.1):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu130
+#
+#   For CPU only (NOT recommended for TTS - 10x slower):
+#   pip install torch torchaudio
+#
+# install.bat handles this automatically for embedded Python installations.
+#
+# GPU Compatibility:
+#   - RTX 50-series (Blackwell - sm_120): ✅ CUDA 13.0
+#   - RTX 40-series (Ada - sm_89):       ✅ CUDA 13.0
+#   - RTX 30-series (Ampere - sm_86):    ✅ CUDA 13.0
+#   - GTX 10/20-series:                   ✅ CUDA 13.0
+
+# Core Framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+httpx==0.28.1
+pyyaml==6.0.2
+python-multipart==0.0.21
+
+# Database (Phase 2)
+sqlalchemy==2.0.36
+alembic==1.13.1
+
+# Vector Memory (Phase 3)
+chromadb==0.5.23
+sentence-transformers==3.3.1
+transformers==4.46.3
+
+# Model Downloads (HuggingFace)
+huggingface_hub
+
+# TTS (Text-to-Speech)
+chatterbox-tts
+
+# Testing
+requests==2.32.3

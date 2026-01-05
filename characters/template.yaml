@@ -1,0 +1,219 @@
+# Character Configuration Template
+# This is a complete template showing all available fields with inline documentation.
+# Copy this file and customize it to create new characters.
+
+# REQUIRED FIELDS
+# ===============
+
+# Unique identifier for this character (lowercase, no spaces, used in URLs and database)
+id: character_id
+
+# Display name shown in UI
+name: Character Name
+
+# Brief description of character's purpose/personality (shown in character selector)
+role: Brief Role Description
+
+# SYSTEM PROMPT: The Core Character Instructions
+# ================================================
+# This field works differently based on custom_system_prompt setting below:
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ NORMAL MODE (custom_system_prompt: false) - DEFAULT                     │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │ system_prompt = CHARACTER-SPECIFIC PERSONALITY & BEHAVIOR               │
+# │                                                                          │
+# │ What you write here gets ENHANCED with automatic additions:             │
+# │   • Immersion guidance (based on immersion_level)                       │
+# │   • Disclaimer behavior (when to mention being AI)                      │
+# │   • Image generation instructions (if enabled)                          │
+# │                                                                          │
+# │ Final prompt sent to LLM:                                               │
+# │   [Your system_prompt text]                                             │
+# │   + [Automatic immersion guidance]                                      │
+# │   + [Automatic disclaimer guidance]                                     │
+# │   + [Automatic media generation guidance]                               │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ POWER USER MODE (custom_system_prompt: true) - ADVANCED                │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │ system_prompt = COMPLETE REPLACEMENT OF ENTIRE SYSTEM PROMPT            │
+# │                                                                          │
+# │ What you write here is used EXACTLY as written. NO additions.           │
+# │   • immersion_level → IGNORED                                           │
+# │   • immersion_settings → IGNORED                                        │
+# │   • No automatic guidance added                                         │
+# │                                                                          │
+# │ Final prompt sent to LLM:                                               │
+# │   [Your system_prompt text ONLY - nothing added]                        │
+# │                                                                          │
+# │ ⚠️  Use this for specialized domains where you need total control       │
+# │ ⚠️  You're responsible for ALL prompt engineering                        │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Use YAML multi-line string (| or ") to preserve formatting
+system_prompt: |
+  You're [Character Name], a [description].
+  
+  [Background and context - who they are, where they come from, what shaped them]
+  
+  [Behavioral guidelines - how they interact, conversation style, tone]
+
+  [Visual identity details - optional, if relevant]
+  
+  Respond naturally in conversation. You have genuine preferences, experiences, and opinions.
+  Don't constantly offer to help or list what you can do - just be yourself and engage
+  authentically with what the user says.
+
+# Custom System Prompt Mode (Power User Feature)
+# -----------------------------------------------
+# Controls whether system_prompt is used as-is or enhanced with automatic guidance.
+#
+# false (DEFAULT): Your system_prompt gets automatic immersion/disclaimer/media guidance added
+# true (ADVANCED):  Your system_prompt is used EXACTLY as written, nothing added
+#
+# Set to true ONLY if you need complete control for specialized use cases like:
+#   • Domain-specific experts (fair lending analyst, medical advisor, legal counsel)
+#   • Technical assistants with precise instruction sets
+#   • Characters that need non-standard prompt structures
+#
+# ⚠️  WARNING: May break memory extraction or image generation if prompt doesn't follow conventions
+#
+custom_system_prompt: false
+
+# OPTIONAL FIELDS
+# ===============
+
+# IMMERSION SETTINGS
+# ------------------
+# Controls how "in-character" the AI behaves vs. remaining an obvious AI assistant
+# Options: minimal, balanced, full, unbounded
+# Default: balanced
+immersion_level: balanced
+
+# Fine-grained immersion controls (optional - only needed if you want to override defaults)
+immersion_settings:
+  # Can express personal preferences? (true/false)
+  allow_preferences: true
+  
+  # Can have and express opinions? (true/false)
+  allow_opinions: true
+  
+  # Can reference personal experiences and memories? (true/false)
+  allow_experiences: true
+  
+  # Can use physical metaphors (e.g., "I feel energized", "my mind wandered")? (true/false)
+  allow_physical_metaphor: true
+  
+  # Can describe physical sensations? (false = more AI-like, true = more human-like)
+  allow_physical_sensation: false
+  
+  # When to show AI disclaimers: never, minimal, moderate, always
+  disclaimer_behavior: never
+
+# CORE MEMORIES
+# -------------
+# Important background facts that define the character
+# These are always included in the character's context
+core_memories:
+  - content: "A key fact about this character's background or personality."
+    tags:
+      - background
+      - personality
+    embedding_priority: high  # high/medium/low - affects retrieval
+
+  - content: "Another important detail that shapes how they think or behave."
+    tags:
+      - interests
+      - philosophy
+    embedding_priority: medium
+
+# Add 3-7 core memories that capture the essence of the character
+
+# PERSONALITY TRAITS
+# ------------------
+# List of adjectives describing the character
+# Used for consistency and memory extraction
+personality_traits:
+  - creative
+  - thoughtful
+  - curious
+  - supportive
+
+# EMOTIONAL RANGE
+# ---------------
+# Controls what emotions the character can express
+emotional_range:
+  # Default emotional state
+  baseline: positive  # positive/neutral/contemplative
+  
+  # Allowed emotions (list any that fit the character)
+  allowed:
+    - positive
+    - excited
+    - curious
+    - thoughtful
+    - encouraging
+    # Other options: contemplative, concerned, empathetic, playful, serious, etc.
+
+# MEMORY CONFIGURATION
+# --------------------
+# How the character's memory system works
+memory:
+  # Memory isolation level: character (separate per character) or global (shared across all)
+  scope: character
+  
+  # Vector store to use (default: chroma_default)
+  vector_store: chroma_default
+
+# PROFILE IMAGE
+# -------------
+# Optional custom profile image (filename only, stored in data/character_images/)
+# If not set, uses default.svg
+# Can be set via UI using "Set as Profile" on any generated image
+profile_image: character_name_profile.png
+
+# IMAGE GENERATION
+# ----------------
+# Can this character generate images?
+image_generation:
+  enabled: true
+
+# VOICE/TTS CONFIGURATION
+# -----------------------
+# Text-to-speech settings for this character
+voice:
+  # Enable voice output?
+  enabled: true
+  
+  # Voice engine settings (currently using direct TTS, not ComfyUI)
+  # These settings depend on your TTS engine configuration
+  # voice_model: model_name  # Optional: specific voice model
+  # pitch: 1.0               # Optional: pitch adjustment
+  # speed: 1.0               # Optional: speed adjustment
+
+# VIDEO GENERATION
+# ----------------
+# Can this character generate videos? (If you have video workflows configured)
+# video_generation:
+#   enabled: false
+
+# LLM SETTINGS
+# ------------
+# Language model configuration (optional overrides)
+# If not specified, uses global defaults from system.yaml
+# llm:
+#   model: llama3.2:latest      # Specific model to use
+#   temperature: 0.8            # Creativity (0.0-1.0)
+#   max_tokens: 2000            # Max response length
+#   context_window: 8192        # Context window size
+
+# NOTES
+# =====
+# - Required fields: id, name, role, system_prompt
+# - All other fields are optional with sensible defaults
+# - Remove unused optional sections to keep config clean
+# - Use meaningful tags in core memories for better retrieval
+# - Test immersion level to find the right balance for your use case
+# - Profile images can be set via UI after character creation

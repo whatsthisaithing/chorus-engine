@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chorus Engine</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    
+    <!-- Highlight.js for code syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    
+    <!-- Custom CSS -->
+    <link href="css/custom.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid h-100">
+        <div class="row h-100">
+            <!-- Sidebar -->
+            <div class="col-md-3 col-lg-2 sidebar bg-dark text-white p-3 d-flex flex-column">
+                <h4 class="mb-4" style="white-space: nowrap;">
+                    Chorus Engine
+                </h4>
+                
+                <!-- CHARACTER Section -->
+                <div class="sidebar-section mb-4">
+                    <h6 class="sidebar-section-header text-muted text-uppercase small mb-2">Character</h6>
+                    <div class="mb-2">
+                        <select id="characterSelect" class="form-select form-select-sm bg-dark text-white">
+                            <option value="">Loading...</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Character Profile Card -->
+                    <div id="characterProfileCard" class="character-profile-card mb-3" style="display: none;">
+                        <div class="profile-avatar-container">
+                            <img id="profileAvatar" src="/character_images/default.svg" alt="Character Avatar" class="profile-avatar">
+                        </div>
+                        <div class="profile-info">
+                            <h6 id="profileName" class="profile-name mb-1">Character Name</h6>
+                            <div id="profileRole" class="profile-role small mb-2">Role</div>
+                            
+                            <div class="profile-stats mb-2">
+                                <div class="stat-item">
+                                    <i class="bi bi-chat-dots" title="Conversations"></i>
+                                    <span id="statConversations">0</span>
+                                    <small>Convos</small>
+                                </div>
+                                <div class="stat-item">
+                                    <i class="bi bi-chat-text" title="Messages"></i>
+                                    <span id="statMessages">0</span>
+                                    <small>Msgs</small>
+                                </div>
+                                <div class="stat-item">
+                                    <i class="bi bi-journal-text" title="Memories"></i>
+                                    <span id="statMemories">0</span>
+                                    <small>Mem</small>
+                                </div>
+                                <div class="stat-item">
+                                    <i class="bi bi-star" title="Core Memories"></i>
+                                    <span id="statCore">0</span>
+                                    <small>Core</small>
+                                </div>
+                            </div>
+                            
+                            <div class="profile-capabilities-section mb-2">
+                                <div class="capabilities-heading">Capabilities</div>
+                                <div id="profileCapabilities" class="profile-capabilities">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+                            
+                            <button id="viewFullProfileBtn" class="btn btn-outline-warning btn-sm w-100">
+                                <i class="bi bi-person-circle me-1"></i> View Full Profile
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <button id="manageCharactersBtn" class="btn btn-outline-light btn-sm w-100 mb-2">
+                        <i class="bi bi-person-gear me-1"></i> Manage Characters
+                    </button>
+                    <button id="manageVoiceSamplesBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-mic-fill me-1"></i> Voice Samples
+                    </button>
+                    <button id="manageWorkflowsBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-diagram-3-fill me-1"></i> Workflows
+                    </button>
+                </div>
+                
+                <!-- CONVERSATION Section -->
+                <div class="sidebar-section">
+                    <h6 class="sidebar-section-header text-muted text-uppercase small mb-2">Conversation</h6>
+                    <button id="newConversationBtn" class="btn btn-primary btn-sm w-100 mb-2">
+                        <i class="bi bi-plus-circle me-1"></i> New Conversation
+                    </button>
+                    <button id="memoryPanelBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-database me-1"></i> Memory
+                    </button>
+                    <button id="pending-memories-btn" class="btn btn-outline-secondary btn-sm w-100 mb-3" disabled>
+                        <i class="bi bi-hourglass-split me-1"></i> Pending Memories
+                        <span id="pending-count" class="badge bg-danger">0</span>
+                    </button>
+                    
+                    <!-- Conversation List -->
+                    <div class="mb-3">
+                        <h6 class="small text-light">Recent</h6>
+                        <div id="conversationList" class="conversation-list">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Settings at bottom -->
+                <div class="mt-auto pt-3 border-top" style="border-color: var(--border-color) !important;">
+                    <div class="dropdown dropup">
+                        <button class="btn btn-sm btn-outline-secondary w-100" type="button" id="settingsMenuBtn" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-gear-fill me-2"></i>Settings
+                        </button>
+                        <ul class="dropdown-menu" aria-labelledby="settingsMenuBtn">
+                            <li><h6 class="dropdown-header">Configuration</h6></li>
+                            <li><a class="dropdown-item" href="#" id="exportCharacterMenuItem">
+                                <i class="bi bi-download me-2"></i>Export Character
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" id="importCharacterMenuItem">
+                                <i class="bi bi-upload me-2"></i>Import Character
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" id="exportSystemConfigMenuItem">
+                                <i class="bi bi-file-earmark-arrow-down me-2"></i>Export System Config
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" id="importSystemConfigMenuItem">
+                                <i class="bi bi-file-earmark-arrow-up me-2"></i>Import System Config
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" id="viewServerLogsMenuItem">
+                                <i class="bi bi-terminal me-2"></i>View Server Logs
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item text-danger" href="#" id="resetDatabaseMenuItem">
+                                <i class="bi bi-exclamation-triangle me-2"></i>Reset Database
+                            </a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Main Chat Area -->
+            <div class="col-md-9 col-lg-10 d-flex flex-column p-0">
+                <!-- Header -->
+                <div class="chat-header p-3 pb-0">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <div>
+                                <h5 class="mb-0 d-inline-block" id="conversationTitle" contenteditable="false" style="cursor: text;">Select a conversation</h5>
+                                <small class="text-muted ms-2" id="characterName"></small>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <!-- Privacy Toggle - Simplified -->
+                            <div class="form-check form-switch privacy-toggle m-0" title="Private messages are saved but won't be used for memory extraction">
+                                <input class="form-check-input" type="checkbox" id="privacyToggle" disabled>
+                                <label class="form-check-label" for="privacyToggle">
+                                    <i class="bi bi-lock-fill"></i>
+                                    <span class="ms-1">Private</span>
+                                </label>
+                            </div>
+                            <!-- TTS Toggle - Simplified -->
+                            <div class="form-check form-switch tts-toggle m-0" title="Enable text-to-speech for assistant messages">
+                                <input class="form-check-input" type="checkbox" id="ttsToggle" disabled>
+                                <label class="form-check-label" for="ttsToggle">
+                                    <i class="bi bi-volume-up-fill"></i>
+                                    <span class="ms-1">TTS</span>
+                                </label>
+                            </div>
+                            <!-- Actions Dropdown Menu -->
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" id="actionsMenuBtn" data-bs-toggle="dropdown" aria-expanded="false" disabled>
+                                    <i class="bi bi-three-dots-vertical"></i>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="actionsMenuBtn">
+                                    <li><a class="dropdown-item" href="#" id="analyzeMenuItem">
+                                        <i class="bi bi-lightbulb me-2"></i>Analyze Conversation
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" id="analysisHistoryMenuItem">
+                                        <i class="bi bi-clock-history me-2"></i>Analysis History
+                                    </a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item" href="#" id="viewDebugLogMenuItem">
+                                        <i class="bi bi-journal-code me-2"></i>View Debug Log
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" id="viewExtractionLogMenuItem">
+                                        <i class="bi bi-journal-text me-2"></i>View Extraction Log
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" id="viewImageRequestLogMenuItem">
+                                        <i class="bi bi-image me-2"></i>View Image Request Log
+                                    </a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item" href="#" id="exportMenuItem">
+                                        <i class="bi bi-download me-2"></i>Export Conversation
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" id="editTitleMenuItem">
+                                        <i class="bi bi-pencil me-2"></i>Edit Title
+                                    </a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item text-danger" href="#" id="deleteMenuItem">
+                                        <i class="bi bi-trash me-2"></i>Delete Conversation
+                                    </a></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Thread Tabs -->
+                    <div class="mt-4">
+                        <ul class="nav nav-tabs" id="threadTabs">
+                            <!-- Populated by JS -->
+                        </ul>
+                    </div>
+                </div>
+                
+                <!-- Messages Area -->
+                <div class="flex-grow-1 overflow-auto p-3" id="messagesContainer">
+                    <!-- Messages populated by JS -->
+                    <div class="text-center text-light mt-5" id="emptyState">
+                        <i class="bi bi-chat-text" style="font-size: 4rem;"></i>
+                        <p class="mt-3">Select a character and start a new conversation</p>
+                    </div>
+                </div>
+                
+                <!-- Input Area -->
+                <div class="chat-input border-top p-3 bg-light">
+                    <form id="messageForm">
+                        <div class="input-group">
+                            <input 
+                                type="text" 
+                                id="messageInput" 
+                                class="form-control" 
+                                placeholder="Type your message..." 
+                                disabled
+                                autocomplete="off"
+                            >
+                            <!-- Phase 9: Scene Capture Button -->
+                            <button 
+                                type="button" 
+                                id="sceneCaptureBtn" 
+                                class="btn btn-outline-secondary" 
+                                title="Capture Scene"
+                                style="display: none; border: none;"
+                                disabled
+                            >
+                                <i class="bi bi-camera-fill"></i>
+                            </button>
+                            <button 
+                                type="submit" 
+                                id="sendBtn" 
+                                class="btn btn-primary" 
+                                disabled
+                            >
+                                <i class="bi bi-send-fill"></i> Send
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Phase 9: Image Gallery Panel -->
+    <div id="imageGallery" class="gallery-panel collapsed">
+        <button class="gallery-toggle" onclick="App.toggleImageGallery()" title="Image Gallery">
+            <i class="bi bi-images"></i>
+            <span class="gallery-count">0</span>
+        </button>
+        
+        <div class="gallery-content">
+            <div class="gallery-header">
+                <h5 class="text-dark"><i class="bi bi-images me-2"></i>Gallery</h5>
+                <button class="btn-close-gallery" onclick="App.toggleImageGallery()" aria-label="Close">&times;</button>
+            </div>
+            
+            <div class="gallery-grid" id="galleryGrid">
+                <p class="text-light text-center mt-4">No images yet</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Loading Modal -->
+    <div class="modal" id="loadingModal" data-bs-backdrop="static" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content">
+                <div class="modal-body text-center py-4">
+                    <div class="spinner-border text-primary mb-2" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mb-0">Generating response...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Analysis Results Modal -->
+    <div class="modal fade" id="analysisResultsModal" tabindex="-1" aria-labelledby="analysisResultsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="analysisResultsModalLabel">
+                        <i class="bi bi-lightbulb-fill text-info"></i> Analysis Results
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="analysisLoadingSpinner" class="text-center py-5" style="display: none;">
+                        <div class="spinner-border text-info" role="status">
+                            <span class="visually-hidden">Analyzing...</span>
+                        </div>
+                        <p class="mt-3 text-light">Analyzing conversation...</p>
+                    </div>
+                    
+                    <div id="analysisResults" style="display: none;">
+                        <!-- Summary Section -->
+                        <div class="mb-4">
+                            <h6 class="border-bottom pb-2"><i class="bi bi-card-text"></i> Summary</h6>
+                            <p id="analysisSummary"></p>
+                        </div>
+                        
+                        <!-- Metadata -->
+                        <div class="row mb-4">
+                            <div class="col-md-6">
+                                <h6 class="border-bottom pb-2"><i class="bi bi-tags"></i> Themes</h6>
+                                <div id="analysisThemes"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="border-bottom pb-2"><i class="bi bi-emoji-smile"></i> Tone</h6>
+                                <p id="analysisTone"></p>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <h6 class="border-bottom pb-2"><i class="bi bi-heart-pulse"></i> Emotional Arc</h6>
+                            <p id="analysisEmotionalArc"></p>
+                        </div>
+                        
+                        <!-- Memory Counts -->
+                        <div class="mb-4">
+                            <h6 class="border-bottom pb-2">
+                                <i class="bi bi-database"></i> Memories Extracted 
+                                <span id="analysisMemoryTotal" class="badge bg-info">0</span>
+                            </h6>
+                            <div id="analysisMemoryCounts" class="d-flex flex-wrap gap-2"></div>
+                        </div>
+                        
+                        <!-- Detailed Memories -->
+                        <div class="mb-3">
+                            <h6 class="border-bottom pb-2"><i class="bi bi-list-ul"></i> Extracted Memories</h6>
+                            <div id="analysisMemoriesList" class="list-group"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="analysisError" style="display: none;" class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle"></i> <span id="analysisErrorMessage"></span>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analysis History Modal -->
+    <div class="modal fade" id="analysisHistoryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-clock-history me-2"></i>Analysis History
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Loading spinner -->
+                    <div id="historyLoadingSpinner" class="text-center py-4" style="display: none;">
+                        <div class="spinner-border text-info" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2 text-light">Loading analysis history...</p>
+                    </div>
+
+                    <!-- Error message -->
+                    <div id="historyError" class="alert alert-danger" style="display: none;"></div>
+
+                    <!-- History list -->
+                    <div id="historyList" style="display: none;">
+                        <div id="historyItems" class="list-group"></div>
+                    </div>
+
+                    <!-- Empty state -->
+                    <div id="historyEmpty" class="text-center py-4" style="display: none;">
+                        <i class="bi bi-inbox" style="font-size: 3rem; color: #ccc;"></i>
+                        <p class="text-light mt-2">No analyses yet. Click "Analyze Now" to create the first one!</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Conversation Confirmation Modal -->
+    <div class="modal fade" id="deleteConversationModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="bi bi-trash"></i> Delete Conversation</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>This conversation has <strong id="deleteConvMessageCount">0</strong> messages.</p>
+                    <div id="deleteConvMemoryInfo" class="alert alert-info" style="display: none;">
+                        <i class="bi bi-info-circle"></i>
+                        It also has <strong id="deleteConvMemoryCount">0</strong> extracted memories.
+                    </div>
+                    
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="deleteConvKeepMemories" checked>
+                        <label class="form-check-label" for="deleteConvKeepMemories">
+                            <strong>Keep memories (recommended)</strong><br>
+                            <small class="text-light">Character will remember facts from this conversation in future chats.</small>
+                        </label>
+                    </div>
+                    
+                    <p class="text-danger mb-0">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <strong>This action cannot be undone.</strong>
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmDeleteConversation">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Edit Title Modal -->
+    <div class="modal fade" id="editTitleModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Conversation Title</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="newTitleInput" class="form-control" placeholder="Enter new title">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveTitleBtn">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Conversation Modal -->
+    <div class="modal fade" id="exportModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-download me-2"></i>
+                        Export Conversation
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Export Format</label>
+                        <select class="form-select" id="exportFormat">
+                            <option value="markdown" selected>Markdown (.md) - Beautiful formatting</option>
+                            <option value="text">Plain Text (.txt) - Simple format</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Include:</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="includeMetadata" checked>
+                            <label class="form-check-label" for="includeMetadata">
+                                Metadata (character, dates, message count)
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="includeSummary" checked>
+                            <label class="form-check-label" for="includeSummary">
+                                Conversation Summary (if analyzed)
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="includeMemories">
+                            <label class="form-check-label" for="includeMemories">
+                                Extracted Memories
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info small mb-0">
+                        <i class="bi bi-info-circle me-2"></i>
+                        The exported file will be saved to your downloads folder and also stored in <code>data/exports/</code>.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmExportBtn">
+                        <i class="bi bi-download me-1"></i> Export
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Immersion Notice Modal -->
+    <div class="modal fade" id="immersionNoticeModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-info-circle-fill text-info me-2"></i>
+                        Character Notice
+                    </h5>
+                </div>
+                <div class="modal-body" id="immersionNoticeText">
+                    <!-- Populated by JS -->
+                </div>
+                <div class="modal-footer">
+                    <div class="form-check me-auto">
+                        <input class="form-check-input" type="checkbox" id="dontShowAgainCheck">
+                        <label class="form-check-label" for="dontShowAgainCheck">
+                            Don't show this again for this character
+                        </label>
+                    </div>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Got it</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Character Management Modal -->
+    <div class="modal fade" id="characterManagementModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-person-gear me-2"></i>
+                        Character Management
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <!-- Character List -->
+                        <div class="col-md-4">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h6 class="mb-0">Characters</h6>
+                                <button id="newCharacterBtn" class="btn btn-primary btn-sm">
+                                    <i class="bi bi-plus-circle"></i> New
+                                </button>
+                            </div>
+                            <div id="characterListPanel" class="list-group" style="max-height: 500px; overflow-y: auto;">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+                        
+                        <!-- Character Editor -->
+                        <div class="col-md-8">
+                            <h6 class="mb-3">Character Editor</h6>
+                            <div id="characterEditorPlaceholder" class="text-center text-muted py-5">
+                                <i class="bi bi-person-circle" style="font-size: 3rem;"></i>
+                                <p class="mt-3">Select a character to edit or create a new one</p>
+                            </div>
+                            <form id="characterForm" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label">Character ID <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="charId" required 
+                                           pattern="[a-z0-9_\-]+" 
+                                           placeholder="e.g., my-assistant">
+                                    <small class="text-light">Lowercase letters, numbers, underscores, and hyphens only</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Name <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="charName" required 
+                                           placeholder="e.g., My Assistant">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Role <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="charRole" required 
+                                           placeholder="e.g., Helpful Assistant">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">System Prompt <span class="text-danger">*</span></label>
+                                    <textarea class="form-control" id="charSystemPrompt" rows="8" required 
+                                              placeholder="Define the character's personality and behavior..."></textarea>
+                                    <small class="text-light">This is the core instruction that defines how the character behaves</small>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Immersion Level</label>
+                                        <select class="form-select" id="charImmersionLevel">
+                                            <option value="minimal">Minimal - Traditional AI assistant</option>
+                                            <option value="balanced" selected>Balanced - Preferences & opinions</option>
+                                            <option value="full">Full - Personality with experiences</option>
+                                            <option value="unbounded">Unbounded - Complete roleplay</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Personality Traits</label>
+                                        <input type="text" class="form-control" id="charTraits" 
+                                               placeholder="e.g., thoughtful, creative, analytical">
+                                        <small class="text-light">Comma-separated</small>
+                                    </div>
+                                </div>
+                                
+                                <!-- LLM Preferences -->
+                                <h6 class="mb-3 mt-3">LLM Preferences (Optional)</h6>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Preferred Model</label>
+                                        <input type="text" class="form-control" id="charLlmModel" 
+                                               placeholder="e.g., qwen2.5:14b-instruct">
+                                        <small class="text-muted">Leave blank to use system default</small>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Temperature</label>
+                                        <input type="number" class="form-control" id="charLlmTemperature" 
+                                               min="0" max="2" step="0.1" placeholder="e.g., 0.7">
+                                        <small class="text-muted">0.0 (focused) to 2.0 (creative)</small>
+                                    </div>
+                                </div>
+                                
+                                <div class="d-flex gap-2 mb-3">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-save"></i> Save Character
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" id="cloneCharacterBtn">
+                                        <i class="bi bi-files"></i> Clone
+                                    </button>
+                                    <button type="button" class="btn btn-outline-danger ms-auto" id="deleteCharacterBtn">
+                                        <i class="bi bi-trash"></i> Delete
+                                    </button>
+                                </div>
+                                <div id="characterFormStatus" class="alert d-none" role="alert"></div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Memory Panel Offcanvas -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="memoryPanel" style="width: 600px;">
+        <div class="offcanvas-header border-bottom">
+            <h5 class="offcanvas-title">
+                <i class="bi bi-database me-2"></i>
+                Memory Manager
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+        <div class="offcanvas-body">
+            <!-- Character Info -->
+            <div class="alert alert-info" id="memoryCharacterInfo">
+                <strong id="memoryCharacterName">No character selected</strong>
+            </div>
+            
+            <!-- Search & Filter Controls -->
+            <div class="mb-3">
+                <div class="input-group mb-2">
+                    <input type="text" id="memorySearchInput" class="form-control" placeholder="Semantic search...">
+                    <button type="button" id="memorySearchBtn" class="btn btn-outline-secondary">
+                        <i class="bi bi-search"></i>
+                    </button>
+                    <button type="button" id="memoryClearSearchBtn" class="btn btn-outline-secondary" style="display: none;">
+                        <i class="bi bi-x-circle"></i>
+                    </button>
+                </div>
+                
+                <!-- Filter by Type -->
+                <div class="mb-2">
+                    <div class="btn-group w-100 mb-1" role="group">
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterAll" value="all" checked>
+                        <label class="btn btn-outline-primary btn-sm" for="filterAll">All</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterCore" value="core">
+                        <label class="btn btn-outline-primary btn-sm" for="filterCore">Core</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterExplicit" value="explicit">
+                        <label class="btn btn-outline-primary btn-sm" for="filterExplicit">Explicit</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterFact" value="fact">
+                        <label class="btn btn-outline-primary btn-sm" for="filterFact">Facts</label>
+                    </div>
+                    <div class="btn-group w-100" role="group">
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterProject" value="project">
+                        <label class="btn btn-outline-warning btn-sm" for="filterProject">Projects</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterExperience" value="experience">
+                        <label class="btn btn-outline-primary btn-sm" for="filterExperience">Experiences</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterStory" value="story">
+                        <label class="btn btn-outline-secondary btn-sm" for="filterStory">Stories</label>
+                        
+                        <input type="radio" class="btn-check" name="memoryTypeFilter" id="filterRelationship" value="relationship">
+                        <label class="btn btn-outline-success btn-sm" for="filterRelationship">Relationship</label>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Memory Actions -->
+            <div class="d-flex gap-2 mb-3">
+                <button type="button" id="addExplicitMemoryBtn" class="btn btn-success btn-sm">
+                    <i class="bi bi-plus-circle"></i> Add Explicit Memory
+                </button>
+                <button type="button" id="addCoreMemoryBtn" class="btn btn-primary btn-sm" style="display: none;">
+                    <i class="bi bi-star"></i> Add Core Memory
+                </button>
+            </div>
+            
+            <!-- Add Memory Form (Hidden by default) -->
+            <div id="addMemoryForm" class="card mb-3" style="display: none;">
+                <div class="card-body">
+                    <h6 class="card-title">
+                        <span id="memoryFormTitle">Add Explicit Memory</span>
+                        <button type="button" class="btn-close float-end" id="cancelMemoryFormBtn"></button>
+                    </h6>
+                    <form id="memoryForm">
+                        <div class="mb-2">
+                            <label class="form-label">Content <span class="text-danger">*</span></label>
+                            <textarea class="form-control" id="memoryContent" rows="3" required 
+                                      placeholder="Enter memory content..."></textarea>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Tags (optional)</label>
+                            <input type="text" class="form-control" id="memoryTags" 
+                                   placeholder="e.g., preference, skill, context">
+                            <small class="text-muted">Comma-separated</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Priority</label>
+                            <select class="form-select form-select-sm" id="memoryPriority">
+                                <option value="low">Low</option>
+                                <option value="medium" selected>Medium</option>
+                                <option value="high">High</option>
+                            </select>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="bi bi-save"></i> Save
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="cancelMemoryFormBtn2">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- Status Message -->
+            <div id="memoryStatus" class="alert d-none mb-3" role="alert"></div>
+            
+            <!-- Memory List -->
+            <div id="memoryList" class="mb-3">
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+                    <p class="mt-2">No memories found</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Phase 4.1: Pending Memories Panel -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="pending-memories-panel" style="width: 600px;">
+        <div class="offcanvas-header border-bottom">
+            <h5 class="offcanvas-title">
+                <i class="bi bi-hourglass-split me-2"></i>
+                Pending Memories
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+        <div class="offcanvas-body">
+            <div class="alert alert-info" role="alert">
+                <i class="bi bi-info-circle me-2"></i>
+                <strong>Review extracted memories</strong><br>
+                <small>These facts were automatically extracted from conversations. Approve to remember them, or reject to discard.</small>
+            </div>
+            
+            <!-- Select All -->
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="select-all-pending">
+                <label class="form-check-label" for="select-all-pending">
+                    Select All
+                </label>
+            </div>
+            
+            <!-- Pending Memories List -->
+            <div id="pending-memories-list">
+                <!-- Populated by JS -->
+            </div>
+            
+            <!-- Batch Actions (Sticky Footer) -->
+            <div class="batch-actions">
+                <button id="batch-approve-btn" class="btn btn-success" disabled>
+                    <i class="bi bi-check-lg"></i> Approve Selected
+                </button>
+                <button id="batch-reject-btn" class="btn btn-danger" disabled>
+                    <i class="bi bi-x-lg"></i> Reject Selected
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Reset Database Confirmation Modal -->
+    <div class="modal fade" id="resetDatabaseModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        Reset Database - WARNING
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-danger" role="alert">
+                        <strong>THIS ACTION CANNOT BE UNDONE!</strong>
+                    </div>
+                    <p>This will permanently delete:</p>
+                    <ul>
+                        <li>All conversations and messages</li>
+                        <li>All memories (core and extracted)</li>
+                        <li>All vector store data</li>
+                    </ul>
+                    <p>Character definitions will be preserved.</p>
+                    <hr>
+                    <p class="mb-2"><strong>Type "RESET" to confirm:</strong></p>
+                    <input type="text" id="resetConfirmInput" class="form-control" placeholder="Type RESET here">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmResetBtn" disabled>
+                        <i class="bi bi-trash-fill me-1"></i> Reset Database
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Phase 5: Image Generation Confirmation Modal -->
+    <div class="modal fade" id="imageConfirmModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-image-fill me-2"></i>
+                        Generate Image?
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3">I detected you'd like an image. Here's what I'll generate:</p>
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Prompt:</label>
+                        <textarea id="imagePromptPreview" class="form-control" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Negative Prompt:</label>
+                        <textarea id="imageNegativePromptPreview" class="form-control" rows="2"></textarea>
+                    </div>
+                    
+                    <!-- Phase 9: Workflow Selector -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Workflow:</label>
+                        <select id="imageWorkflowSelector" class="form-select">
+                            <option value="default">Default</option>
+                        </select>
+                    </div>
+                    
+                    <div id="imageTriggerInfo" class="alert alert-info d-none" role="alert">
+                        <i class="bi bi-magic me-2"></i>
+                        <small>This will include my character's trigger word for a self-portrait.</small>
+                    </div>
+                    
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="disableImageConfirmation">
+                        <label class="form-check-label" for="disableImageConfirmation">
+                            Don't ask again in this conversation
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmGenerateImageBtn">
+                        <i class="bi bi-image-fill me-1"></i> Generate Image
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+<!-- Workflow Management Modal -->
+    <div class="modal fade" id="workflowManagementModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-diagram-3-fill me-2"></i>
+                        Manage Workflows: <span id="workflowCharacterName"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Workflow Type Selector (Phase 6.5) -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Workflow Type</label>
+                        <div class="btn-group w-100" role="group" id="workflowTypeSelector">
+                            <input type="radio" class="btn-check" name="workflowType" id="workflowTypeImage" value="image" checked autocomplete="off">
+                            <label class="btn btn-outline-primary" for="workflowTypeImage">
+                                <i class="bi bi-image me-1"></i> Image
+                            </label>
+                            
+                            <input type="radio" class="btn-check" name="workflowType" id="workflowTypeTTS" value="audio" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="workflowTypeTTS">
+                                <i class="bi bi-volume-up me-1"></i> TTS
+                            </label>
+                            
+                            <input type="radio" class="btn-check" name="workflowType" id="workflowTypeVideo" value="video" autocomplete="off" disabled>
+                            <label class="btn btn-outline-secondary" for="workflowTypeVideo">
+                                <i class="bi bi-film me-1"></i> Video (Coming Soon)
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Placeholder Documentation -->
+                    <div class="alert alert-info py-2 px-3 small" id="workflowPlaceholders">
+                        <strong>Image Placeholders:</strong>
+                        <code>__CHORUS_PROMPT__</code>, <code>__CHORUS_NEGATIVE__</code>, <code>__CHORUS_SEED__</code>
+                    </div>
+                    
+                    <!-- Upload Section -->
+                    <div class="mb-4">
+                        <h6 class="mb-2">
+                            <i class="bi bi-cloud-upload me-2"></i>
+                            Upload New Workflow
+                        </h6>
+                        <div class="mb-2">
+                            <label for="newWorkflowName" class="form-label small">Workflow Name</label>
+                            <input type="text" id="newWorkflowName" class="form-control" placeholder="e.g., portrait, scene, default">
+                        </div>
+                        <div class="mb-3">
+                            <label for="workflowFileInput" class="form-label small">Workflow File (API format)</label>
+                            <input type="file" id="workflowFileInput" class="form-control" accept=".json">
+                        </div>
+                        <button type="button" class="btn btn-primary w-100" id="uploadWorkflowBtn">
+                            <i class="bi bi-upload me-1"></i> Upload Workflow
+                        </button>
+                        <small class="text-muted d-block mt-2">Export your ComfyUI workflow in API format, then upload here.</small>
+                    </div>
+                    
+                    <!-- Workflows List -->
+                    <div>
+                        <h6 class="mb-2">
+                            <i class="bi bi-list-ul me-2"></i>
+                            Existing Workflows
+                        </h6>
+                        <div id="workflowsList" class="list-group">
+                            <!-- Populated by JS -->
+                            <div class="text-center text-muted py-3">
+                                <small>No workflows found. Upload one to get started.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Voice Management Modal (Phase 6) -->
+    <div class="modal fade" id="voiceManagementModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-mic-fill me-2"></i>
+                        Voice Samples: <span id="voiceCharacterName"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Upload Section -->
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h6 class="mb-0">Upload New Voice Sample</h6>
+                        </div>
+                        <div class="card-body">
+                            <form id="voiceUploadForm">
+                                <div class="mb-3">
+                                    <label for="voiceFileInput" class="form-label">Audio File</label>
+                                    <input type="file" class="form-control" id="voiceFileInput" accept="audio/*" required>
+                                    <div class="form-text">Supported formats: WAV, MP3, FLAC, OGG. Recommended: Clear, 3-10 second sample</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="voiceTranscriptInput" class="form-label">Transcript (Required)</label>
+                                    <textarea class="form-control" id="voiceTranscriptInput" rows="3" placeholder="Type the exact words spoken in the voice sample..." required></textarea>
+                                    <div class="form-text">The exact words spoken in the audio file. This helps the TTS model clone the voice accurately.</div>
+                                </div>
+                                <div class="form-check mb-3">
+                                    <input type="checkbox" class="form-check-input" id="voiceDefaultCheck">
+                                    <label class="form-check-label" for="voiceDefaultCheck">
+                                        Set as default voice
+                                    </label>
+                                </div>
+                                <button type="submit" class="btn btn-primary" id="uploadVoiceBtn">
+                                    <i class="bi bi-upload me-1"></i> Upload Voice Sample
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    
+                    <!-- Existing Voices List -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h6 class="mb-0">Existing Voice Samples</h6>
+                        </div>
+                        <div class="card-body">
+                            <div id="voicesList">
+                                <div class="text-center text-muted py-3">
+                                    <i class="bi bi-mic-mute-fill fs-1"></i>
+                                    <p class="mt-2">No voice samples uploaded yet</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Character Profile Modal -->
+    <div class="modal fade" id="characterProfileModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">
+                        <i class="bi bi-person-circle me-2"></i> Character Profile
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <!-- Left Column: Avatar and Basic Info -->
+                        <div class="col-md-4">
+                            <div class="text-center mb-4">
+                                <img id="modalProfileAvatar" src="/character_images/default.svg" 
+                                     alt="Character Avatar" class="modal-profile-avatar mb-3">
+                                <h4 id="modalProfileName" class="text-white">Character Name</h4>
+                                <p id="modalProfileRole" class="modal-label">Role</p>
+                            </div>
+                            
+                            <!-- Statistics -->
+                            <div class="card bg-secondary mb-3">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-graph-up me-2"></i>Statistics</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="stat-row mb-2">
+                                        <span class="modal-label">Conversations:</span>
+                                        <strong id="modalStatConversations" class="float-end">0</strong>
+                                    </div>
+                                    <div class="stat-row mb-2">
+                                        <span class="modal-label">Messages:</span>
+                                        <strong id="modalStatMessages" class="float-end">0</strong>
+                                    </div>
+                                    <div class="stat-row mb-2">
+                                        <span class="modal-label">Memories:</span>
+                                        <strong id="modalStatMemories" class="float-end">0</strong>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="modal-label">Core Memories:</span>
+                                        <strong id="modalStatCore" class="float-end">0</strong>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Capabilities -->
+                            <div class="card bg-secondary">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-gear me-2"></i>Capabilities</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div id="modalCapabilities">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Right Column: Detailed Info -->
+                        <div class="col-md-8">
+                            <!-- Personality Traits -->
+                            <div class="card bg-secondary mb-3">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-heart me-2"></i>Personality</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div id="modalPersonalityTraits" class="d-flex flex-wrap gap-2">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- System Prompt -->
+                            <div class="card bg-secondary mb-3">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-file-text me-2"></i>System Prompt</h6>
+                                </div>
+                                <div class="card-body">
+                                    <p id="modalSystemPrompt" class="small text-white-50" style="white-space: pre-wrap;">
+                                        <!-- Populated by JS -->
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <!-- Visual Identity -->
+                            <div class="card bg-secondary mb-3" id="modalVisualIdentityCard" style="display: none;">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-palette me-2"></i>Visual Identity</h6>
+                                </div>
+                                <div class="card-body">
+                                    <p id="modalVisualIdentity" class="small text-white-50" style="white-space: pre-wrap;">
+                                        <!-- Populated by JS -->
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <!-- Configuration -->
+                            <div class="card bg-secondary">
+                                <div class="card-header">
+                                    <h6 class="mb-0"><i class="bi bi-sliders me-2"></i>Configuration</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-6 mb-2">
+                                            <span class="modal-label small">Immersion Level:</span><br>
+                                            <strong id="modalImmersionLevel">-</strong>
+                                        </div>
+                                        <div class="col-6 mb-2">
+                                            <span class="modal-label small">Preferred Model:</span><br>
+                                            <strong id="modalPreferredModel" class="small">-</strong>
+                                        </div>
+                                        <div class="col-6">
+                                            <span class="modal-label small">Temperature:</span><br>
+                                            <strong id="modalTemperature">-</strong>
+                                        </div>
+                                        <div class="col-6">
+                                            <span class="modal-label small">Memory Scope:</span><br>
+                                            <strong id="modalMemoryScope">-</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Import Character Modal -->
+    <div class="modal fade" id="importCharacterModal" tabindex="-1" aria-labelledby="importCharacterModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="importCharacterModalLabel">
+                        <i class="bi bi-upload me-2"></i>Import Character
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="importCharacterForm">
+                        <div class="mb-3">
+                            <label for="characterFileInput" class="form-label">Select Character YAML File</label>
+                            <input type="file" class="form-control" id="characterFileInput" accept=".yaml,.yml" required>
+                            <small class="text-light form-text">Upload a character configuration file (.yaml or .yml)</small>
+                        </div>
+                        <div class="alert alert-warning" role="alert">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            If a character with the same ID exists, it will be overwritten (unless it's an immutable default character).
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="importCharacterBtn">
+                        <i class="bi bi-upload me-1"></i>Import
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Import System Config Modal -->
+    <div class="modal fade" id="importSystemConfigModal" tabindex="-1" aria-labelledby="importSystemConfigModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="importSystemConfigModalLabel">
+                        <i class="bi bi-file-earmark-arrow-up me-2"></i>Import System Config
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="importSystemConfigForm">
+                        <div class="mb-3">
+                            <label for="systemConfigFileInput" class="form-label">Select System Config YAML File</label>
+                            <input type="file" class="form-control" id="systemConfigFileInput" accept=".yaml,.yml" required>
+                            <small class="text-light form-text">Upload a system configuration file (system.yaml)</small>
+                        </div>
+                        <div class="alert alert-danger" role="alert">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <strong>WARNING:</strong> This will overwrite your current system configuration. A server restart is recommended after import.
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="importSystemConfigBtn">
+                        <i class="bi bi-upload me-1"></i>Import
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Server Logs Modal -->
+    <div class="modal fade" id="serverLogsModal" tabindex="-1" aria-labelledby="serverLogsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="serverLogsModalLabel">
+                        <i class="bi bi-terminal me-2"></i>Server Logs
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <small class="text-light" id="serverLogInfo"></small>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-sm btn-outline-success me-2" id="downloadServerLogsBtn">
+                                <i class="bi bi-download me-1"></i>Download
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="refreshServerLogsBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <pre id="serverLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Conversation Debug Logs Modal -->
+    <div class="modal fade" id="conversationLogsModal" tabindex="-1" aria-labelledby="conversationLogsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="conversationLogsModalLabel">
+                        <i class="bi bi-journal-code me-2"></i>Debug Log: <span id="debugLogConversationTitle">Loading...</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <small class="text-light" id="conversationLogInfo"></small>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-sm btn-outline-success me-2" id="downloadConversationLogBtn">
+                                <i class="bi bi-download me-1"></i>Download
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="refreshConversationLogsBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <pre id="conversationLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Extraction Logs Modal -->
+    <div class="modal fade" id="extractionLogsModal" tabindex="-1" aria-labelledby="extractionLogsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="extractionLogsModalLabel">
+                        <i class="bi bi-journal-text me-2"></i>Extraction Log: <span id="extractionLogConversationTitle">Loading...</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <small class="text-light" id="extractionLogInfo"></small>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-sm btn-outline-success me-2" id="downloadExtractionLogsBtn">
+                                <i class="bi bi-download me-1"></i>Download
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="refreshExtractionLogsBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <pre id="extractionLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Image Request Logs Modal -->
+    <div class="modal fade" id="imageRequestLogsModal" tabindex="-1" aria-labelledby="imageRequestLogsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="imageRequestLogsModalLabel">
+                        <i class="bi bi-image me-2"></i>Image Request Log: <span id="imageRequestLogConversationTitle">Loading...</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <small class="text-light" id="imageRequestLogInfo"></small>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-sm btn-outline-success me-2" id="downloadImageRequestLogsBtn">
+                                <i class="bi bi-download me-1"></i>Download
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="refreshImageRequestLogsBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <pre id="imageRequestLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Container for Notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="notificationToast" class="toast" role="alert">
+            <div class="toast-header">
+                <strong class="me-auto">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastMessage">
+                <!-- Message populated by JS -->
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    
+    <!-- Custom JS -->
+    <script src="js/api.js?v=10"></script>
+    <script src="js/ui.js?v=8"></script>
+    <script src="js/character-management.js?v=4"></script>
+    <script src="js/workflow-management.js?v=2"></script>
+    <script src="js/memory-panel.js?v=2"></script>
+    <script src="js/pending-memories-panel.js?v=1"></script>
+    <script src="js/app.js?v=9"></script>
+</body>
+</html>

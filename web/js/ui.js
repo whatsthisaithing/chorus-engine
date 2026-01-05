@@ -1,0 +1,838 @@
+/**
+ * UI Helper Functions
+ * Handles DOM manipulation and UI updates
+ */
+
+const UI = {
+    /**
+     * Show a toast notification
+     */
+    showToast(message, type = 'info') {
+        const toastEl = document.getElementById('notificationToast');
+        const toastBody = document.getElementById('toastMessage');
+        
+        toastBody.textContent = message;
+        
+        // Add color class
+        toastEl.className = 'toast';
+        if (type === 'error') {
+            toastEl.classList.add('bg-danger', 'text-white');
+        } else if (type === 'success') {
+            toastEl.classList.add('bg-success', 'text-white');
+        }
+        
+        const toast = new bootstrap.Toast(toastEl);
+        toast.show();
+    },
+    
+    /**
+     * Show/hide loading modal
+     */
+    setLoading(loading) {
+        const modal = new bootstrap.Modal(document.getElementById('loadingModal'));
+        if (loading) {
+            modal.show();
+        } else {
+            modal.hide();
+        }
+    },
+    
+    /**
+     * Render character options in select
+     */
+    renderCharacters(characters) {
+        const select = document.getElementById('characterSelect');
+        select.innerHTML = '<option value="">Select a character...</option>';
+        
+        characters.forEach(char => {
+            const option = document.createElement('option');
+            option.value = char.id;
+            option.textContent = `${char.name} - ${char.role}`;
+            select.appendChild(option);
+        });
+    },
+    
+    /**
+     * Update the character profile card
+     */
+    async updateProfileCard(character) {
+        const card = document.getElementById('characterProfileCard');
+        if (!card || !character) {
+            if (card) card.style.display = 'none';
+            return;
+        }
+
+        // Show the card
+        card.style.display = 'block';
+
+        // Update avatar
+        const avatar = document.getElementById('profileAvatar');
+        avatar.src = character.profile_image_url || '/character_images/default.svg';
+        avatar.alt = `${character.name} Avatar`;
+
+        // Update name and role
+        document.getElementById('profileName').textContent = character.name;
+        document.getElementById('profileRole').textContent = character.role;
+
+        // Fetch and update stats
+        try {
+            const stats = await API.getCharacterStats(character.id);
+            document.getElementById('statConversations').textContent = stats.conversation_count || 0;
+            document.getElementById('statMessages').textContent = stats.message_count || 0;
+            document.getElementById('statMemories').textContent = stats.memory_count || 0;
+            document.getElementById('statCore').textContent = stats.core_memory_count || 0;
+        } catch (error) {
+            console.error('Failed to fetch character stats:', error);
+            // Show zeros on error
+            document.getElementById('statConversations').textContent = '0';
+            document.getElementById('statMessages').textContent = '0';
+            document.getElementById('statMemories').textContent = '0';
+            document.getElementById('statCore').textContent = '0';
+        }
+
+        // Update capabilities
+        const capabilitiesContainer = document.getElementById('profileCapabilities');
+        capabilitiesContainer.innerHTML = '';
+
+        if (character.capabilities) {
+            if (character.capabilities.image_generation) {
+                const badge = document.createElement('span');
+                badge.className = 'capability-badge';
+                badge.innerHTML = '<i class="bi bi-image"></i> Images';
+                capabilitiesContainer.appendChild(badge);
+            }
+            if (character.capabilities.audio_generation) {
+                const badge = document.createElement('span');
+                badge.className = 'capability-badge';
+                badge.innerHTML = '<i class="bi bi-mic"></i> Voice';
+                capabilitiesContainer.appendChild(badge);
+            }
+        }
+    },
+    
+    /**
+     * Render conversation list
+     */
+    renderConversations(conversations, activeId = null) {
+        const container = document.getElementById('conversationList');
+        
+        if (conversations.length === 0) {
+            container.innerHTML = '<p class="text-muted small">No conversations yet</p>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        conversations.forEach(conv => {
+            const item = document.createElement('div');
+            item.className = 'conversation-item';
+            item.setAttribute('data-conversation-id', conv.id);
+            if (conv.id === activeId) {
+                item.classList.add('active');
+            }
+            
+            item.innerHTML = `
+                <div class="conversation-title">${this.escapeHtml(conv.title)}</div>
+                <div class="conversation-date">${this.formatDate(conv.updated_at)}</div>
+            `;
+            
+            item.addEventListener('click', () => {
+                window.App.selectConversation(conv.id);
+            });
+            
+            container.appendChild(item);
+        });
+    },
+    
+    /**
+     * Render thread tabs
+     */
+    renderThreads(threads, activeId = null) {
+        const container = document.getElementById('threadTabs');
+        container.innerHTML = '';
+        
+        threads.forEach(thread => {
+            const li = document.createElement('li');
+            li.className = 'nav-item';
+            
+            const link = document.createElement('a');
+            link.className = 'nav-link';
+            if (thread.id === activeId) {
+                link.classList.add('active');
+            }
+            link.href = '#';
+            link.textContent = thread.title;
+            
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                window.App.selectThread(thread.id);
+            });
+            
+            li.appendChild(link);
+            container.appendChild(li);
+        });
+    },
+    
+    /**
+     * Render messages
+     */
+    renderMessages(messages) {
+        const container = document.getElementById('messagesContainer');
+        
+        // Clear only message divs, not the empty state
+        const messageElements = container.querySelectorAll('.message');
+        messageElements.forEach(el => el.remove());
+        
+        // Show/hide empty state based on message count
+        this.showEmptyState(messages.length === 0);
+        
+        messages.forEach(msg => {
+            this.appendMessage(msg);
+        });
+        
+        this.scrollToBottom();
+    },
+    
+    /**
+     * Append a single message
+     * Phase 9: Enhanced to handle scene capture messages
+     */
+    appendMessage(message) {
+        const container = document.getElementById('messagesContainer');
+        
+        // Hide empty state when appending messages
+        this.showEmptyState(false);
+        
+        // Phase 9: For scene captures, only render the image, not the message bubble
+        if (message.role === 'scene_capture') {
+            // Only render if image generation completed successfully
+            if (message.metadata && message.metadata.image_id && message.metadata.status === 'completed') {
+                this.appendSceneCaptureImage(message);
+            }
+            return;
+        }
+        
+        const messageDiv = document.createElement('div');
+        // Add private-message class if message is private
+        const privateClass = message.is_private === 'true' ? ' private-message' : '';
+        messageDiv.className = `message ${message.role}-message${privateClass}`;
+        messageDiv.setAttribute('data-message-id', message.id);
+        
+        // Build message content
+        let contentHtml = '';
+        
+        // Phase 6: Add TTS audio player if audio exists
+        if (message.audio_url && message.role === 'assistant') {
+            contentHtml += `
+                <div class="audio-player-container mb-2" data-message-id="${message.id}">
+                    <audio controls preload="metadata" class="w-100 audio-player" data-message-id="${message.id}">
+                        <source src="${message.audio_url}" type="audio/wav">
+                        Your browser does not support audio playback.
+                    </audio>
+                </div>`;
+        } 
+        // Phase 6: Auto-generation enabled - no manual button needed
+        
+        // Add text content if present
+        const content = (message.content || '').trim();
+        if (content) {
+            const formattedContent = message.role === 'assistant' 
+                ? this.renderMarkdown(content)
+                : this.escapeHtml(content);
+            contentHtml += `<div class="message-content">${formattedContent}</div>`;
+        }
+        
+        // Add timestamp
+        contentHtml += `<div class="message-timestamp">${this.formatTime(message.created_at)}</div>`;
+        
+        messageDiv.innerHTML = contentHtml;
+        
+        // Highlight code blocks if present (for text content)
+        if (message.role === 'assistant' && content) {
+            setTimeout(() => {
+                messageDiv.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            }, 0);
+        }
+        
+        // Append the text message
+        container.appendChild(messageDiv);
+        
+        // Add image as a SEPARATE message bubble if metadata includes image_id
+        if (message.role === 'assistant' && message.metadata && message.metadata.image_id) {
+            const imageDiv = document.createElement('div');
+            imageDiv.className = 'message assistant-message image-only-message mt-3';
+            imageDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="generated-image-container">
+                        <img src="${message.metadata.thumbnail_path || message.metadata.image_path}" 
+                             alt="Generated image" 
+                             class="generated-image"
+                             loading="lazy">
+                        <div class="image-actions">
+                            <button class="btn btn-sm btn-outline-secondary" 
+                                    onclick="UI.viewInlineImage('${message.metadata.image_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', false)"
+                                    title="View full size">
+                                <i class="bi bi-arrows-fullscreen"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-warning" 
+                                    onclick="App.setAsProfileImage('${message.metadata.image_path}')"
+                                    title="Set as character profile">
+                                <i class="bi bi-person-circle"></i>
+                            </button>
+                            <a href="${message.metadata.image_path}" 
+                               download 
+                               class="btn btn-sm btn-outline-secondary"
+                               title="Download">
+                                <i class="bi bi-download"></i>
+                            </a>
+                            ${message.metadata.prompt ? `
+                            <button class="btn btn-sm btn-outline-secondary" 
+                                    onclick="UI.showImagePrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                    title="View prompt">
+                                <i class="bi bi-chat-left-text"></i>
+                            </button>
+                            ` : ''}
+                        </div>
+                        ${message.metadata.generation_time ? `
+                            <small class="text-muted d-block mt-2">
+                                Generated in ${message.metadata.generation_time.toFixed(1)}s
+                            </small>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+            container.appendChild(imageDiv);
+        }
+        
+        return messageDiv;
+    },
+    
+    /**
+     * Phase 9: Append scene capture image (no message bubble)
+     */
+    appendSceneCaptureImage(message) {
+        const container = document.getElementById('messagesContainer');
+        
+        const imageDiv = document.createElement('div');
+        imageDiv.className = 'message assistant-message image-only-message mt-3';
+        imageDiv.setAttribute('data-message-id', message.id);
+        
+        imageDiv.innerHTML = `
+            <div class="message-content">
+                <div class="generated-image-container">
+                    <img src="${message.metadata.thumbnail_path || message.metadata.image_path}" 
+                         alt="Scene capture" 
+                         class="generated-image"
+                         loading="lazy">
+                    <span class="badge bg-info scene-capture-badge">
+                        <i class="bi bi-camera-fill"></i> Scene Capture
+                    </span>
+                    <div class="image-actions">
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.viewInlineImage('${message.metadata.image_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', true)"
+                                title="View full size">
+                            <i class="bi bi-arrows-fullscreen"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-warning" 
+                                onclick="App.setAsProfileImage('${message.metadata.image_path}')"
+                                title="Set as character profile">
+                            <i class="bi bi-person-circle"></i>
+                        </button>
+                        <a href="${message.metadata.image_path}" 
+                           download 
+                           class="btn btn-sm btn-outline-secondary"
+                           title="Download">
+                            <i class="bi bi-download"></i>
+                        </a>
+                        ${message.metadata.prompt ? `
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.showImagePrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                title="View prompt">
+                            <i class="bi bi-chat-left-text"></i>
+                        </button>
+                        ` : ''}
+                    </div>
+                    ${message.metadata.generation_time ? `
+                        <small class="text-muted d-block mt-2">
+                            Generated in ${message.metadata.generation_time.toFixed(1)}s
+                        </small>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(imageDiv);
+    },
+    
+    /**
+     * Show typing indicator
+     */
+    showTypingIndicator() {
+        const container = document.getElementById('messagesContainer');
+        
+        const indicator = document.createElement('div');
+        indicator.className = 'message assistant-message';
+        indicator.id = 'typing-indicator';
+        indicator.innerHTML = `
+            <div class="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        `;
+        
+        container.appendChild(indicator);
+        this.scrollToBottom();
+    },
+    
+    /**
+     * Hide typing indicator
+     */
+    hideTypingIndicator() {
+        const indicator = document.getElementById('typing-indicator');
+        if (indicator) {
+            indicator.remove();
+        }
+    },
+    
+    /**
+     * Append a streaming message placeholder
+     */
+    appendStreamingMessage() {
+        const container = document.getElementById('messagesContainer');
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message assistant-message streaming';
+        messageDiv.id = 'streaming-message';
+        
+        messageDiv.innerHTML = `
+            <div class="message-content"></div>
+        `;
+        
+        container.appendChild(messageDiv);
+        this.scrollToBottom();
+        
+        return messageDiv;
+    },
+    
+    /**
+     * Update streaming message content
+     */
+    updateStreamingMessage(messageDiv, content) {
+        const contentDiv = messageDiv.querySelector('.message-content');
+        const renderedContent = this.renderMarkdown(content);
+        contentDiv.innerHTML = renderedContent;
+        
+        // Highlight code blocks
+        contentDiv.querySelectorAll('pre code').forEach((block) => {
+            hljs.highlightElement(block);
+        });
+        
+        this.scrollToBottom();
+    },
+    
+    /**
+     * Finalize streaming message
+     */
+    finalizeStreamingMessage(messageDiv) {
+        messageDiv.classList.remove('streaming');
+        messageDiv.id = '';
+        
+        // Add timestamp
+        const timestamp = document.createElement('div');
+        timestamp.className = 'message-timestamp';
+        timestamp.textContent = this.formatTime(new Date().toISOString());
+        messageDiv.appendChild(timestamp);
+    },
+    
+    /**
+     * Update conversation header
+     */
+    updateHeader(title, characterName) {
+        document.getElementById('conversationTitle').textContent = title;
+        document.getElementById('characterName').textContent = characterName;
+    },
+    
+    /**
+     * Show/hide empty state
+     */
+    showEmptyState(show) {
+        const emptyState = document.getElementById('emptyState');
+        if (emptyState) {
+            emptyState.style.display = show ? 'block' : 'none';
+        }
+    },
+    
+    /**
+     * Enable/disable input controls
+     */
+    setInputEnabled(enabled) {
+        document.getElementById('messageInput').disabled = !enabled;
+        document.getElementById('sendBtn').disabled = !enabled;
+        document.getElementById('actionsMenuBtn').disabled = !enabled;
+    },
+    
+    /**
+     * Scroll messages to bottom
+     */
+    scrollToBottom() {
+        const container = document.getElementById('messagesContainer');
+        container.scrollTop = container.scrollHeight;
+    },
+    
+    /**
+     * Format datetime for display
+     */
+    formatDate(dateString) {
+        const date = new Date(dateString);
+        const now = new Date();
+        const diff = now - date;
+        
+        // Less than 1 day
+        if (diff < 86400000) {
+            return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        }
+        
+        // Less than 7 days
+        if (diff < 604800000) {
+            return date.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+        }
+        
+        // Older
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    },
+    
+    /**
+     * Format timestamp with relative time and absolute tooltip
+     * Returns HTML string with tooltip
+     */
+    formatTimestamp(isoString) {
+        const date = new Date(isoString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        
+        // Relative time for display
+        let relative;
+        if (diffMins < 1) relative = 'Just now';
+        else if (diffMins < 60) relative = `${diffMins}m ago`;
+        else if (diffMins < 1440) relative = `${Math.floor(diffMins/60)}h ago`;
+        else if (diffMins < 10080) relative = `${Math.floor(diffMins/1440)}d ago`;
+        else relative = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        
+        // Absolute time for tooltip
+        const absolute = date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+        });
+        
+        return `<span title="${absolute}">${relative}</span>`;
+    },
+    
+    /**
+     * Format time for message timestamp
+     */
+    formatTime(dateString) {
+        // Use the new formatTimestamp function with relative time and tooltip
+        return this.formatTimestamp(dateString);
+    },
+    
+    /**
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    },
+    
+    /**
+     * Render markdown to HTML
+     */
+    renderMarkdown(text) {
+        // Clean up excessive newlines (more than 2 in a row)
+        text = text.replace(/\n{3,}/g, '\n\n');
+        
+        // Configure marked options
+        marked.setOptions({
+            breaks: false,  // Don't convert single \n to <br>
+            gfm: true,      // GitHub Flavored Markdown
+            headerIds: false,
+            mangle: false
+        });
+        
+        // Parse and return markdown as HTML
+        return marked.parse(text);
+    },
+    
+    /**
+     * Phase 5: Append image generation progress indicator
+     */
+    appendImageProgress() {
+        const container = document.getElementById('messagesContainer');
+        
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'message assistant-message mt-3';
+        progressDiv.innerHTML = `
+            <div class="message-content">
+                <div class="image-progress">
+                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
+                        <span class="visually-hidden">Generating...</span>
+                    </div>
+                    <span>Generating image...</span>
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(progressDiv);
+        this.scrollToBottom();
+        
+        return progressDiv;
+    },
+    
+    /**
+     * Phase 6: Handle generate audio button click
+     */
+    async handleGenerateAudio(messageId, button) {
+        if (!App.state.selectedConversationId) return;
+        
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Generating...';
+        
+        try {
+            const result = await API.generateMessageAudio(
+                App.state.selectedConversationId,
+                messageId
+            );
+            
+            this.showToast('Audio generated successfully', 'success');
+            
+            // Reload messages to show the new audio player
+            await App.loadMessages();
+            
+        } catch (error) {
+            console.error('Failed to generate audio:', error);
+            this.showToast(error.message || 'Failed to generate audio', 'error');
+            button.disabled = false;
+            button.innerHTML = originalHTML;
+        }
+    },
+    
+    /**
+     * Phase 6: Handle regenerate audio button click
+     */
+    async handleRegenerateAudio(messageId, button) {
+        if (!App.state.selectedConversationId) return;
+        
+        if (!confirm('Delete existing audio and generate new?')) return;
+        
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        
+        try {
+            // Delete existing audio
+            await API.deleteMessageAudio(
+                App.state.selectedConversationId,
+                messageId
+            );
+            
+            // Generate new audio
+            await API.generateMessageAudio(
+                App.state.selectedConversationId,
+                messageId
+            );
+            
+            this.showToast('Audio regenerated successfully', 'success');
+            
+            // Reload messages to show the new audio player
+            await App.loadMessages();
+            
+        } catch (error) {
+            console.error('Failed to regenerate audio:', error);
+            this.showToast(error.message || 'Failed to regenerate audio', 'error');
+            button.disabled = false;
+            button.innerHTML = originalHTML;
+        }
+    },
+    
+    /**
+     * Phase 6: Handle delete audio button click
+     */
+    async handleDeleteAudio(messageId, button) {
+        if (!App.state.selectedConversationId) return;
+        
+        if (!confirm('Delete this audio?')) return;
+        
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        
+        try {
+            await API.deleteMessageAudio(
+                App.state.selectedConversationId,
+                messageId
+            );
+            
+            this.showToast('Audio deleted', 'success');
+            
+            // Reload messages to remove the audio player
+            await App.loadMessages();
+            
+        } catch (error) {
+            console.error('Failed to delete audio:', error);
+            this.showToast(error.message || 'Failed to delete audio', 'error');
+            button.disabled = false;
+            button.innerHTML = originalHTML;
+        }
+    },
+    
+    /**
+     * Phase 5: Append generated image to chat
+     */
+    appendGeneratedImage(result) {
+        const container = document.getElementById('messagesContainer');
+        
+        const imageDiv = document.createElement('div');
+        imageDiv.className = 'message assistant-message image-only-message mt-3';
+        imageDiv.innerHTML = `
+            <div class="message-content">
+                <div class="generated-image-container">
+                    <img src="${result.thumbnail_path || result.file_path}" 
+                         alt="Generated image" 
+                         class="generated-image"
+                         loading="lazy">
+                    <div class="image-actions">
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.viewInlineImage('${result.file_path}', '${this.escapeHtml(result.prompt || '').replace(/'/g, '\\&apos;')}', false)"
+                                title="View full size">
+                            <i class="bi bi-arrows-fullscreen"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-warning" 
+                                onclick="App.setAsProfileImage('${result.file_path}')"
+                                title="Set as character profile">
+                            <i class="bi bi-person-circle"></i>
+                        </button>
+                        <a href="${result.file_path}" 
+                           download 
+                           class="btn btn-sm btn-outline-secondary"
+                           title="Download">
+                            <i class="bi bi-download"></i>
+                        </a>
+                        ${result.prompt ? `
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.showImagePrompt('${this.escapeHtml(result.prompt).replace(/'/g, '\\&apos;')}')"
+                                title="View prompt">
+                            <i class="bi bi-chat-left-text"></i>
+                        </button>
+                        ` : ''}
+                    </div>
+                    ${result.generation_time ? `
+                        <small class="text-muted d-block mt-2">
+                            Generated in ${result.generation_time.toFixed(1)}s
+                        </small>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(imageDiv);
+        
+        // Wait for image to load before scrolling
+        const img = imageDiv.querySelector('img');
+        if (img) {
+            img.onload = () => this.scrollToBottom();
+        }
+        // Fallback scroll in case image loads from cache
+        setTimeout(() => this.scrollToBottom(), 100);
+    },
+
+    showImagePrompt(prompt) {
+        // Decode HTML entities
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = prompt;
+        const decodedPrompt = textarea.value;
+        
+        // Show modal with prompt
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Image Generation Prompt</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-info mb-3">
+                            <i class="bi bi-info-circle me-2"></i>
+                            This is the AI-generated prompt that was used to create the image.
+                        </div>
+                        <div class="form-group">
+                            <textarea class="form-control" rows="10" readonly>${this.escapeHtml(decodedPrompt)}</textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(this.closest('.modal').querySelector('textarea').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy to Clipboard', 2000);">Copy to Clipboard</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // Remove modal from DOM when hidden
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    },
+    
+    /**
+     * View inline image in modal (same as gallery)
+     */
+    viewInlineImage(imagePath, prompt = '', isSceneCapture = false) {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content bg-dark text-white">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title">
+                            ${isSceneCapture ? '<i class="bi bi-camera-fill me-2"></i>Scene Capture' : '<i class="bi bi-image-fill me-2"></i>Generated Image'}
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body text-center">
+                        <img src="${imagePath}" class="img-fluid rounded" alt="Full image" style="max-height: 70vh;">
+                        ${prompt ? `<p class="modal-label mt-3 small"><strong>Prompt:</strong> ${prompt}</p>` : ''}
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-outline-warning btn-sm" onclick="App.setAsProfileImage('${imagePath}')">
+                            <i class="bi bi-person-circle me-1"></i> Set as Character Profile
+                        </button>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // Remove modal from DOM when hidden
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    }
+}

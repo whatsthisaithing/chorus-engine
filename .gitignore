@@ -1,0 +1,101 @@
+# .gitignore for Chorus Engine
+
+# Private development files (internal docs, test scripts, dev logs)
+Private/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.env
+
+# Embedded Python (portable installation)
+python_embeded/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data and runtime files - NO database or vector store data should ever be committed
+data/
+# Exception: Allow default character image
+!data/character_images/default.svg
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.log
+
+# Explicitly ignore all vector store data
+**/vector_store/
+**/vector_store_test/
+**/chroma/
+
+# Voice/TTS models and cloned repositories
+index-tts/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+# Exception: Allow addon LoRA files
+!addons/**/files/*.safetensors
+chroma.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User-specific configs (keep example configs)
+config/system_local.yaml
+
+# Character files - ignore all user-created characters, keep defaults only
+characters/*.yaml
+!characters/alex.yaml
+!characters/nova.yaml
+!characters/aria.yaml
+!characters/template.yaml
+
+# Workflow files - ignore all user-created workflows, keep example workflows only
+workflows/*/
+
+# Generated images
+conversations/
+
+# Inspect character reports (contains potentially sensitive character analysis)
+utilities/inspect_character/reports/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.bak
