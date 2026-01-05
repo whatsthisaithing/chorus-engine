@@ -244,12 +244,8 @@ Model choice and behavior are user decisions.
 
 Current focus:
 
-* Core data models
-* Prompt assembly engine
-* Memory system
-* Configuration & validation
-
-UI and visual generation are layered on top once the engine is solid.
+* Launch, support, troubleshooting
+* Document parsing/code execution for advanced technical assistants
 
 ---
 
