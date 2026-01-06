@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 class LLMConfig(BaseModel):
     """LLM backend configuration."""
     
-    provider: Literal["ollama", "lmstudio", "openai-compatible"] = "ollama"
+    provider: Literal["ollama", "lmstudio", "koboldcpp", "openai-compatible"] = "ollama"
     base_url: str = "http://localhost:11434"
     model: str = "mistral:7b-instruct"
     context_window: int = Field(default=8192, gt=0, le=128000)

@@ -1,17 +1,22 @@
 # System configuration for Chorus Engine
 # This file is optional - defaults will be used if not present
 
+# ===========================
+# LLM Provider Configuration
+# ===========================
+
+# Option 1: Ollama (multi-model, auto-loading)
 # llm:
 #   provider: ollama
 #   base_url: http://localhost:11434
 #   model: qwen2.5:14b-instruct
 #   context_window: 32768  # Qwen2.5 supports much larger context
-#   max_response_tokens: 2048
+#   max_response_tokens: 4096
 #   temperature: 0.7
 #   timeout_seconds: 120
-  
 #   unload_during_image_generation: true
 
+# Option 2: LM Studio (multi-model, JIT loading)
 llm:
   provider: lmstudio
   base_url: http://localhost:1234 #/v1
@@ -22,8 +27,22 @@ llm:
   max_response_tokens: 4096
   temperature: 0.7
   timeout_seconds: 120
-  
   unload_during_image_generation: true
+
+# Option 3: KoboldCpp (single-model, manual loading)
+# User must start KoboldCpp separately with:
+#   koboldcpp.exe --model path/to/model.gguf --port 5001 --contextsize 8192 --gpulayers 99
+# Note: All characters will use the same loaded model (preferred_llm_model ignored)
+# Note: Cannot unload for ComfyUI (VRAM shared between KoboldCpp and ComfyUI)
+# llm:
+#   provider: koboldcpp
+#   base_url: http://localhost:5001
+#   model: "qwen-14b"  # Label for logging (actual model loaded at KoboldCpp startup)
+#   context_window: 28672  # MUST match --contextsize flag in KoboldCpp startup
+#   max_response_tokens: 4096
+#   temperature: 0.7
+#   timeout_seconds: 120
+#   unload_during_image_generation: false  # Cannot unload KoboldCpp models dynamically
 
 memory:
   embedding_model: all-MiniLM-L6-v2

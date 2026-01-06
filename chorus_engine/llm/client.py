@@ -11,6 +11,13 @@ try:
 except ImportError:
     HAS_LMSTUDIO = False
 
+# Import KoboldCpp client
+try:
+    from .koboldcpp import KoboldCppLLMClient
+    HAS_KOBOLDCPP = True
+except ImportError:
+    HAS_KOBOLDCPP = False
+
 if TYPE_CHECKING:
     from chorus_engine.config.models import LLMConfig
 
@@ -56,16 +63,31 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             context_window=config.context_window,
         )
     
+    elif provider == "koboldcpp":
+        if not HAS_KOBOLDCPP:
+            raise NotImplementedError(
+                "KoboldCpp client not available. "
+                "Please ensure koboldcpp.py is present in the llm directory."
+            )
+        return KoboldCppLLMClient(
+            base_url=config.base_url,
+            model=config.model,
+            timeout=config.timeout_seconds,
+            temperature=config.temperature,
+            max_tokens=config.max_response_tokens,
+            context_window=config.context_window,
+        )
+    
     elif provider in ["openai-compatible", "llamacpp"]:
         raise NotImplementedError(
             f"Provider '{provider}' is not yet implemented. "
-            f"Currently supported: ollama, lmstudio (coming soon)"
+            f"Currently supported: ollama, lmstudio, koboldcpp"
         )
     
     else:
         raise ValueError(
             f"Unknown LLM provider: '{provider}'. "
-            f"Supported providers: ollama, lmstudio"
+            f"Supported providers: ollama, lmstudio, koboldcpp"
         )
 
 

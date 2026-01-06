@@ -209,6 +209,7 @@ Perfect for exploring what Chorus Engine can do! See `addons/nova-setup/README.m
 * **LLM Backend** (choose one):
   - [Ollama](https://ollama.com/) - Recommended for first time users
   - [LM Studio](https://lmstudio.ai/) - Highly recommended for more control and model choices
+  - [KoboldCpp](https://github.com/LostRuins/koboldcpp) - Lightweight, excellent CPU support
   
 * **Image Generation** (optional):
   - [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
@@ -232,7 +233,7 @@ Perfect for exploring what Chorus Engine can do! See `addons/nova-setup/README.m
    |         |          |          |
    v         v          v          v
 [ LLM ] [ ComfyUI ] [ Storage ] [ MCP / Local APIs ]
-(Ollama or LM Studio)
+(Ollama, LM Studio, or KoboldCpp)
 ```
 
 Key architectural traits:
