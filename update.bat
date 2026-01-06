@@ -8,7 +8,6 @@ echo.
 echo This script will:
 echo   1. Pull latest code from Git (if available)
 echo   2. Update Python dependencies
-echo   3. Run database migrations
 echo.
 echo ============================================================
 echo                    IMPORTANT WARNING
@@ -110,20 +109,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Running database migrations...
-%PYTHON_CMD% -c "from alembic.config import Config; from alembic import command; cfg = Config('alembic.ini'); command.upgrade(cfg, 'head')"
-if errorlevel 1 (
-    echo [WARNING] Database migration failed ^(may be okay if no migrations needed^)
-)
-
-echo.
 echo ============================================================
 echo Update Complete!
-echo ============================================================
+============================================================
 echo.
 echo Summary:
 echo - Dependencies updated from requirements.txt
-echo - Database migrations applied
+echo - Database migrations will run automatically on next start
 echo.
 echo You can now run start.bat to launch Chorus Engine
 echo.
