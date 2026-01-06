@@ -89,7 +89,7 @@ No guessing. No cross-model accidents.
   * 🌐 **Global** - System-wide access
 * **Smart Scope Selection** - UI automatically defaults based on context
 * **Semantic Search** - Find relevant document sections using vector similarity
-* **Citation Support** - Reference documents using `#doc:filename` notation
+* **Citation Support** - Reference documents using `#doc:filename` or `#doc:"filename with spaces.pdf"` notation
 * **Privacy First** - Perfect for analysts working on multiple client projects
 
 **Use Case**: Upload Client A's financial documents in one conversation, Client B's in another. No data leakage between conversations.

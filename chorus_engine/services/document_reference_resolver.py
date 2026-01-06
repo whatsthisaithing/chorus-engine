@@ -46,9 +46,12 @@ class DocumentReference:
 class DocumentReferenceResolver:
     """Service for resolving document references in user messages."""
     
-    # Pattern: #doc:filename.ext or #doc:filename.ext#page-5
+    # Pattern supports both:
+    # - #doc:filename.ext (no spaces)
+    # - #doc:"filename with spaces.ext" (quoted)
+    # - Both can have #page-5 suffix
     DOC_REFERENCE_PATTERN = re.compile(
-        r'#doc:([a-zA-Z0-9_\-\.]+?)(?:#page-(\d+))?(?:\s|$|[,\.!?])',
+        r'#doc:(?:"([^"]+?)"|([a-zA-Z0-9_\-\.]+?))(?:#page-(\d+))?(?:\s|$|[,\.!?])',
         re.IGNORECASE
     )
     
@@ -60,6 +63,11 @@ class DocumentReferenceResolver:
         """
         Find all document references in text.
         
+        Supports:
+        - #doc:filename.ext (no spaces)
+        - #doc:"filename with spaces.ext" (quoted)
+        - Both can have #page-5 suffix
+        
         Args:
             text: User message text
             
@@ -70,8 +78,9 @@ class DocumentReferenceResolver:
         
         for match in self.DOC_REFERENCE_PATTERN.finditer(text):
             raw_text = match.group(0).strip()
-            filename = match.group(1)
-            page_str = match.group(2)
+            # Group 1: quoted filename, Group 2: unquoted filename, Group 3: page number
+            filename = match.group(1) if match.group(1) else match.group(2)
+            page_str = match.group(3)
             page_number = int(page_str) if page_str else None
             
             ref = DocumentReference(
@@ -87,7 +96,8 @@ class DocumentReferenceResolver:
         self,
         text: str,
         db: Session,
-        character_id: Optional[str] = None
+        character_id: Optional[str] = None,
+        conversation_id: Optional[str] = None
     ) -> Tuple[List[DocumentReference], str]:
         """
         Find and resolve document references in text.
@@ -121,9 +131,11 @@ class DocumentReferenceResolver:
             matched_doc = None
             
             for doc in documents:
+                # Try matching filename (sanitized, stored in DB)
                 if doc.filename.lower() == ref.filename.lower():
                     matched_doc = doc
                     break
+                
                 # Also try matching without extension
                 if Path(doc.filename).stem.lower() == Path(ref.filename).stem.lower():
                     matched_doc = doc

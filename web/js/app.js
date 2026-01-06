@@ -327,6 +327,19 @@ window.App = {
         this.state.selectedCharacterId = characterId;
         this.state.currentCharacter = characterId;
         
+        // IMPORTANT: Reset conversation state when switching characters
+        // This prevents documents from being uploaded to wrong conversation
+        this.state.selectedConversationId = null;
+        this.state.selectedThreadId = null;
+        this.state.currentThread = null;
+        this.state.messages = [];
+        this.state.threads = [];
+        
+        // Clear all conversation UI components
+        UI.renderMessages([]);  // Clear messages properly
+        UI.renderThreads([], null);  // Clear thread tabs
+        UI.updateHeader('No conversation selected', '');  // Clear header
+        
         // Enable memory and workflow buttons
         document.getElementById('memoryPanelBtn').disabled = false;
         document.getElementById('manageWorkflowsBtn').disabled = false;

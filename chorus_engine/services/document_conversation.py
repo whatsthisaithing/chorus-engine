@@ -213,8 +213,9 @@ class DocumentConversationService:
             for i in range(len(chunk_ids)):
                 relevance_score = 1.0 - distances[i]
                 
-                # Only include chunks with reasonable relevance (>0.5)
-                if relevance_score > 0.5:
+                # Include chunks with reasonable relevance (lowered threshold for document queries)
+                # Note: 0.3 threshold allows broader retrieval when user asks about documents
+                if relevance_score > 0.3:
                     doc_context.add_chunk(
                         content=texts[i],
                         document_id=metadatas[i].get("document_id"),

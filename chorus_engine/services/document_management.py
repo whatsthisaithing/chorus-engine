@@ -107,6 +107,9 @@ class DocumentManagementService:
         file_size = file_path.stat().st_size
         file_type = file_path.suffix.lstrip('.').lower()
         
+        # Sanitize filename (adds timestamp prefix, removes spaces/special chars)
+        sanitized_filename = self._sanitize_filename(file_path.name)
+        
         # Extract metadata from loaded document
         doc_metadata = metadata or {}
         doc_metadata.update(loaded_doc.metadata)
@@ -120,7 +123,7 @@ class DocumentManagementService:
         
         # Create database record with scope
         document = repo.create_document(
-            filename=file_path.name,
+            filename=sanitized_filename,
             storage_key=storage_key,
             file_type=file_type,
             file_size_bytes=file_size,
@@ -436,6 +439,45 @@ class DocumentManagementService:
         """
         repo = DocumentRepository(db)
         return repo.get_document(document_id)
+    
+    def _sanitize_filename(self, original_filename: str) -> str:
+        """
+        Sanitize filename to prevent issues with special characters and duplicates.
+        
+        Adds timestamp prefix and cleans special characters while preserving readability.
+        Example: "My Document.pdf" -> "20260105-143022-My_Document.pdf"
+        
+        Args:
+            original_filename: Original filename with extension
+            
+        Returns:
+            Sanitized filename with timestamp prefix
+        """
+        import re
+        
+        # Split name and extension
+        name_parts = original_filename.rsplit('.', 1)
+        name = name_parts[0]
+        ext = f".{name_parts[1]}" if len(name_parts) > 1 else ""
+        
+        # Replace spaces with underscores
+        name = name.replace(' ', '_')
+        
+        # Remove or replace problematic characters (keep alphanumeric, underscore, hyphen, period)
+        name = re.sub(r'[^a-zA-Z0-9_\-.]', '', name)
+        
+        # Truncate if too long (keep reasonable length)
+        max_name_length = 100
+        if len(name) > max_name_length:
+            name = name[:max_name_length]
+        
+        # Generate timestamp prefix
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        
+        # Combine: timestamp-cleanedname.ext
+        sanitized = f"{timestamp}-{name}{ext}"
+        
+        return sanitized
     
     def _generate_storage_key(self, file_path: Path) -> str:
         """
