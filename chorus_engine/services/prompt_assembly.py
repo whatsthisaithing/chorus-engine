@@ -65,9 +65,10 @@ class PromptAssemblyService:
         character_id: str,
         model_name: str = "Qwen/Qwen2.5-14B-Instruct",
         context_window: int = 32768,
-        memory_budget_ratio: float = 0.30,
-        history_budget_ratio: float = 0.40,
-        reserve_ratio: float = 0.30,
+        memory_budget_ratio: float = 0.20,
+        history_budget_ratio: float = 0.50,
+        document_budget_ratio: float = 0.15,
+        reserve_ratio: float = 0.15,
     ):
         """
         Initialize prompt assembly service.
@@ -79,6 +80,7 @@ class PromptAssemblyService:
             context_window: Total context window size in tokens
             memory_budget_ratio: Portion of context for memories (0-1)
             history_budget_ratio: Portion of context for history (0-1)
+            document_budget_ratio: Portion of context for document chunks (0-1)
             reserve_ratio: Portion reserved for generation (0-1)
         """
         self.db = db
@@ -89,10 +91,11 @@ class PromptAssemblyService:
         # Budget ratios
         self.memory_budget_ratio = memory_budget_ratio
         self.history_budget_ratio = history_budget_ratio
+        self.document_budget_ratio = document_budget_ratio
         self.reserve_ratio = reserve_ratio
         
         # Validate ratios sum to ~1.0
-        total_ratio = memory_budget_ratio + history_budget_ratio + reserve_ratio
+        total_ratio = memory_budget_ratio + history_budget_ratio + document_budget_ratio + reserve_ratio
         if not (0.95 <= total_ratio <= 1.05):
             raise ValueError(
                 f"Budget ratios must sum to ~1.0, got {total_ratio:.2f}"
@@ -136,6 +139,19 @@ class PromptAssemblyService:
             )
         return self._memory_service
     
+    def get_document_token_budget(self) -> int:
+        """
+        Calculate available token budget for document chunks.
+        
+        Returns:
+            Number of tokens available for document content
+        """
+        # Rough estimate of system prompt size (will be refined during actual assembly)
+        estimated_system_tokens = 1000  # Conservative estimate
+        available_tokens = self.context_window - estimated_system_tokens
+        document_budget = int(available_tokens * self.document_budget_ratio)
+        return document_budget
+    
     def assemble_prompt(
         self,
         thread_id: int,
@@ -143,6 +159,7 @@ class PromptAssemblyService:
         memory_query: Optional[str] = None,
         max_history_messages: int = 50,
         image_prompt_context: Optional[str] = None,
+        document_context: Optional[Any] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -154,6 +171,7 @@ class PromptAssemblyService:
                          (defaults to last user message)
             max_history_messages: Maximum number of history messages to consider
             image_prompt_context: Optional image prompt being generated (so character can reference it)
+            document_context: Optional DocumentContext with retrieved document chunks
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -187,16 +205,41 @@ class PromptAssemblyService:
         if image_prompt_context:
             system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, composition, and mood described in the prompt. If the prompt shows you painting, say you're sharing a photo of yourself painting. If it shows a landscape, describe that landscape. Stay faithful to what's actually in the image prompt.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Simply describe what you're capturing based on the prompt above."
         
-        # Count system prompt tokens
-        system_tokens = self.token_counter.count_tokens(system_prompt)
+        # Count base system prompt tokens (before document injection)
+        base_system_tokens = self.token_counter.count_tokens(system_prompt)
         
-        # Calculate available budget after system prompt
-        available_tokens = self.context_window - system_tokens
+        # If document context is provided, add it to the system prompt
+        document_tokens = 0
+        if document_context:
+            try:
+                doc_injection = document_context.format_context_injection()
+                if doc_injection:
+                    system_prompt += doc_injection
+                    document_tokens = self.token_counter.count_tokens(doc_injection)
+                    logger.info(f"Added document context: {len(document_context.chunks)} chunks ({document_tokens} tokens)")
+            except Exception as e:
+                logger.error(f"Error injecting document context: {e}", exc_info=True)
+                # Continue without document context if injection fails
+        
+        # Calculate total system tokens
+        system_tokens = base_system_tokens + document_tokens
+        
+        # Calculate available budget after system prompt AND documents
+        # Document tokens are pre-allocated (document_budget_ratio), so exclude them from "available" space
+        # This prevents document usage from reducing memory/history budgets
+        available_tokens = self.context_window - base_system_tokens - document_tokens
         
         # Allocate budgets
         memory_budget = int(available_tokens * self.memory_budget_ratio)
         history_budget = int(available_tokens * self.history_budget_ratio)
+        document_budget = int(available_tokens * self.document_budget_ratio)
         reserve_budget = int(available_tokens * self.reserve_ratio)
+        
+        logger.debug(
+            f"Token budgets - Available: {available_tokens}, "
+            f"Memory: {memory_budget}, History: {history_budget}, "
+            f"Document: {document_budget}, Reserve: {reserve_budget}"
+        )
         
         # Determine memory query (use last user message if not provided)
         if memory_query is None and messages:
@@ -266,6 +309,7 @@ class PromptAssemblyService:
         include_memories: bool = True,
         memory_query: Optional[str] = None,
         image_prompt_context: Optional[str] = None,
+        document_context: Optional[Any] = None,
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -280,6 +324,7 @@ class PromptAssemblyService:
             memory_query: Optional query for memory retrieval 
                          (defaults to last user message)
             image_prompt_context: Optional image prompt being generated
+            document_context: Optional document context to inject
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -309,7 +354,8 @@ class PromptAssemblyService:
                 thread_id=thread_id,
                 include_memories=include_memories,
                 memory_query=memory_query,
-                image_prompt_context=image_prompt_context
+                image_prompt_context=image_prompt_context,
+                document_context=document_context
             )
         
         # Long conversation - apply selective preservation
@@ -326,11 +372,24 @@ class PromptAssemblyService:
         if image_prompt_context:
             system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, composition, and mood described in the prompt. If the prompt shows you painting, say you're sharing a photo of yourself painting. If it shows a landscape, describe that landscape. Stay faithful to what's actually in the image prompt.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos - simply describe what you're capturing based on the prompt above."
         
-        # Count system prompt tokens
-        system_tokens = self.token_counter.count_tokens(system_prompt)
+        # Count base system prompt tokens (before document injection)
+        base_system_tokens = self.token_counter.count_tokens(system_prompt)
         
-        # Calculate available budget
-        available_tokens = self.context_window - system_tokens
+        # If document context is provided, add it to the system prompt
+        document_tokens = 0
+        if document_context:
+            try:
+                doc_injection = document_context.format_context_injection()
+                if doc_injection:
+                    system_prompt += doc_injection
+                    document_tokens = self.token_counter.count_tokens(doc_injection)
+                    logger.info(f"Added document context: {len(document_context.chunks)} chunks ({document_tokens} tokens)")
+            except Exception as e:
+                logger.error(f"Error injecting document context: {e}", exc_info=True)
+        
+        # Calculate available budget after system prompt AND documents
+        # Document tokens are pre-allocated, so exclude them from "available" space
+        available_tokens = self.context_window - base_system_tokens - document_tokens
         memory_budget = int(available_tokens * self.memory_budget_ratio)
         history_budget = int(available_tokens * self.history_budget_ratio)
         reserve_budget = int(available_tokens * self.reserve_ratio)

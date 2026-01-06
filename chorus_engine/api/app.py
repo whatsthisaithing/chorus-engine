@@ -48,6 +48,11 @@ from chorus_engine.repositories.image_repository import ImageRepository
 
 # Phase 6 imports
 from chorus_engine.services.audio_generation_orchestrator import AudioGenerationOrchestrator
+
+# Phase 1 imports (Document Analysis)
+from chorus_engine.services.document_management import DocumentManagementService
+from chorus_engine.services.document_chunking import ChunkMethod
+from chorus_engine.repositories.document_repository import DocumentRepository
 from chorus_engine.services.audio_preprocessing import AudioPreprocessingService
 from chorus_engine.services.audio_storage import AudioStorageService
 from chorus_engine.repositories.voice_sample_repository import VoiceSampleRepository
@@ -110,6 +115,7 @@ app_state = {
     "audio_orchestrator": None,  # Phase 6
     "intent_detection_service": None,  # Phase 7
     "analysis_service": None,  # Phase 8
+    "document_manager": None,  # Phase 1: Document analysis
 }
 
 
@@ -122,9 +128,11 @@ async def lifespan(app: FastAPI):
     # Logging is already configured by main.py - no need to reconfigure here
     
     try:
-        # Initialize database
-        init_db()
-        logger.info("✓ Database initialized")
+        # Initialize database with migrations
+        from chorus_engine.db.migrations import ensure_database_ready
+        from chorus_engine.db.database import DATABASE_URL
+        ensure_database_ready(DATABASE_URL)
+        logger.info("✓ Database initialized with migrations")
         
         # Load configuration
         loader = ConfigLoader()
@@ -323,6 +331,11 @@ async def lifespan(app: FastAPI):
         app_state["audio_storage"] = audio_storage
         app_state["analysis_service"] = analysis_service  # Phase 8
         app_state["db_session"] = db_session  # Store for cleanup on shutdown
+        
+        # Initialize document management service (Phase 1)
+        document_manager = DocumentManagementService()
+        app_state["document_manager"] = document_manager
+        logger.info("✓ Document management service initialized")
         
         # Initialize title generation service
         from chorus_engine.services.title_generation import TitleGenerationService
@@ -829,6 +842,16 @@ async def list_characters():
                     "image_generation": char.image_generation.enabled if char.image_generation else False,
                     "audio_generation": char.voice is not None,
                 },
+                "document_analysis": {
+                    "enabled": char.document_analysis.enabled if char.document_analysis else False,
+                    "max_documents": char.document_analysis.max_documents if char.document_analysis else None,
+                    "allowed_document_types": char.document_analysis.allowed_document_types if char.document_analysis else None,
+                } if char.document_analysis else None,
+                "code_execution": {
+                    "enabled": char.code_execution.enabled if char.code_execution else False,
+                    "max_execution_time": char.code_execution.max_execution_time if char.code_execution else None,
+                    "allowed_libraries": char.code_execution.allowed_libraries if char.code_execution else None,
+                } if char.code_execution else None,
             }
             for char in characters.values()
         ]
@@ -2303,12 +2326,68 @@ async def send_message(
             detail=f"LLM not available at {app_state['system_config'].llm.base_url}"
         )
     
+    # Phase 1: Process document references and retrieve relevant context
+    # Only if character has document_analysis enabled
+    document_manager = app_state.get("document_manager")
+    doc_conversation_service = None
+    doc_context = None
+    processed_message = request.message
+    
+    if document_manager and character.document_analysis.enabled:
+        from chorus_engine.services.document_conversation import DocumentConversationService
+        from chorus_engine.services.document_reference_resolver import DocumentReferenceResolver
+        
+        doc_conversation_service = DocumentConversationService(
+            vector_store=document_manager.vector_store,
+            reference_resolver=DocumentReferenceResolver()
+        )
+        
+        # Get document analysis config
+        doc_config = app_state["system_config"].document_analysis
+        
+        # Calculate token budget for documents (character override if specified)
+        context_window = app_state["system_config"].llm.context_window
+        doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
+        estimated_system_tokens = 1000  # Conservative estimate
+        available_tokens = context_window - estimated_system_tokens
+        max_document_tokens = int(available_tokens * doc_budget_ratio)
+        
+        # Fallback to chunk-based limit if configured
+        max_chunks = getattr(character.document_analysis, 'max_chunks', doc_config.default_max_chunks)
+        if max_chunks > doc_config.max_chunks_cap:
+            max_chunks = doc_config.max_chunks_cap
+        
+        # Calculate max chunks from token budget
+        chunk_token_estimate = doc_config.chunk_token_estimate
+        calculated_max_chunks = max_document_tokens // chunk_token_estimate
+        
+        # Use the more conservative limit
+        final_max_chunks = min(max_chunks, calculated_max_chunks, doc_config.max_chunks_cap)
+        
+        logger.info(
+            f"Document retrieval budget - Token budget: {max_document_tokens}, "
+            f"Calculated chunks: {calculated_max_chunks}, Config max: {max_chunks}, "
+            f"Final: {final_max_chunks}"
+        )
+        
+        # Process message for document references and questions
+        processed_message, doc_context = doc_conversation_service.process_user_message(
+            user_message=request.message,
+            db=db,
+            conversation_id=conversation.id,
+            character_id=character.id,
+            n_results=final_max_chunks
+        )
+        
+        if doc_context and doc_context.has_content():
+            logger.info(f"Document context: {len(doc_context.chunks)} chunks from {len(doc_context.citations)} documents")
+    
     # Save user message (capture privacy status at send time)
     msg_repo = MessageRepository(db)
     user_message = msg_repo.create(
         thread_id=thread_id,
         role=MessageRole.USER,
-        content=request.message,
+        content=processed_message,  # Use processed message with resolved references
         is_private=(conversation.is_private == "true")
     )
     
@@ -2478,11 +2557,16 @@ async def send_message(
         # Assemble prompt with memories (Phase 4.1)
         from chorus_engine.services.prompt_assembly import PromptAssemblyService
         
+        # Get document budget ratio (character override or system default)
+        doc_config = app_state["system_config"].document_analysis
+        doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
+        
         prompt_assembler = PromptAssemblyService(
             db=db,
             character_id=character_id,
             model_name=app_state["system_config"].llm.model,
-            context_window=32768
+            context_window=app_state["system_config"].llm.context_window,
+            document_budget_ratio=doc_budget_ratio
         )
         
         # If an image is being generated, pass the prompt to the character so they can reference it
@@ -2491,7 +2575,8 @@ async def send_message(
         prompt_components = prompt_assembler.assemble_prompt(
             thread_id=thread_id,
             include_memories=True,  # Enable memory retrieval
-            image_prompt_context=image_context
+            image_prompt_context=image_context,
+            document_context=doc_context if doc_context and doc_context.has_content() else None
         )
         
         # Format for LLM API (includes memories in system prompt)
@@ -2529,11 +2614,20 @@ async def send_message(
             model=model
         )
         
+        # Phase 1: Append citations to response if document context was used
+        response_content = response.content
+        if doc_conversation_service and doc_context and doc_context.has_content():
+            response_content = doc_conversation_service.append_citations_to_response(
+                response_content,
+                doc_context
+            )
+            logger.info(f"Appended {len(doc_context.citations)} citations to response")
+        
         # Save assistant message
         assistant_message = msg_repo.create(
             thread_id=thread_id,
             role=MessageRole.ASSISTANT,
-            content=response.content,
+            content=response_content,  # Use response with citations
             metadata={
                 "model": app_state["system_config"].llm.model,
                 "character": character.name
@@ -2746,12 +2840,68 @@ async def send_message_stream(
             detail=f"LLM not available at {app_state['system_config'].llm.base_url}"
         )
     
+    # Phase 1: Process document references and retrieve relevant context
+    # Only if character has document_analysis enabled
+    document_manager = app_state.get("document_manager")
+    doc_conversation_service = None
+    doc_context = None
+    processed_message = request.message
+    
+    if document_manager and character.document_analysis.enabled:
+        from chorus_engine.services.document_conversation import DocumentConversationService
+        from chorus_engine.services.document_reference_resolver import DocumentReferenceResolver
+        
+        doc_conversation_service = DocumentConversationService(
+            vector_store=document_manager.vector_store,
+            reference_resolver=DocumentReferenceResolver()
+        )
+        
+        # Get document analysis config
+        doc_config = app_state["system_config"].document_analysis
+        
+        # Calculate token budget for documents (character override if specified)
+        context_window = app_state["system_config"].llm.context_window
+        doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
+        estimated_system_tokens = 1000  # Conservative estimate
+        available_tokens = context_window - estimated_system_tokens
+        max_document_tokens = int(available_tokens * doc_budget_ratio)
+        
+        # Fallback to chunk-based limit if configured
+        max_chunks = getattr(character.document_analysis, 'max_chunks', doc_config.default_max_chunks)
+        if max_chunks > doc_config.max_chunks_cap:
+            max_chunks = doc_config.max_chunks_cap
+        
+        # Calculate max chunks from token budget
+        chunk_token_estimate = doc_config.chunk_token_estimate
+        calculated_max_chunks = max_document_tokens // chunk_token_estimate
+        
+        # Use the more conservative limit
+        final_max_chunks = min(max_chunks, calculated_max_chunks, doc_config.max_chunks_cap)
+        
+        logger.info(
+            f"Document retrieval budget (stream) - Token budget: {max_document_tokens}, "
+            f"Calculated chunks: {calculated_max_chunks}, Config max: {max_chunks}, "
+            f"Final: {final_max_chunks}"
+        )
+        
+        # Process message for document references and questions
+        processed_message, doc_context = doc_conversation_service.process_user_message(
+            user_message=request.message,
+            db=db,
+            conversation_id=conversation.id,
+            character_id=character.id,
+            n_results=final_max_chunks
+        )
+        
+        if doc_context and doc_context.has_content():
+            logger.info(f"Document context (stream): {len(doc_context.chunks)} chunks from {len(doc_context.citations)} documents")
+    
     # Save user message (capture privacy status at send time)
     msg_repo = MessageRepository(db)
     user_message = msg_repo.create(
         thread_id=thread_id,
         role=MessageRole.USER,
-        content=request.message,
+        content=processed_message,  # Use processed message with resolved references
         is_private=(conversation.is_private == "true")
     )
     
@@ -2845,11 +2995,16 @@ async def send_message_stream(
     
     # Use PromptAssemblyService for memory-aware prompt building
     try:
+        # Get document budget ratio (character override or system default)
+        doc_config = app_state["system_config"].document_analysis
+        doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
+        
         assembler = PromptAssemblyService(
             db=db,
             character_id=character_id,
             model_name=app_state["system_config"].llm.model,
-            context_window=32768,  # TODO: Make configurable
+            context_window=app_state["system_config"].llm.context_window,
+            document_budget_ratio=doc_budget_ratio
         )
         
         # If an image is being generated, pass the prompt to the character so they can reference it
@@ -2859,7 +3014,8 @@ async def send_message_stream(
         components = assembler.assemble_prompt(
             thread_id=thread_id,
             include_memories=True,
-            image_prompt_context=image_context
+            image_prompt_context=image_context,
+            document_context=doc_context if doc_context and doc_context.has_content() else None
         )
         
         # Format for LLM API
@@ -2868,7 +3024,7 @@ async def send_message_stream(
         logger.info(f"Assembled prompt: {components.token_breakdown['total_used']} tokens (system: {components.token_breakdown['system']}, memories: {components.token_breakdown['memories']}, history: {components.token_breakdown['history']})")
         
     except Exception as e:
-        logger.warning(f"Could not use memory-aware assembly, falling back to simple history: {e}")
+        logger.error(f"Could not use memory-aware assembly, falling back to simple history: {e}", exc_info=True)
         # Fallback to simple history if memory system fails
         history = msg_repo.get_thread_history(thread_id)
         messages = [{"role": "system", "content": character.system_prompt}] + history
@@ -2922,6 +3078,16 @@ async def send_message_stream(
                 
                 full_content += chunk
                 yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+            
+            # Phase 1: Append citations to response if document context was used
+            if doc_conversation_service and doc_context and doc_context.has_content():
+                citations = doc_conversation_service.append_citations_to_response(full_content, doc_context)
+                # Extract just the citation part (after the newlines)
+                citation_text = citations[len(full_content):]
+                if citation_text:
+                    full_content = citations
+                    yield f"data: {json.dumps({'type': 'content', 'content': citation_text})}\n\n"
+                    logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
             
             # Log the full interaction to debug file
             log_llm_call(
@@ -5335,6 +5501,424 @@ async def reset_databases(
     except Exception as e:
         logger.error(f"Error resetting databases: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to reset databases: {str(e)}")
+
+
+# ============================================================================
+# DOCUMENT ANALYSIS ENDPOINTS (Phase 1)
+# ============================================================================
+
+class DocumentUploadResponse(BaseModel):
+    """Response for document upload."""
+    success: bool
+    document_id: Optional[int] = None
+    filename: str
+    title: str
+    chunk_count: int
+    processing_status: str
+    error: Optional[str] = None
+
+
+class DocumentListResponse(BaseModel):
+    """Response for document list."""
+    id: int
+    filename: str
+    title: str
+    file_type: str
+    file_size_bytes: int
+    chunk_count: int
+    processing_status: str
+    document_scope: str
+    uploaded_at: str
+    last_accessed: Optional[str] = None
+
+
+class DocumentSearchResult(BaseModel):
+    """Search result for document chunks."""
+    chunk_id: str
+    content: str
+    relevance_score: float
+    document_id: int
+    document_title: str
+    chunk_index: int
+    page_numbers: Optional[str] = None
+
+
+@app.get("/documents/autocomplete")
+def autocomplete_documents(
+    query: str = Query(..., description="Partial filename to search for"),
+    character_id: Optional[str] = Query(None, description="Character ID for scoped access"),
+    limit: int = Query(10, description="Maximum suggestions to return"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get autocomplete suggestions for document references.
+    Returns documents matching the partial filename.
+    """
+    try:
+        from chorus_engine.services.document_reference_resolver import DocumentReferenceResolver
+        
+        reference_resolver = DocumentReferenceResolver()
+        suggestions = reference_resolver.get_autocomplete_suggestions(
+            partial_filename=query,
+            db=db,
+            character_id=character_id,
+            limit=limit
+        )
+        return suggestions
+    except Exception as e:
+        logger.error(f"Error getting autocomplete suggestions: {e}")
+        return []
+
+
+@app.post("/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    chunk_method: str = Form("semantic"),
+    character_id: Optional[str] = Form(None),
+    conversation_id: Optional[str] = Form(None),
+    document_scope: str = Form("conversation"),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload and process a document with conversation-level scoping (Phase 9).
+    
+    Supports: PDF, CSV, Excel (XLSX), TXT, DOCX, Markdown
+    
+    Args:
+        file: Document file to upload
+        title: Optional document title
+        description: Optional document description
+        chunk_method: Chunking strategy (semantic, fixed_size, paragraph)
+        character_id: Character who owns document
+        conversation_id: Conversation scope (required for conversation scope)
+        document_scope: Scope level ('conversation', 'character', 'global')
+        
+    Returns:
+        DocumentUploadResponse with upload status
+        
+    Privacy:
+        - Default scope is 'conversation' for highest privacy
+        - Documents are isolated to specific conversations by default
+        - Use 'character' scope to share across all conversations with character
+        - Use 'global' scope to share system-wide (admin only)
+    """
+    document_manager = app_state["document_manager"]
+    
+    if not document_manager:
+        raise HTTPException(status_code=500, detail="Document manager not initialized")
+    
+    # Validate chunk method
+    try:
+        chunk_method_enum = ChunkMethod(chunk_method.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid chunk_method. Must be one of: {', '.join(m.value for m in ChunkMethod)}"
+        )
+    
+    # Validate scope
+    if document_scope not in ["conversation", "character", "global"]:
+        raise HTTPException(
+            status_code=400,
+            detail="document_scope must be 'conversation', 'character', or 'global'"
+        )
+    
+    # Validate scope requirements
+    if document_scope == "conversation" and not conversation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id required for conversation-scoped documents"
+        )
+    
+    if document_scope == "character" and not character_id:
+        raise HTTPException(
+            status_code=400,
+            detail="character_id required for character-scoped documents"
+        )
+    
+    # Log scope warning for non-conversation uploads
+    if document_scope != "conversation":
+        logger.warning(
+            f"Document '{file.filename}' uploaded with {document_scope} scope - "
+            f"will be accessible beyond conversation {conversation_id}"
+        )
+    
+    # Save uploaded file temporarily with original filename
+    import tempfile
+    import os
+    temp_dir = tempfile.mkdtemp()
+    original_filename = file.filename
+    tmp_path = os.path.join(temp_dir, original_filename)
+    
+    content = await file.read()
+    with open(tmp_path, 'wb') as f:
+        f.write(content)
+    
+    try:
+        # Upload and process document
+        document = document_manager.upload_document(
+            db=db,
+            file_path=tmp_path,
+            title=title,
+            description=description,
+            chunk_method=chunk_method_enum,
+            character_id=character_id,
+            conversation_id=conversation_id,
+            document_scope=document_scope
+        )
+        
+        logger.info(f"Document uploaded: {document.id} ({document.filename})")
+        
+        return DocumentUploadResponse(
+            success=True,
+            document_id=document.id,
+            filename=document.filename,
+            title=document.title,
+            chunk_count=document.chunk_count,
+            processing_status=document.processing_status
+        )
+        
+    except ValueError as e:
+        logger.warning(f"Invalid document upload: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}", exc_info=True)
+        return DocumentUploadResponse(
+            success=False,
+            filename=file.filename,
+            title=title or file.filename,
+            chunk_count=0,
+            processing_status="failed",
+            error=str(e)
+        )
+    finally:
+        # Clean up temporary file
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+@app.get("/documents", response_model=List[DocumentListResponse])
+def list_documents(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    file_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    character_id: Optional[str] = Query(None),
+    conversation_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    List documents with optional filtering (Phase 9: scope-aware).
+    
+    **Document Privacy Model:**
+    Documents are filtered based on their scope and the current conversation context:
+    - conversation scope: Only visible in the specific conversation where uploaded
+    - character scope: Visible in all conversations with that character
+    - global scope: Visible system-wide
+    
+    Query parameters:
+    - limit: Maximum documents to return
+    - offset: Number to skip for pagination
+    - file_type: Filter by file type (pdf, csv, txt, etc.)
+    - status: Filter by processing status (pending, processing, completed, failed)
+    - character_id: Filter by character (required for scope filtering)
+    - conversation_id: Current conversation (required for viewing conversation-scoped documents)
+    """
+    document_manager = app_state["document_manager"]
+    
+    if not document_manager:
+        raise HTTPException(status_code=500, detail="Document manager not initialized")
+    
+    documents = document_manager.list_documents(
+        db=db,
+        limit=limit,
+        offset=offset,
+        file_type=file_type,
+        status=status,
+        character_id=character_id,
+        conversation_id=conversation_id
+    )
+    
+    # Convert Document objects to response format
+    return [
+        DocumentListResponse(
+            id=doc.id,
+            filename=doc.filename,
+            title=doc.title,
+            file_type=doc.file_type,
+            file_size_bytes=doc.file_size_bytes,
+            chunk_count=doc.chunk_count,
+            document_scope=doc.document_scope,
+            processing_status=doc.processing_status,
+            uploaded_at=doc.uploaded_at.isoformat(),
+            last_accessed=doc.last_accessed.isoformat() if doc.last_accessed else None
+        )
+        for doc in documents
+    ]
+
+
+# Specific routes MUST come before path parameter routes
+@app.get("/documents/stats")
+def get_document_stats(db: Session = Depends(get_db)):
+    """Get document library statistics."""
+    try:
+        document_manager = app_state.get("document_manager")
+        
+        if not document_manager:
+            # Return empty stats if document manager not initialized
+            return {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "total_storage_bytes": 0,
+                "avg_chunks_per_document": 0.0,
+                "status_breakdown": {},
+                "type_breakdown": {},
+                "vector_store": {}
+            }
+        
+        # Get vector store stats
+        try:
+            vector_stats = document_manager.get_vector_store_stats()
+            # Ensure it's a dict and JSON-serializable
+            if not isinstance(vector_stats, dict):
+                vector_stats = {}
+        except Exception as e:
+            logger.warning(f"Failed to get vector store stats: {e}")
+            vector_stats = {}
+        
+        # Get database stats
+        repo = DocumentRepository(db)
+        all_docs = repo.list_documents(limit=10000)
+        
+        status_counts = {}
+        type_counts = {}
+        total_chunks = 0
+        total_storage = 0
+        
+        for doc in all_docs:
+            status_counts[doc.processing_status] = status_counts.get(doc.processing_status, 0) + 1
+            type_counts[doc.file_type] = type_counts.get(doc.file_type, 0) + 1
+            total_chunks += doc.chunk_count or 0
+            total_storage += doc.file_size_bytes or 0
+        
+        avg_chunks = float(total_chunks) / float(len(all_docs)) if all_docs else 0.0
+        
+        return {
+            "total_documents": len(all_docs),
+            "total_chunks": total_chunks,
+            "total_storage_bytes": total_storage,
+            "avg_chunks_per_document": round(avg_chunks, 1),
+            "status_breakdown": status_counts,
+            "type_breakdown": type_counts,
+            "vector_store": vector_stats
+        }
+    except Exception as e:
+        logger.error(f"Error getting document stats: {e}")
+        # Return valid empty stats on any error
+        return {
+            "total_documents": 0,
+            "total_chunks": 0,
+            "total_storage_bytes": 0,
+            "avg_chunks_per_document": 0.0,
+            "status_breakdown": {},
+            "type_breakdown": {},
+            "vector_store": {}
+        }
+
+
+@app.post("/documents/search", response_model=List[DocumentSearchResult])
+def search_documents(
+    query: str = Form(...),
+    n_results: int = Form(5),
+    document_id: Optional[int] = Form(None),
+    character_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Search for relevant document chunks using semantic search.
+    
+    Parameters:
+    - query: Search query text
+    - n_results: Number of results to return (default: 5)
+    - document_id: Optional filter by specific document
+    - character_id: Optional filter by character (includes global docs)
+    """
+    document_manager = app_state["document_manager"]
+    
+    if not document_manager:
+        raise HTTPException(status_code=500, detail="Document manager not initialized")
+    
+    results = document_manager.search_documents(
+        db=db,
+        query=query,
+        n_results=n_results,
+        document_id=document_id,
+        character_id=character_id
+    )
+    
+    return [DocumentSearchResult(**result) for result in results]
+
+
+@app.get("/documents/{document_id}")
+def get_document(document_id: int, db: Session = Depends(get_db)):
+    """Get detailed information about a document."""
+    document_manager = app_state["document_manager"]
+    
+    if not document_manager:
+        raise HTTPException(status_code=500, detail="Document manager not initialized")
+    
+    doc_info = document_manager.get_document_info(db, document_id)
+    
+    if not doc_info:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    
+    return doc_info
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(
+    document_id: int, 
+    character_id: Optional[str] = Query(None),
+    conversation_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a document and all associated data (Phase 9: scope-aware).
+    
+    Verifies that the document is accessible in the current context before deletion.
+    This prevents accidental deletion of documents from other conversations.
+    
+    Query parameters:
+    - character_id: Character requesting deletion (for scope verification)
+    - conversation_id: Current conversation (for scope verification)
+    """
+    document_manager = app_state["document_manager"]
+    
+    if not document_manager:
+        raise HTTPException(status_code=500, detail="Document manager not initialized")
+    
+    # Verify access before deletion (Phase 9)
+    if character_id:
+        from chorus_engine.repositories.document_repository import DocumentRepository
+        repo = DocumentRepository(db)
+        
+        if not repo.verify_document_access(
+            document_id=document_id,
+            character_id=character_id,
+            conversation_id=conversation_id
+        ):
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Document {document_id} not accessible in current context"
+            )
+    
+    success = document_manager.delete_document(db, document_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    
+    return {"success": True, "message": f"Document {document_id} deleted"}
 
 
 # === Static Files ===

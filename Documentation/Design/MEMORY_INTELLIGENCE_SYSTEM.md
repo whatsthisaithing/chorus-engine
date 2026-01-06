@@ -668,6 +668,47 @@ Summarized: "[Earlier: User discussed microservices architecture ideas]"
 - Incremental analysis (update summary rather than full re-analysis)
 - Smarter triggering (don't re-analyze if nothing changed)
 
+### 6. Document Context Integration (Phase 9)
+
+**Context**: Document analysis feature (Phase 9) allows injecting document chunks into system prompt for Q&A with citations. This interacts with the memory intelligence system's token budgeting.
+
+**Key Consideration**: Document chunks are ephemeral (re-retrieved per request), NOT stored in message history. However, they DO occupy system prompt space.
+
+**Solution Implemented**: Document tokens are excluded from "available tokens" calculation:
+
+```python
+# Count base system prompt (character config, greeting context)
+base_system_tokens = count_tokens(system_prompt)
+
+# Count document injection separately
+document_tokens = count_tokens(doc_injection) if has_documents else 0
+
+# Calculate available space EXCLUDING both
+available_tokens = context_window - base_system_tokens - document_tokens
+
+# Now allocate budgets from truly available space
+memory_budget = available_tokens * 0.20
+history_budget = available_tokens * 0.50  # Full 50% regardless of document usage
+document_budget = available_tokens * 0.15
+reserve_budget = available_tokens * 0.15
+```
+
+**Why This Matters**:
+- **Without exclusion**: 12 document chunks (~6K tokens) would reduce available space from 31K to 25K, shrinking history budget from 15K to 12.5K
+- **With exclusion**: History budget stays at full 50% of available space (15.5K), document-heavy conversations don't feel artificially "short"
+- **Summarization**: Still only counts message tokens (not document tokens), so document usage doesn't trigger earlier summarization
+
+**Implication for Summarization**:
+- Document context is NOT included in conversation token count
+- Summarization threshold (20K tokens) only counts messages
+- Document chunks don't contribute to "long conversation" detection
+- This is correct: documents are re-retrievable, messages are not
+
+**Integration Points**:
+- `PromptAssemblyService.assemble_prompt()`: Standard assembly with document exclusion
+- `PromptAssemblyService.assemble_prompt_with_summarization()`: Summarized assembly with document exclusion
+- `ConversationSummarizationService._calculate_conversation_tokens()`: Only counts messages (documents already excluded)
+
 ---
 
 ## Testing & Validation
