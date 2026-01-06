@@ -90,6 +90,38 @@ class PathsConfig(BaseModel):
         return Path(v)
 
 
+class SystemDocumentAnalysisConfig(BaseModel):
+    """System-level document analysis configuration."""
+    
+    enabled: bool = Field(
+        default=True,
+        description="Enable document analysis system globally"
+    )
+    default_max_chunks: int = Field(
+        default=3,
+        gt=0,
+        le=100,
+        description="Default maximum chunks to retrieve per query"
+    )
+    max_chunks_cap: int = Field(
+        default=25,
+        gt=0,
+        le=100,
+        description="Absolute maximum chunks (safety limit)"
+    )
+    chunk_token_estimate: int = Field(
+        default=512,
+        gt=0,
+        description="Average tokens per chunk for budget calculations"
+    )
+    document_budget_ratio: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="Default portion of context window for documents"
+    )
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -99,6 +131,7 @@ class SystemConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
+    document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     debug: bool = False
     api_host: str = "localhost"
@@ -242,6 +275,52 @@ class ImageGenerationConfig(BaseModel):
     enabled: bool = False
 
 
+class DocumentAnalysisConfig(BaseModel):
+    """Document analysis configuration for characters (Phase 1-7)."""
+    
+    enabled: bool = Field(
+        default=False,
+        description="Enable document ingestion, semantic search, and Q&A with citations"
+    )
+    max_documents: Optional[int] = Field(
+        default=None,
+        description="Maximum documents this character can access (None = unlimited)"
+    )
+    allowed_document_types: Optional[list[str]] = Field(
+        default=None,
+        description="Restrict document types (e.g., ['policy', 'guideline']). None = all types allowed"
+    )
+    max_chunks: Optional[int] = Field(
+        default=None,
+        description="Maximum chunks to retrieve per query (overrides system default)"
+    )
+    document_budget_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Portion of context window for documents (overrides system default)"
+    )
+
+
+class CodeExecutionConfig(BaseModel):
+    """Code execution configuration for characters (Phase 2-7)."""
+    
+    enabled: bool = Field(
+        default=False,
+        description="Enable Python code generation and execution for data analysis"
+    )
+    max_execution_time: int = Field(
+        default=30,
+        description="Maximum execution time in seconds",
+        gt=0,
+        le=300
+    )
+    allowed_libraries: Optional[list[str]] = Field(
+        default=None,
+        description="Whitelist of allowed Python libraries. None = default whitelist (pandas, numpy, etc.)"
+    )
+
+
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""
     
@@ -261,6 +340,12 @@ class CharacterConfig(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     role: str = Field(min_length=1, max_length=100)
     system_prompt: str = Field(min_length=10)
+    
+    # Character type/role classification (Phase 1-7: Document Analysis)
+    role_type: Literal["companion", "assistant", "analyst", "other"] = Field(
+        default="assistant",
+        description="Character archetype: companion (casual chat), assistant (task help), analyst (data/documents), other (custom)"
+    )
     
     # Power user mode: Skip immersion guidance and use raw system prompt
     custom_system_prompt: bool = Field(
@@ -288,6 +373,10 @@ class CharacterConfig(BaseModel):
     ambient_activity: AmbientActivityConfig = Field(default_factory=AmbientActivityConfig)
     visual_identity: Optional[VisualIdentityConfig] = None
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    
+    # Document analysis & code execution (Phase 1-7)
+    document_analysis: DocumentAnalysisConfig = Field(default_factory=DocumentAnalysisConfig)
+    code_execution: CodeExecutionConfig = Field(default_factory=CodeExecutionConfig)
     
     # Profile customization
     profile_image: Optional[str] = Field(default=None, description="Filename of profile image in data/character_images/")

@@ -1,0 +1,10 @@
+<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="60" cy="60" r="60" fill="#2d2440"/>
+  
+  <!-- Head -->
+  <circle cx="60" cy="45" r="22" fill="#d4af37" opacity="0.9"/>
+  
+  <!-- Body -->
+  <path d="M 60 67 Q 40 75, 35 95 L 35 120 L 85 120 L 85 95 Q 80 75, 60 67 Z" fill="#d4af37" opacity="0.9"/>
+</svg>

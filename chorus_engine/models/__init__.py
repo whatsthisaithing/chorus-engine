@@ -2,6 +2,7 @@
 
 from .conversation import Conversation, Thread, Message, Memory, MessageRole, MemoryType, ConversationSummary
 from .workflow import Workflow
+from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
 
 __all__ = [
     "Conversation",
@@ -12,4 +13,8 @@ __all__ = [
     "MemoryType",
     "ConversationSummary",
     "Workflow",
+    "Document",
+    "DocumentChunk",
+    "DocumentAccessLog",
+    "CodeExecutionLog",
 ]

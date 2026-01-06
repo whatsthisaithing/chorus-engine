@@ -79,6 +79,23 @@ No guessing. No cross-model accidents.
 
 ---
 
+### 📄 Document Analysis with Privacy Isolation
+
+**New in v1.1**: Upload and analyze documents with conversation-level privacy.
+
+* **Three Privacy Tiers**:
+  * 🔒 **Conversation-Only** (default) - Document only accessible in specific conversation
+  * 👤 **Character-Wide** - Shared across all conversations with character
+  * 🌐 **Global** - System-wide access
+* **Smart Scope Selection** - UI automatically defaults based on context
+* **Semantic Search** - Find relevant document sections using vector similarity
+* **Citation Support** - Reference documents using `#doc:filename` notation
+* **Privacy First** - Perfect for analysts working on multiple client projects
+
+**Use Case**: Upload Client A's financial documents in one conversation, Client B's in another. No data leakage between conversations.
+
+---
+
 ### 🎙️ Voice Generation via integrated Chatterbox or through ComfyUI
 
 Chorus Engine generates voice audio for character responses using **Chatterbox TTS** (Turbo) or **ComfyUI TTS workflows**.
@@ -96,7 +113,7 @@ Same workflow-first approach, applied to audio.
 
 ### 🧰 Coming Soon
 
-* Document parsing and code execution for assistant-enabled analytics and programming
+* Code execution for assistant-enabled analytics and programming
 * Modular tool registry
 * MCP-compatible adapters
 * Internet access is opt-in and explicit

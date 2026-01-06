@@ -82,6 +82,19 @@ system_prompt: |
 #
 custom_system_prompt: false
 
+# CHARACTER TYPE / ROLE
+# ---------------------
+# Classification of character archetype for specialized capabilities
+# Options: companion, assistant, analyst, other
+# 
+# • companion: Casual conversational partner, focuses on engagement and personality
+# • assistant: General-purpose helper for tasks and information
+# • analyst: Specialized for document analysis and data computation (Phase 1-7)
+# • other: Custom/specialized role
+#
+# Default: assistant
+role_type: assistant
+
 # OPTIONAL FIELDS
 # ===============
 
@@ -179,6 +192,40 @@ profile_image: character_name_profile.png
 # Can this character generate images?
 image_generation:
   enabled: true
+
+# DOCUMENT ANALYSIS (Phase 1-7)
+# ------------------------------
+# Enable document ingestion, semantic search, and Q&A with citations
+# Useful for: policy analysis, research, data-driven conversations
+document_analysis:
+  enabled: false
+  
+  # Optional: Limit number of documents this character can access
+  # max_documents: 50
+  
+  # Optional: Restrict to specific document types
+  # allowed_document_types:
+  #   - policy
+  #   - guideline
+  #   - reference
+
+# CODE EXECUTION (Phase 2-7)
+# ---------------------------
+# Enable Python code generation and execution for data analysis
+# Requires document_analysis to be enabled
+# Security: Runs in sandboxed environment with strict limits
+code_execution:
+  enabled: false
+  
+  # Maximum execution time in seconds (default: 30)
+  # max_execution_time: 30
+  
+  # Optional: Restrict allowed Python libraries
+  # allowed_libraries:
+  #   - pandas
+  #   - numpy
+  #   - scipy
+  #   - matplotlib
 
 # VOICE/TTS CONFIGURATION
 # -----------------------

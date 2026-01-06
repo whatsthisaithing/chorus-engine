@@ -232,6 +232,54 @@ Chorus Engine supports models from **both Ollama and LM Studio**, but performanc
 - **Ollama**: Simpler CLI, automatic model management, faster model switching
 - **LM Studio**: Better UI, manual model control, more model format support
 
+### Critical: LM Studio Context Window Configuration
+
+⚠️ **IMPORTANT FOR LM STUDIO USERS**: You must configure the context window in **both places**:
+
+**1. In LM Studio (when loading the model):**
+- Open LM Studio's model loading interface
+- Find the **"Context Length"** or **"n_ctx"** setting
+- Set it to match your desired context window (e.g., **31500** for 32K context)
+- **Default is often 4096** which is too small and will cause context overflow errors
+- Click "Load Model" with the updated context setting
+
+**2. In Chorus Engine configuration:**
+
+Edit `config/system.yaml` and set the `context_window` value to match:
+```yaml
+llm:
+  provider: lmstudio
+  base_url: http://localhost:1234
+  model: qwen/qwen2.5-coder-14b
+  context_window: 31500  # MUST MATCH LM Studio's loaded context!
+```
+
+Or in a character's `preferred_llm` settings (see [CHARACTER_CONFIGURATION.md](Documentation/CHARACTER_CONFIGURATION.md)):
+```yaml
+preferred_llm:
+  temperature: 0.4
+  context_window: 31500  # Character-specific override
+```
+
+**Why Both?**
+- **LM Studio setting**: Controls the actual model's context window in memory
+- **Chorus Engine setting**: Used for token budget calculations and context management
+- **They must match** or you'll get context overflow errors or underutilized context
+
+**Symptoms of Mismatch:**
+- Empty responses from the LLM
+- Context overflow errors in logs
+- Unexpectedly truncated conversations
+- Document analysis returning no results
+
+**Recommended Settings:**
+- **8K context** (8192): Minimum for basic conversations
+- **16K context** (16384): Good for conversations with some memory
+- **32K context** (32768): **Recommended** - Supports rich conversations with documents and extensive memory
+- **128K+ context**: For very long conversations or heavy document analysis (requires compatible models)
+
+**Note**: Ollama users don't need to worry about this - Ollama automatically manages context windows based on the model's capabilities.
+
 ### Running Chorus Engine
 
 #### Option 1: Use Startup Scripts (Recommended)

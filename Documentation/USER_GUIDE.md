@@ -47,6 +47,15 @@ Chorus Engine supports language models from **Ollama** and **LM Studio**, but **
 - **Ollama**: Simpler setup, automatic VRAM management, faster model switching
 - **LM Studio**: Better UI for browsing models, manual control, more model formats
 
+⚠️ **CRITICAL FOR LM STUDIO USERS**: When loading a model in LM Studio, you **must configure the context window** to match your Chorus Engine configuration:
+
+1. **In LM Studio**: Set the "Context Length" (n_ctx) when loading the model (e.g., 32768 for 32K context)
+   - Default is often only 4096 which is insufficient for rich conversations
+2. **In Chorus Engine**: Set `context_window` in `config/system.yaml` or character's `preferred_llm` settings to the **same value**
+3. **If they don't match**: You'll get empty responses, context overflow errors, or underutilized context
+
+See [GETTING_STARTED.md](../GETTING_STARTED.md#critical-lm-studio-context-window-configuration) for detailed setup instructions.
+
 ---
 
 ## Text Conversations
@@ -679,6 +688,28 @@ See [WORKFLOW_GUIDE.md](WORKFLOW_GUIDE.md) for detailed information on creating 
 - Ensure ComfyUI is running
 - Verify the ComfyUI URL in `config/system.yaml`
 - Test ComfyUI is accessible at the configured URL
+
+### LLM / Context Issues
+
+**Empty or No Response from LLM** (LM Studio users):
+- **Most Common Cause**: Context window mismatch between LM Studio and Chorus Engine
+- **Solution**:
+  1. Check what context length you set when loading the model in LM Studio (often defaults to 4096)
+  2. Verify `context_window` in `config/system.yaml` or character's `preferred_llm` settings
+  3. **Reload the model in LM Studio** with matching context length (recommended: 32768)
+  4. Restart Chorus Engine
+- See [GETTING_STARTED.md](../GETTING_STARTED.md#critical-lm-studio-context-window-configuration) for detailed instructions
+
+**Context Overflow Errors**:
+- LM Studio: Your configured `context_window` is larger than the model's loaded context
+- Check server logs for specific error message
+- Reload model in LM Studio with larger context window
+- Or reduce `context_window` in config to match LM Studio's setting
+
+**Document Analysis Returns Empty Results**:
+- May indicate context window is too small for document chunks
+- Increase context window in both LM Studio (when loading) and Chorus Engine config
+- Recommended minimum: 16K, optimal: 32K for document analysis
 
 ### Memory Issues
 

@@ -80,6 +80,7 @@ characters/*.yaml
 !characters/alex.yaml
 !characters/nova.yaml
 !characters/aria.yaml
+!characters/marcus.yaml
 !characters/template.yaml
 
 # Workflow files - ignore all user-created workflows, keep example workflows only

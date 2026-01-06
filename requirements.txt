@@ -41,5 +41,10 @@ huggingface_hub
 # TTS (Text-to-Speech)
 chatterbox-tts
 
+# Document Analysis (Phase 1 - Phase 7)
+PyPDF2==3.0.1
+python-docx==1.1.2
+openpyxl==3.1.5
+
 # Testing
 requests==2.32.3

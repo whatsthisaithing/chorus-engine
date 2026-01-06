@@ -336,6 +336,17 @@ window.App = {
         const character = this.state.characters.find(c => c.id === characterId);
         if (character) {
             await UI.updateProfileCard(character);
+            
+            // Phase 1: Show/hide document library button based on character capability
+            const docLibBtn = document.getElementById('documentLibraryBtn');
+            if (docLibBtn) {
+                if (character.document_analysis?.enabled) {
+                    docLibBtn.style.display = '';
+                    docLibBtn.disabled = false;
+                } else {
+                    docLibBtn.style.display = 'none';
+                }
+            }
         }
         
         // Initialize memory count for this character (if not already tracked)
