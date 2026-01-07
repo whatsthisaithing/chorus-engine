@@ -248,11 +248,22 @@
                                 type="button" 
                                 id="sceneCaptureBtn" 
                                 class="btn btn-outline-secondary" 
-                                title="Capture Scene"
+                                title="Capture Scene (Image)"
                                 style="display: none; border: none;"
                                 disabled
                             >
                                 <i class="bi bi-camera-fill"></i>
+                            </button>
+                            <!-- Video Scene Capture Button -->
+                            <button 
+                                type="button" 
+                                id="videoSceneCaptureBtn" 
+                                class="btn btn-outline-secondary" 
+                                title="Capture Scene (Video)"
+                                style="display: none; border: none;"
+                                disabled
+                            >
+                                <i class="bi bi-camera-video-fill"></i>
                             </button>
                             <button 
                                 type="submit" 
@@ -269,21 +280,33 @@
         </div>
     </div>
     
-    <!-- Phase 9: Image Gallery Panel -->
+    <!-- Phase 9: Media Gallery Panel -->
     <div id="imageGallery" class="gallery-panel collapsed">
-        <button class="gallery-toggle" onclick="App.toggleImageGallery()" title="Image Gallery">
+        <button class="gallery-toggle" onclick="App.toggleImageGallery()" title="Media Gallery">
             <i class="bi bi-images"></i>
             <span class="gallery-count">0</span>
         </button>
         
         <div class="gallery-content">
             <div class="gallery-header">
-                <h5 class="text-dark"><i class="bi bi-images me-2"></i>Gallery</h5>
+                <h5 class="text-dark"><i class="bi bi-collection me-2"></i>Media Gallery</h5>
                 <button class="btn-close-gallery" onclick="App.toggleImageGallery()" aria-label="Close">&times;</button>
             </div>
             
-            <div class="gallery-grid" id="galleryGrid">
-                <p class="text-light text-center mt-4">No images yet</p>
+            <!-- Images Section -->
+            <div class="gallery-section">
+                <h6 class="text-muted px-3 mt-3 mb-2"><i class="bi bi-images me-1"></i>Images <span id="imageCount" class="badge bg-secondary">0</span></h6>
+                <div class="gallery-grid" id="galleryGrid">
+                    <p class="text-muted text-center mt-2">No images yet</p>
+                </div>
+            </div>
+            
+            <!-- Videos Section -->
+            <div class="gallery-section">
+                <h6 class="text-muted px-3 mt-3 mb-2"><i class="bi bi-camera-video me-1"></i>Videos <span id="videoCount" class="badge bg-secondary">0</span></h6>
+                <div class="gallery-grid" id="videoGalleryGrid">
+                    <p class="text-muted text-center mt-2">No videos yet</p>
+                </div>
             </div>
         </div>
     </div>
@@ -1064,6 +1087,55 @@
         </div>
     </div>
     
+    <!-- Video Confirmation Modal -->
+    <div class="modal fade" id="videoConfirmModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-camera-video-fill me-2"></i>
+                        Generate Video?
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3">I detected you'd like a video. Here's what I'll generate:</p>
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Prompt:</label>
+                        <textarea id="videoPromptPreview" class="form-control" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="alert alert-warning" role="alert">
+                        <i class="bi bi-clock me-2"></i>
+                        <small><strong>Note:</strong> Video generation may take 2-10 minutes depending on complexity and workflow settings.</small>
+                    </div>
+                    
+                    <!-- Video Workflow Selector -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Workflow:</label>
+                        <select id="videoWorkflowSelector" class="form-select">
+                            <option value="default">Default</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="disableVideoConfirmation">
+                        <label class="form-check-label" for="disableVideoConfirmation">
+                            Don't ask again in this conversation
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="App.confirmVideoGeneration()">
+                        <i class="bi bi-camera-video-fill me-1"></i> Generate Video
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
 <!-- Workflow Management Modal -->
     <div class="modal fade" id="workflowManagementModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -1090,9 +1162,9 @@
                                 <i class="bi bi-volume-up me-1"></i> TTS
                             </label>
                             
-                            <input type="radio" class="btn-check" name="workflowType" id="workflowTypeVideo" value="video" autocomplete="off" disabled>
-                            <label class="btn btn-outline-secondary" for="workflowTypeVideo">
-                                <i class="bi bi-film me-1"></i> Video (Coming Soon)
+                            <input type="radio" class="btn-check" name="workflowType" id="workflowTypeVideo" value="video" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="workflowTypeVideo">
+                                <i class="bi bi-camera-video me-1"></i> Video
                             </label>
                         </div>
                     </div>

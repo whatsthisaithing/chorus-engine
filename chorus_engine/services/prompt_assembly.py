@@ -159,6 +159,7 @@ class PromptAssemblyService:
         memory_query: Optional[str] = None,
         max_history_messages: int = 50,
         image_prompt_context: Optional[str] = None,
+        video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
     ) -> PromptComponents:
         """
@@ -171,6 +172,7 @@ class PromptAssemblyService:
                          (defaults to last user message)
             max_history_messages: Maximum number of history messages to consider
             image_prompt_context: Optional image prompt being generated (so character can reference it)
+            video_prompt_context: Optional video prompt being generated (so character can reference it)
             document_context: Optional DocumentContext with retrieved document chunks
         
         Returns:
@@ -181,11 +183,20 @@ class PromptAssemblyService:
         character_config = config_loader.load_character(self.character_id)
         system_prompt = self.system_prompt_generator.generate(character_config)
         
-        # Get conversation history first (needed for greeting context check)
-        messages = self.message_repository.list_by_thread(
-            thread_id,
-            limit=max_history_messages
-        )
+        # CRITICAL: When interpreting a generated image/video prompt, skip conversation history
+        # The character's ONLY job is to describe the pre-generated prompt, not respond to conversation
+        # Step 1 (prompt generation) already used full context, Step 2 (interpretation) needs NONE
+        skip_history_for_media_interpretation = bool(image_prompt_context or video_prompt_context)
+        
+        # Get conversation history (unless we're just interpreting a media prompt)
+        if skip_history_for_media_interpretation:
+            messages = []  # No conversation history needed for prompt interpretation
+            logger.debug("Skipping conversation history for media prompt interpretation")
+        else:
+            messages = self.message_repository.list_by_thread(
+                thread_id,
+                limit=max_history_messages
+            )
         
         # Phase 8: Add greeting context if this is the first message in conversation
         if messages and len(messages) <= 2:  # First user message or first exchange
@@ -204,6 +215,10 @@ class PromptAssemblyService:
         # If an image is being generated, add context about it to the system prompt
         if image_prompt_context:
             system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, composition, and mood described in the prompt. If the prompt shows you painting, say you're sharing a photo of yourself painting. If it shows a landscape, describe that landscape. Stay faithful to what's actually in the image prompt.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Simply describe what you're capturing based on the prompt above."
+        
+        # If a video is being generated, add context about it to the system prompt
+        if video_prompt_context:
+            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above in FIRST-PERSON as YOUR video. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, action, and mood described in the prompt. If the prompt shows you dancing, say you're sharing a video of yourself dancing. If the prompt shows you at the beach, describe that as YOUR video at the beach. If it shows a landscape or scene without you, describe that scene. Stay faithful to what's actually in the video prompt and speak from YOUR perspective.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. DO NOT say \"I'm creating a video showing [your name]\" - that's third-person narration. Instead say \"I'm sharing this video of myself...\" or \"Here's a video I captured...\" Stay in character and in first-person."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)

@@ -284,6 +284,11 @@ class API {
                                 if (onChunk.imageCallback) {
                                     onChunk.imageCallback(data.image_info);
                                 }
+                            } else if (data.type === 'video_request') {
+                                // Store video info for later processing
+                                if (onChunk.videoCallback) {
+                                    onChunk.videoCallback(data.video_info);
+                                }
                             } else if (data.type === 'title_updated') {
                                 // New title was auto-generated
                                 if (onChunk.titleCallback) {
@@ -398,7 +403,14 @@ class API {
         return this.request(`/images/${imageId}`, {
             method: 'DELETE',
         });
-    }    
+    }
+    
+    static async deleteVideo(videoId) {
+        return this.request(`/videos/${videoId}`, {
+            method: 'DELETE',
+        });
+    }
+    
     // === Workflow Management ===
     
     static async listWorkflows(characterId) {
@@ -580,6 +592,53 @@ class API {
     
     static async deleteImage(imageId) {
         return this.request(`/images/${imageId}`, {
+            method: 'DELETE'
+        });
+    }
+    
+    // === Video Generation ===
+    
+    static async generateVideo(threadId, prompt, negativePrompt, disableFutureConfirmations, workflowId = null) {
+        return this.request(`/threads/${threadId}/generate-video`, {
+            method: 'POST',
+            body: JSON.stringify({
+                prompt,
+                negative_prompt: negativePrompt,
+                disable_future_confirmations: disableFutureConfirmations,
+                workflow_id: workflowId
+            })
+        });
+    }
+    
+    static async captureVideoScenePrompt(threadId) {
+        return this.request(`/threads/${threadId}/capture-video-scene-prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+    
+    static async captureVideoScene(threadId, prompt, negativePrompt = null, workflowId = null) {
+        const body = {
+            prompt: prompt,
+            negative_prompt: negativePrompt
+        };
+        
+        if (workflowId) {
+            body.workflow_id = workflowId;
+        }
+        
+        return this.request(`/threads/${threadId}/capture-video-scene`, {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+    }
+    
+    static async getConversationVideos(conversationId) {
+        return this.request(`/conversations/${conversationId}/videos`);
+    }
+    
+    static async deleteVideo(videoId) {
+        return this.request(`/videos/${videoId}`, {
             method: 'DELETE'
         });
     }

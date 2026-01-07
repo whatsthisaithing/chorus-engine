@@ -255,6 +255,10 @@ class ComfyUIClient:
             subfolder = image_info.get("subfolder", "")
             image_type = image_info.get("type", "output")
             
+            # Extract extension from filename
+            from pathlib import Path
+            extension = Path(filename).suffix
+            
             # Build download URL
             params = {
                 "filename": filename,
@@ -262,7 +266,7 @@ class ComfyUIClient:
                 "type": image_type
             }
             
-            logger.debug(f"Downloading image: {filename} from subfolder: {subfolder}")
+            logger.debug(f"Downloading image: {filename} (extension: {extension}) from subfolder: {subfolder}")
             
             response = await self.client.get(
                 f"{self.base_url}/view",
@@ -270,8 +274,8 @@ class ComfyUIClient:
             )
             response.raise_for_status()
             
-            logger.info(f"Successfully retrieved image for job {job_id}")
-            return response.content
+            logger.info(f"Successfully retrieved image for job {job_id} with extension {extension}")
+            return (response.content, extension)
             
         except httpx.ConnectError as e:
             logger.error(f"Cannot connect to ComfyUI: {e}")
@@ -304,7 +308,8 @@ class ComfyUIClient:
     async def wait_for_completion(
         self,
         job_id: str,
-        callback=None
+        callback=None,
+        timeout: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Wait for a job to complete, polling status periodically.
@@ -312,6 +317,7 @@ class ComfyUIClient:
         Args:
             job_id: Job ID to wait for
             callback: Optional async callback(status_dict) called on each poll
+            timeout: Optional custom timeout in seconds (defaults to self.timeout)
         
         Returns:
             Final status dictionary
@@ -321,12 +327,13 @@ class ComfyUIClient:
             ComfyUIConnectionError: Server not reachable
         """
         start_time = asyncio.get_event_loop().time()
+        max_timeout = timeout if timeout is not None else self.timeout
         
         while True:
             # Check timeout
             elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > self.timeout:
-                raise ComfyUIJobError(f"Job {job_id} timed out after {self.timeout}s")
+            if elapsed > max_timeout:
+                raise ComfyUIJobError(f"Job {job_id} timed out after {max_timeout}s")
             
             # Check status
             status = await self.check_status(job_id)

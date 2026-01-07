@@ -92,6 +92,8 @@ ambient_activity:
     creative prompts, or propose exploring a topic that came up in previous conversations.
 image_generation:
   enabled: true
+video_generation:
+  enabled: true
 document_analysis:
   enabled: false
 voice:

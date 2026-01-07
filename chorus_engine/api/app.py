@@ -46,6 +46,12 @@ from chorus_engine.services.image_storage import ImageStorageService
 from chorus_engine.services.image_generation_orchestrator import ImageGenerationOrchestrator
 from chorus_engine.repositories.image_repository import ImageRepository
 
+# Video generation imports
+from chorus_engine.services.video_prompt_service import VideoPromptService
+from chorus_engine.services.video_storage import VideoStorageService
+from chorus_engine.services.video_generation_orchestrator import VideoGenerationOrchestrator
+from chorus_engine.repositories.video_repository import VideoRepository
+
 # Phase 6 imports
 from chorus_engine.services.audio_generation_orchestrator import AudioGenerationOrchestrator
 
@@ -109,6 +115,7 @@ app_state = {
     "extraction_service": None,  # Phase 4.1
     # "extraction_manager": None,  # Phase 4.1 - REMOVED in Phase 7
     "image_orchestrator": None,  # Phase 5
+    "video_orchestrator": None,  # Video generation
     "comfyui_client": None,  # Phase 5
     "current_model": None,  # Track currently loaded model for VRAM management
     "comfyui_lock": asyncio.Lock(),  # Phase 6: Prevent concurrent ComfyUI operations
@@ -259,6 +266,30 @@ async def lifespan(app: FastAPI):
                     )
                     
                     logger.info("✓ Image generation services initialized")
+                    
+                    # Initialize video generation services
+                    video_orchestrator = None
+                    try:
+                        video_prompt_service = VideoPromptService(
+                            llm_client=llm_client
+                        )
+                        
+                        video_storage_service = VideoStorageService(
+                            base_path=Path("data/videos")
+                        )
+                        
+                        video_orchestrator = VideoGenerationOrchestrator(
+                            comfyui_client=comfyui_client,
+                            video_prompt_service=video_prompt_service,
+                            video_storage=video_storage_service,
+                            video_timeout=system_config.comfyui.video_timeout_seconds
+                        )
+                        
+                        app_state["video_orchestrator"] = video_orchestrator
+                        logger.info("✓ Video generation services initialized")
+                    except Exception as e:
+                        logger.warning(f"⚠ Failed to initialize video generation: {e}")
+                        app_state["video_orchestrator"] = None
                 else:
                     logger.warning("⚠ ComfyUI not available - image generation disabled")
             except Exception as e:
@@ -796,6 +827,37 @@ class ImageGenerationResponse(BaseModel):
     error: Optional[str] = None
 
 
+class VideoGenerationConfirmRequest(BaseModel):
+    """Request to confirm and generate a video."""
+    prompt: Optional[str] = None  # User-confirmed video prompt (from dialog)
+    negative_prompt: Optional[str] = None
+    seed: Optional[int] = None
+    trigger_words: Optional[List[str]] = None
+    disable_future_confirmations: bool = False
+    workflow_id: Optional[str] = None  # Selected workflow ID
+
+
+class VideoCaptureRequest(BaseModel):
+    """Request to capture scene video."""
+    prompt: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    seed: Optional[int] = None
+    workflow_id: Optional[str] = None
+
+
+class VideoGenerationResponse(BaseModel):
+    """Response from video generation."""
+    success: bool
+    video_id: Optional[int] = None
+    file_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    prompt: Optional[str] = None
+    format: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    generation_time: Optional[float] = None
+    error: Optional[str] = None
+
+
 # Routes
 
 @app.get("/health", response_model=HealthResponse)
@@ -838,8 +900,15 @@ async def list_characters():
                 "memory": {
                     "scope": char.memory.scope if char.memory else None,
                 } if char.memory else None,
+                "image_generation": {
+                    "enabled": char.image_generation.enabled if char.image_generation else False,
+                } if char.image_generation else None,
+                "video_generation": {
+                    "enabled": char.video_generation.enabled if char.video_generation else False,
+                } if char.video_generation else None,
                 "capabilities": {
                     "image_generation": char.image_generation.enabled if char.image_generation else False,
+                    "video_generation": char.video_generation.enabled if char.video_generation else False,
                     "audio_generation": char.voice is not None,
                 },
                 "document_analysis": {
@@ -2572,10 +2641,14 @@ async def send_message(
         # If an image is being generated, pass the prompt to the character so they can reference it
         image_context = image_prompt_preview["prompt"] if (image_request_detected and image_prompt_preview) else None
         
+        # If a video is being generated, pass the prompt to the character so they can reference it
+        video_context = video_prompt_preview["prompt"] if (video_request_detected and video_prompt_preview) else None
+        
         prompt_components = prompt_assembler.assemble_prompt(
             thread_id=thread_id,
             include_memories=True,  # Enable memory retrieval
             image_prompt_context=image_context,
+            video_prompt_context=video_context,
             document_context=doc_context if doc_context and doc_context.has_content() else None
         )
         
@@ -2809,6 +2882,7 @@ async def send_message_stream(
 ):
     """Send a message and stream the response."""
     from fastapi.responses import StreamingResponse
+    from chorus_engine.models.conversation import MessageRole
     import json
     
     # Verify thread exists and get conversation
@@ -2993,28 +3067,126 @@ async def send_message_stream(
         except Exception as e:
             logger.error(f"Failed to detect image request: {e}", exc_info=True)
     
+    # Check if user is requesting a video (keyword-based detection)
+    video_request_detected = False
+    video_prompt_preview = None
+    video_orchestrator = app_state.get("video_orchestrator")
+    
+    if video_orchestrator and detected_intents and detected_intents.generate_video:
+        # Check if character has video generation enabled
+        video_config = getattr(character, 'video_generation', None)
+        if video_config and video_config.enabled:
+            # Check if confirmations are disabled (default to requiring confirmation if attribute doesn't exist)
+            needs_confirmation = getattr(conversation, 'video_confirmation_disabled', 'false') != "true"
+            
+            # Use character's preferred model for video prompt generation
+            model_for_prompt = character.preferred_llm.model if character.preferred_llm else None
+            logger.info(f"[VIDEO DETECTION] Using model for prompt generation: {model_for_prompt}")
+            
+            # Ensure character's model is loaded before generating prompt
+            if model_for_prompt and llm_client:
+                try:
+                    await llm_client.ensure_model_loaded(model_for_prompt)
+                    logger.info(f"[VIDEO DETECTION] Character model loaded: {model_for_prompt}")
+                except Exception as e:
+                    logger.warning(f"[VIDEO DETECTION] Could not load character model: {e}")
+            
+            # Get recent conversation context for better video prompt generation (last 10 messages)
+            recent_messages = msg_repo.get_thread_history(thread_id, limit=10)
+            
+            # Convert to Message objects for prompt service
+            from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+            messages = []
+            for msg_dict in recent_messages:
+                msg = MessageModel(
+                    id=msg_dict.get("id"),
+                    thread_id=thread_id,
+                    role=MessageRole(msg_dict["role"]),
+                    content=msg_dict["content"],
+                    created_at=msg_dict.get("created_at")
+                )
+                messages.append(msg)
+            
+            try:
+                # Generate video prompt from conversation context
+                video_info = await video_orchestrator.prompt_service.generate_video_prompt(
+                    messages=messages,
+                    character=character,
+                    character_name=character.name,
+                    custom_instruction=None,
+                    trigger_words=None,
+                    model=model_for_prompt,  # Use character's model
+                    workflow_config=None  # Could pass workflow config here if needed
+                )
+                
+                # Video generation detected - prepare confirmation UI
+                video_request_detected = True
+                video_prompt_preview = {
+                    "prompt": video_info["prompt"],
+                    "negative_prompt": video_info["negative_prompt"],
+                    "needs_trigger": video_info.get("needs_trigger", False),
+                    "needs_confirmation": needs_confirmation
+                }
+                logger.info(f"Video request detected in thread {thread_id}: {video_info['prompt'][:50]}...")
+                
+                # Log to video_prompts.jsonl
+                try:
+                    conv_dir = Path("data/debug_logs/conversations") / conversation.id
+                    conv_dir.mkdir(parents=True, exist_ok=True)
+                    log_file = conv_dir / "video_prompts.jsonl"
+                    
+                    log_entry = {
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "in_conversation",
+                        "thread_id": thread_id,
+                        "model": model_for_prompt or "default",
+                        "user_request": request.message,
+                        "context_messages": len(recent_messages) if recent_messages else 0,
+                        "generated_prompt": video_info["prompt"],
+                        "negative_prompt": video_info["negative_prompt"],
+                        "needs_trigger": video_info.get("needs_trigger", False),
+                        "reasoning": video_info.get("reasoning", ""),
+                        "needs_confirmation": needs_confirmation
+                    }
+                    
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                        
+                except Exception as log_error:
+                    logger.warning(f"Failed to log video request: {log_error}")
+            except Exception as e:
+                logger.error(f"Failed to generate video prompt: {e}", exc_info=True)
+    
     # Use PromptAssemblyService for memory-aware prompt building
     try:
         # Get document budget ratio (character override or system default)
         doc_config = app_state["system_config"].document_analysis
         doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
         
-        assembler = PromptAssemblyService(
-            db=db,
-            character_id=character_id,
-            model_name=app_state["system_config"].llm.model,
-            context_window=app_state["system_config"].llm.context_window,
-            document_budget_ratio=doc_budget_ratio
-        )
+        # Build assembler kwargs, only pass document_budget_ratio if it's not None
+        assembler_kwargs = {
+            'db': db,
+            'character_id': character_id,
+            'model_name': app_state["system_config"].llm.model,
+            'context_window': app_state["system_config"].llm.context_window
+        }
+        if doc_budget_ratio is not None:
+            assembler_kwargs['document_budget_ratio'] = doc_budget_ratio
+        
+        assembler = PromptAssemblyService(**assembler_kwargs)
         
         # If an image is being generated, pass the prompt to the character so they can reference it
         image_context = image_prompt_preview["prompt"] if (image_request_detected and image_prompt_preview) else None
+        
+        # If a video is being generated, pass the prompt to the character so they can reference it
+        video_context = video_prompt_preview["prompt"] if (video_request_detected and video_prompt_preview) else None
         
         # Assemble prompt with memory retrieval
         components = assembler.assemble_prompt(
             thread_id=thread_id,
             include_memories=True,
             image_prompt_context=image_context,
+            video_prompt_context=video_context,
             document_context=doc_context if doc_context and doc_context.has_content() else None
         )
         
@@ -3063,6 +3235,10 @@ async def send_message_stream(
             # Send image detection info if found
             if image_request_detected and image_prompt_preview:
                 yield f"data: {json.dumps({'type': 'image_request', 'image_info': image_prompt_preview})}\n\n"
+            
+            # Send video detection info if found
+            if video_request_detected and video_prompt_preview:
+                yield f"data: {json.dumps({'type': 'video_request', 'video_info': video_prompt_preview})}\n\n"
             
             # Stream assistant response
             async for chunk in llm_client.stream_with_history(
@@ -3278,9 +3454,13 @@ async def generate_scene_capture_prompt(
     messages_dicts = all_messages[-10:] if len(all_messages) > 10 else all_messages
     
     # Convert dicts to Message objects for the service
+    # Filter out SCENE_CAPTURE messages (no content, just markers for generated media)
     from chorus_engine.models.conversation import Message, MessageRole
     messages = []
     for msg_dict in messages_dicts:
+        # Skip SCENE_CAPTURE messages as they have no conversational content
+        if msg_dict["role"] == "scene_capture":
+            continue
         msg = Message(
             id=msg_dict.get("id"),
             thread_id=thread_id,
@@ -4337,8 +4517,6 @@ async def generate_image(
             llm_usage_lock = app_state.get("llm_usage_lock")
             llm_client = app_state.get("llm_client")
             system_config = app_state.get("system_config")
-            use_intent_model = system_config.intent_detection.enabled if system_config else False
-            intent_model = app_state.get("intent_model", "gemma2:9b") if use_intent_model else None
             character_model = character.preferred_llm.model if character.preferred_llm.model else system_config.llm.model
             
             if not llm_usage_lock:
@@ -4445,38 +4623,13 @@ async def generate_image(
                     )
                 
                 finally:
-                    # Phase 7: Reload models after image generation
-                    if llm_client:
-                        try:
-                            logger.info(f"[IMAGE GEN - VRAM] Reloading LLM models after generation...")
-                            if use_intent_model and intent_model:
-                                # Reload both intent and character models
-                                await llm_client.reload_models_after_generation(
-                                    character_model=character_model,
-                                    intent_model=intent_model
-                                )
-                            else:
-                                # Only reload character model (keyword-based detection in use)
-                                await llm_client.reload_model()
-                            logger.info(f"[IMAGE GEN - VRAM] LLM models reloaded successfully")
-                        except Exception as e:
-                            logger.error(f"[IMAGE GEN - VRAM] Failed to reload LLM models: {e}")
+                    # Phase 7: Models will reload on-demand when next needed
+                    # No explicit reload here - keeps VRAM free until next user message
+                    logger.info(f"[IMAGE GEN - VRAM] Generation complete, models will reload on next request")
                     
-                    # Reload TTS models that were unloaded
-                    from chorus_engine.services.tts.provider_factory import TTSProviderFactory
-                    try:
-                        all_providers = TTSProviderFactory._providers
-                        for provider_name in unloaded_tts_providers:
-                            if provider_name in all_providers:
-                                provider = all_providers[provider_name]
-                                logger.info(f"[IMAGE GEN - VRAM] Reloading TTS provider: {provider_name}")
-                                provider.reload_model()
-                                if provider.is_model_loaded():
-                                    logger.info(f"[IMAGE GEN - VRAM] Successfully reloaded TTS provider: {provider_name}")
-                                else:
-                                    logger.warning(f"[IMAGE GEN - VRAM] Failed to reload TTS provider: {provider_name} - model still not loaded")
-                    except Exception as e:
-                        logger.warning(f"[IMAGE GEN - VRAM] Failed to reload TTS models: {e}")
+                    # TTS providers will reload on-demand when next used
+                    if unloaded_tts_providers:
+                        logger.info(f"[IMAGE GEN - VRAM] TTS providers unloaded: {unloaded_tts_providers} (will reload on-demand)")
                     
                     logger.info("[IMAGE GEN] Image generation complete - releasing locks")
     
@@ -4500,38 +4653,59 @@ async def get_conversation_images(
     
     result_images = []
     for img in images:
-        # Convert filesystem paths to HTTP URLs
-        full_path = Path(img.file_path)
-        relative_path = full_path.relative_to(Path("data/images"))
-        http_path = f"/images/{relative_path.as_posix()}"
-        
-        http_thumb_path = None
-        if img.thumbnail_path:
-            thumb_path = Path(img.thumbnail_path)
-            relative_thumb = thumb_path.relative_to(Path("data/images"))
-            http_thumb_path = f"/images/{relative_thumb.as_posix()}"
-        
-        # Check if this is a scene capture
-        is_scene = False
-        if img.message_id:
-            msg = msg_repo.get_by_id(img.message_id)
-            if msg and msg.role == MessageRole.SCENE_CAPTURE:
-                is_scene = True
-        
-        result_images.append({
-            "id": img.id,
-            "message_id": img.message_id,
-            "prompt": img.prompt,
-            "negative_prompt": img.negative_prompt,
-            "file_path": http_path,
-            "thumbnail_path": http_thumb_path,
-            "width": img.width,
-            "height": img.height,
-            "seed": img.seed,
-            "generation_time": img.generation_time,
-            "created_at": img.created_at.isoformat() if img.created_at else None,
-            "is_scene_capture": is_scene
-        })
+        try:
+            # Check if file exists
+            full_path = Path(img.file_path)
+            if not full_path.exists():
+                logger.warning(f"Image file not found: {img.file_path}")
+                continue
+            
+            # Convert filesystem paths to HTTP URLs
+            # Handle both "data/images/..." and "images/..." formats
+            path_str = str(full_path).replace("\\", "/")
+            if "data/images" in path_str:
+                relative_path = full_path.relative_to(Path("data/images"))
+            else:
+                # Path might be "images/conv_id/file.png"
+                relative_path = Path(path_str.split("images/", 1)[1]) if "images/" in path_str else full_path.name
+            
+            http_path = f"/images/{relative_path.as_posix() if hasattr(relative_path, 'as_posix') else relative_path}"
+            
+            http_thumb_path = None
+            if img.thumbnail_path:
+                thumb_path = Path(img.thumbnail_path)
+                if thumb_path.exists():
+                    thumb_str = str(thumb_path).replace("\\", "/")
+                    if "data/images" in thumb_str:
+                        relative_thumb = thumb_path.relative_to(Path("data/images"))
+                    else:
+                        relative_thumb = Path(thumb_str.split("images/", 1)[1]) if "images/" in thumb_str else thumb_path.name
+                    http_thumb_path = f"/images/{relative_thumb.as_posix() if hasattr(relative_thumb, 'as_posix') else relative_thumb}"
+            
+            # Check if this is a scene capture
+            is_scene = False
+            if img.message_id:
+                msg = msg_repo.get_by_id(img.message_id)
+                if msg and msg.role == MessageRole.SCENE_CAPTURE:
+                    is_scene = True
+            
+            result_images.append({
+                "id": img.id,
+                "message_id": img.message_id,
+                "prompt": img.prompt,
+                "negative_prompt": img.negative_prompt,
+                "file_path": http_path,
+                "thumbnail_path": http_thumb_path,
+                "width": img.width,
+                "height": img.height,
+                "seed": img.seed,
+                "generation_time": img.generation_time,
+                "created_at": img.created_at.isoformat() if img.created_at else None,
+                "is_scene_capture": is_scene
+            })
+        except Exception as e:
+            logger.warning(f"Error processing image {img.id}: {e}")
+            continue
     
     return {"images": result_images}
 
@@ -4580,6 +4754,769 @@ async def delete_image(
     except Exception as e:
         logger.error(f"Failed to delete image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversations/{conversation_id}/videos")
+async def get_conversation_videos(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get all videos for a conversation, including scene captures."""
+    video_repo = VideoRepository(db)
+    msg_repo = MessageRepository(db)
+    videos = video_repo.get_by_conversation(conversation_id)
+    logger.info(f"[VIDEO GALLERY] Fetching videos for conversation {conversation_id}, found {len(videos)} videos")
+    
+    result_videos = []
+    for vid in videos:
+        try:
+            # Check if file exists
+            video_path = Path(vid.file_path)
+            if not video_path.exists():
+                logger.warning(f"Video file not found: {vid.file_path}")
+                continue
+            
+            # Convert filesystem paths to HTTP URLs
+            # Handle both "data/videos/..." and "videos/..." formats
+            video_path_str = str(vid.file_path).replace("\\", "/")
+            
+            # Remove "data/" prefix if present for HTTP URL
+            if video_path_str.startswith("data/"):
+                http_path = "/" + video_path_str[5:]  # Remove "data/" prefix
+            elif video_path_str.startswith("videos/"):
+                http_path = "/" + video_path_str
+            else:
+                # Fallback: assume it's relative and add /videos/
+                http_path = "/videos/" + video_path_str
+            
+            http_thumb_path = None
+            if vid.thumbnail_path:
+                thumb_path = Path(vid.thumbnail_path)
+                if thumb_path.exists():
+                    thumb_path_str = str(vid.thumbnail_path).replace("\\", "/")
+                    if thumb_path_str.startswith("data/"):
+                        http_thumb_path = "/" + thumb_path_str[5:]
+                    elif thumb_path_str.startswith("videos/"):
+                        http_thumb_path = "/" + thumb_path_str
+                    else:
+                        http_thumb_path = "/videos/" + thumb_path_str
+            
+            # Check if this is a scene capture by looking for associated SCENE_CAPTURE message
+            # Query all SCENE_CAPTURE messages in the conversation
+            is_scene = False
+            from chorus_engine.models.conversation import Message as MessageModel, Thread
+            scene_messages = (
+                db.query(MessageModel)
+                .join(Thread, Thread.id == MessageModel.thread_id)
+                .filter(Thread.conversation_id == conversation_id)
+                .filter(MessageModel.role == MessageRole.SCENE_CAPTURE)
+                .all()
+            )
+            for msg in scene_messages:
+                if msg.meta_data and msg.meta_data.get("video_id") == vid.id:
+                    is_scene = True
+                    break
+            
+            result_videos.append({
+                "id": vid.id,
+                "prompt": vid.prompt,
+                "negative_prompt": vid.negative_prompt,
+                "file_path": http_path,
+                "thumbnail_path": http_thumb_path,
+                "format": vid.format,
+                "duration_seconds": vid.duration_seconds,
+                "generation_time": vid.generation_time_seconds,
+                "created_at": vid.created_at.isoformat() if vid.created_at else None,
+                "is_scene_capture": is_scene
+            })
+        except Exception as e:
+            logger.warning(f"Error processing video {vid.id}: {e}")
+            continue
+    
+    return {"videos": result_videos}
+
+
+@app.delete("/videos/{video_id}")
+async def delete_video(
+    video_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a generated video and clean up message metadata."""
+    video_repo = VideoRepository(db)
+    video = video_repo.get_by_id(video_id)
+    
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    try:
+        # Find and clean up associated messages (both SCENE_CAPTURE and ASSISTANT with video metadata)
+        msg_repo = MessageRepository(db)
+        from chorus_engine.models.conversation import Message as MessageModel, Thread
+        
+        # Find all messages in the conversation that reference this video
+        # This includes both scene capture messages AND in-conversation assistant messages
+        all_messages = (
+            db.query(MessageModel)
+            .join(Thread, Thread.id == MessageModel.thread_id)
+            .filter(Thread.conversation_id == video.conversation_id)
+            .all()
+        )
+        
+        for message in all_messages:
+            if message.meta_data and message.meta_data.get("video_id") == video_id:
+                # Remove video references from metadata
+                metadata = message.meta_data.copy() if isinstance(message.meta_data, dict) else {}
+                metadata.pop('video_id', None)
+                metadata.pop('video_path', None)
+                metadata.pop('thumbnail_path', None)
+                metadata.pop('video_prompt', None)
+                metadata.pop('prompt', None)  # Also check 'prompt' field
+                metadata.pop('negative_prompt', None)
+                metadata.pop('format', None)
+                metadata.pop('duration', None)
+                metadata.pop('generation_time', None)
+                
+                message.meta_data = metadata
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(message, "meta_data")
+                db.commit()
+        
+        # Delete files from storage
+        video_path = Path(video.file_path)
+        if video_path.exists():
+            video_path.unlink()
+            logger.info(f"Deleted video file: {video_path}")
+        else:
+            logger.warning(f"Video file not found for deletion: {video_path}")
+        
+        if video.thumbnail_path:
+            thumb_path = Path(video.thumbnail_path)
+            if thumb_path.exists():
+                thumb_path.unlink()
+                logger.info(f"Deleted thumbnail file: {thumb_path}")
+            else:
+                logger.warning(f"Thumbnail file not found for deletion: {thumb_path}")
+        
+        # Delete from database
+        video_repo.delete(video_id)
+        
+        return {"success": True, "message": "Video deleted"}
+        
+    except Exception as e:
+        logger.error(f"Failed to delete video: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Video Generation Endpoints ===
+
+@app.post("/threads/{thread_id}/generate-video", response_model=VideoGenerationResponse)
+async def generate_video(
+    thread_id: str,
+    request: VideoGenerationConfirmRequest,
+    db: Session = Depends(get_db)
+):
+    """Generate a video for a thread."""
+    video_orchestrator = app_state.get("video_orchestrator")
+    
+    if not video_orchestrator:
+        raise HTTPException(
+            status_code=503,
+            detail="Video generation not available (ComfyUI not configured or not running)"
+        )
+    
+    try:
+        # Get thread
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(thread_id)
+        
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        
+        # Get conversation
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(thread.conversation_id)
+        
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Get character config
+        character_id = conversation.character_id
+        character = app_state["characters"].get(character_id)
+        
+        if not character:
+            raise HTTPException(status_code=404, detail="Character not found")
+        
+        # Check if video generation enabled for character
+        video_config = getattr(character, 'video_generation', None)
+        if not video_config or not video_config.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video generation not enabled for character {character_id}"
+            )
+        
+        # Get workflow - use selected workflow_id or fall back to default
+        from chorus_engine.repositories import WorkflowRepository
+        from chorus_engine.models.conversation import MessageRole
+        workflow_repo = WorkflowRepository(db)
+        
+        if request.workflow_id:
+            # User selected a specific workflow
+            workflow_entry = workflow_repo.get_by_id(request.workflow_id)
+            if not workflow_entry:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Workflow {request.workflow_id} not found"
+                )
+        else:
+            # Use default workflow
+            workflow_entry = workflow_repo.get_default_for_character_and_type(character_id, "video")
+            if not workflow_entry:
+                # Return error response
+                return VideoGenerationResponse(
+                    success=False,
+                    error=f"No video workflow configured for {character.name}. Please upload and configure a workflow in the Workflow Manager."
+                )
+        
+        # Update confirmation preference if requested
+        if request.disable_future_confirmations:
+            conversation.video_confirmation_disabled = "true"
+            db.commit()
+            logger.info(f"Disabled video confirmations for conversation {conversation.id}")
+        
+        # Acquire ComfyUI lock
+        comfyui_lock = app_state.get("comfyui_lock")
+        if not comfyui_lock:
+            raise HTTPException(status_code=500, detail="ComfyUI coordination lock not initialized")
+        
+        # Get recent messages for context (use get_thread_history like image generation)
+        msg_repo = MessageRepository(db)
+        from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+        
+        all_messages_dicts = msg_repo.get_thread_history(thread_id)
+        recent_messages_dicts = all_messages_dicts[-10:] if len(all_messages_dicts) > 10 else all_messages_dicts
+        
+        # Convert dicts to Message objects
+        messages = []
+        for msg_dict in recent_messages_dicts:
+            msg = MessageModel(
+                id=msg_dict.get("id"),
+                thread_id=thread_id,
+                role=MessageRole(msg_dict["role"]),
+                content=msg_dict["content"],
+                created_at=msg_dict.get("created_at")
+            )
+            messages.append(msg)
+        
+        async with comfyui_lock:
+            logger.info("[VIDEO GEN] Acquired ComfyUI lock")
+            
+            # Unload ALL models before video generation to free VRAM (same as image generation)
+            llm_usage_lock = app_state.get("llm_usage_lock")
+            llm_client = app_state.get("llm_client")
+            
+            if not llm_usage_lock:
+                raise HTTPException(status_code=500, detail="LLM usage lock not initialized")
+            
+            logger.info("[VIDEO GEN - VRAM] Waiting for LLM usage lock...")
+            async with llm_usage_lock:
+                logger.info("[VIDEO GEN - VRAM] Acquired LLM usage lock - unloading ALL models to maximize VRAM for ComfyUI...")
+                
+                if llm_client:
+                    try:
+                        # Unload all loaded models
+                        await llm_client.unload_all_models()
+                        logger.info("[VIDEO GEN - VRAM] All LLM models unloaded successfully")
+                    except Exception as e:
+                        logger.warning(f"[VIDEO GEN - VRAM] Failed to unload LLM models: {e}")
+                
+                # Unload TTS models if loaded
+                from chorus_engine.services.tts.provider_factory import TTSProviderFactory
+                unloaded_tts_providers = []  # Track which providers we unload
+                try:
+                    all_providers = TTSProviderFactory._providers
+                    for provider_name, provider in all_providers.items():
+                        if provider.is_model_loaded():
+                            logger.info(f"[VIDEO GEN - VRAM] Unloading TTS provider: {provider_name}")
+                            provider.unload_model()
+                            unloaded_tts_providers.append(provider_name)
+                except Exception as e:
+                    logger.warning(f"[VIDEO GEN - VRAM] Failed to unload TTS models: {e}")
+            
+                try:
+                    # Log confirmed prompt for debugging
+                    logger.info(f"[VIDEO CONFIRMATION] User confirmed prompt: {request.prompt[:100] if request.prompt else 'NONE'}...")
+                    
+                    # Generate video
+                    video_repo = VideoRepository(db)
+                    video_record = await video_orchestrator.generate_video(
+                        video_repository=video_repo,
+                        conversation_id=conversation.id,
+                        thread_id=thread_id,
+                        messages=messages,
+                        character=character,
+                        character_name=character.name,
+                        character_id=character_id,
+                        workflow_entry=workflow_entry,
+                        prompt=request.prompt,  # Use confirmed prompt directly, don't regenerate
+                        trigger_words=request.trigger_words,
+                        negative_prompt=request.negative_prompt,
+                        seed=request.seed
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Video generation failed: {e}", exc_info=True)
+                    raise
+                
+                finally:
+                    # Models will reload on-demand when next needed
+                    # No explicit reload here - keeps VRAM free until next user message
+                    logger.info(f"[VIDEO GEN - VRAM] Generation complete, models will reload on next request")
+                    
+                    # TTS providers will reload on-demand when next used
+                    if unloaded_tts_providers:
+                        logger.info(f"[VIDEO GEN - VRAM] TTS providers unloaded: {unloaded_tts_providers} (will reload on-demand)")
+            
+            logger.info("[VIDEO GEN] Video generation complete")
+        
+        # Convert paths to HTTP URLs
+        # Paths already include data/videos prefix, just need to convert to HTTP format
+        video_path_str = str(video_record.file_path).replace("\\", "/")
+        # Remove 'data/' prefix for HTTP URL
+        http_path = "/" + video_path_str.replace("data/", "")
+        
+        http_thumb_path = None
+        if video_record.thumbnail_path:
+            thumb_path_str = str(video_record.thumbnail_path).replace("\\", "/")
+            http_thumb_path = "/" + thumb_path_str.replace("data/", "")
+        
+        # Attach video metadata to the most recent assistant message for persistence
+        # This allows videos to show in conversation history after page refresh (matches image generation)
+        msg_repo = MessageRepository(db)
+        messages = msg_repo.get_thread_history_objects(thread_id)
+        
+        # Find the most recent assistant message
+        assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+        if assistant_messages:
+            last_assistant_msg = assistant_messages[-1]
+            
+            # Handle metadata - it's stored as JSON, so we need to update it properly
+            # Get existing metadata or create new dict
+            if last_assistant_msg.meta_data:
+                metadata_dict = last_assistant_msg.meta_data.copy() if isinstance(last_assistant_msg.meta_data, dict) else {}
+            else:
+                metadata_dict = {}
+            
+            # Add video information
+            metadata_dict["video_id"] = video_record.id
+            metadata_dict["video_path"] = http_path
+            if http_thumb_path:
+                metadata_dict["thumbnail_path"] = http_thumb_path
+            metadata_dict["prompt"] = video_record.prompt
+            metadata_dict["format"] = video_record.format
+            metadata_dict["duration"] = video_record.duration_seconds
+            metadata_dict["generation_time"] = video_record.generation_time_seconds
+            
+            # Assign back to meta_data column
+            last_assistant_msg.meta_data = metadata_dict
+            db.commit()
+            logger.info(f"Attached video {video_record.id} to assistant message {last_assistant_msg.id}")
+        else:
+            logger.warning(f"No assistant message found to attach video to in thread {thread_id}")
+        
+        return VideoGenerationResponse(
+            success=True,
+            video_id=video_record.id,
+            file_path=http_path,
+            thumbnail_path=http_thumb_path,
+            prompt=video_record.prompt,
+            format=video_record.format,
+            duration_seconds=video_record.duration_seconds,
+            generation_time=video_record.generation_time_seconds
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in generate_video endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
+
+
+@app.post("/threads/{thread_id}/capture-video-scene-prompt")
+async def generate_video_scene_capture_prompt(
+    thread_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a video scene capture prompt.
+    
+    This provides a preview prompt that the user can edit before confirming
+    video generation.
+    
+    Returns:
+        Prompt data for confirmation dialog
+    """
+    # Verify thread exists
+    thread_repo = ThreadRepository(db)
+    thread = thread_repo.get_by_id(thread_id)
+    
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    # Get conversation and character
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(thread.conversation_id)
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    character_id = conversation.character_id
+    if character_id not in app_state["characters"]:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+    
+    character = app_state["characters"][character_id]
+    
+    # Verify character supports video scene capture
+    if character.immersion_level != "unbounded":
+        raise HTTPException(
+            status_code=400,
+            detail="Scene capture only available for unbounded immersion level"
+        )
+    
+    video_config = getattr(character, 'video_generation', None)
+    if not video_config or not video_config.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video generation not enabled for character {character.name}"
+        )
+    
+    # Get recent messages
+    msg_repo = MessageRepository(db)
+    from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+    
+    all_messages_dicts = msg_repo.get_thread_history(thread_id)
+    recent_messages_dicts = all_messages_dicts[-10:] if len(all_messages_dicts) > 10 else all_messages_dicts
+    
+    # Convert dicts to Message objects
+    # Filter out SCENE_CAPTURE messages (no content, just markers for generated media)
+    messages = []
+    for msg_dict in recent_messages_dicts:
+        # Skip SCENE_CAPTURE messages as they have no conversational content
+        if msg_dict["role"] == "scene_capture":
+            continue
+        msg = MessageModel(
+            id=msg_dict.get("id"),
+            thread_id=thread_id,
+            role=MessageRole(msg_dict["role"]),
+            content=msg_dict["content"],
+            created_at=msg_dict.get("created_at")
+        )
+        messages.append(msg)
+    
+    if not messages:
+        raise HTTPException(
+            status_code=400,
+            detail="No messages in thread to capture"
+        )
+    
+    # Generate video scene capture prompt
+    video_orchestrator = app_state.get("video_orchestrator")
+    if not video_orchestrator:
+        raise HTTPException(status_code=503, detail="Video generation not available")
+    
+    # Use character's preferred model for prompt generation
+    model_for_prompt = character.preferred_llm.model if character.preferred_llm else None
+    logger.info(f"[VIDEO SCENE PROMPT] Using model: {model_for_prompt}")
+    
+    # Ensure character's model is loaded
+    llm_client = app_state.get("llm_client")
+    if model_for_prompt and llm_client:
+        try:
+            await llm_client.ensure_model_loaded(model_for_prompt)
+            logger.info(f"[VIDEO SCENE PROMPT] Character model loaded: {model_for_prompt}")
+        except Exception as e:
+            logger.warning(f"[VIDEO SCENE PROMPT] Could not load character model: {e}")
+    
+    # Get workflow config
+    from chorus_engine.repositories import WorkflowRepository
+    workflow_repo = WorkflowRepository(db)
+    workflow_config = workflow_repo.get_default_config(character.id)
+    
+    try:
+        prompt_data = await video_orchestrator.prompt_service.generate_scene_capture_prompt(
+            messages=messages,
+            character=character,
+            model=model_for_prompt,  # Use character's model
+            workflow_config=workflow_config
+        )
+        
+        return {
+            "prompt": prompt_data["prompt"],
+            "negative_prompt": prompt_data["negative_prompt"],
+            "reasoning": prompt_data.get("reasoning", ""),
+            "needs_trigger": prompt_data.get("needs_trigger", False),
+            "type": "video_scene_capture"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to generate video scene capture prompt: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate video scene capture prompt: {str(e)}"
+        )
+
+
+@app.post("/threads/{thread_id}/capture-video-scene", response_model=VideoGenerationResponse)
+async def capture_video_scene(
+    thread_id: str,
+    request: VideoCaptureRequest,
+    db: Session = Depends(get_db)
+):
+    """Capture current scene as a video (🎥 button) - executes actual generation after user confirms."""
+    video_orchestrator = app_state.get("video_orchestrator")
+    
+    if not video_orchestrator:
+        raise HTTPException(
+            status_code=503,
+            detail="Video generation not available"
+        )
+    
+    try:
+        # Get thread and conversation
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(thread.conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Get character
+        character = app_state["characters"].get(conversation.character_id)
+        if not character:
+            raise HTTPException(status_code=404, detail="Character not found")
+        
+        # Check video generation enabled
+        video_config = getattr(character, 'video_generation', None)
+        if not video_config or not video_config.enabled:
+            raise HTTPException(status_code=400, detail="Video generation not enabled")
+        
+        # Get workflow - use selected workflow_id or fall back to default
+        from chorus_engine.repositories import WorkflowRepository
+        workflow_repo = WorkflowRepository(db)
+        
+        if request.workflow_id:
+            # User selected a specific workflow
+            workflow_entry = workflow_repo.get_by_id(request.workflow_id)
+            if not workflow_entry:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Workflow {request.workflow_id} not found"
+                )
+        else:
+            # Use default workflow
+            workflow_entry = workflow_repo.get_default_for_character_and_type(conversation.character_id, "video")
+            if not workflow_entry:
+                raise HTTPException(status_code=400, detail="No video workflow configured")
+        
+        # Acquire ComfyUI lock
+        comfyui_lock = app_state.get("comfyui_lock")
+        if not comfyui_lock:
+            raise HTTPException(status_code=500, detail="ComfyUI lock not initialized")
+        
+        # Get recent messages (use get_thread_history like image scene capture)
+        msg_repo = MessageRepository(db)
+        from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+        
+        all_messages_dicts = msg_repo.get_thread_history(thread_id)
+        recent_messages_dicts = all_messages_dicts[-10:] if len(all_messages_dicts) > 10 else all_messages_dicts
+        
+        # Convert dicts to Message objects
+        messages = []
+        for msg_dict in recent_messages_dicts:
+            msg = MessageModel(
+                id=msg_dict.get("id"),
+                thread_id=thread_id,
+                role=MessageRole(msg_dict["role"]),
+                content=msg_dict["content"],
+                created_at=msg_dict.get("created_at")
+            )
+            messages.append(msg)
+        
+        if not messages:
+            raise HTTPException(status_code=400, detail="No messages in thread to capture")
+        
+        async with comfyui_lock:
+            logger.info("[VIDEO SCENE] Acquired ComfyUI lock")
+            
+            # Unload ALL models before video generation to free VRAM (same as image generation)
+            llm_usage_lock = app_state.get("llm_usage_lock")
+            llm_client = app_state.get("llm_client")
+            
+            if not llm_usage_lock:
+                raise HTTPException(status_code=500, detail="LLM usage lock not initialized")
+            
+            logger.info("[VIDEO SCENE - VRAM] Waiting for LLM usage lock...")
+            async with llm_usage_lock:
+                logger.info("[VIDEO SCENE - VRAM] Acquired LLM usage lock - unloading ALL models to maximize VRAM for ComfyUI...")
+                
+                if llm_client:
+                    try:
+                        # Unload all loaded models
+                        await llm_client.unload_all_models()
+                        logger.info("[VIDEO SCENE - VRAM] All LLM models unloaded successfully")
+                    except Exception as e:
+                        logger.warning(f"[VIDEO SCENE - VRAM] Failed to unload LLM models: {e}")
+                
+                # Unload TTS models if loaded
+                from chorus_engine.services.tts.provider_factory import TTSProviderFactory
+                unloaded_tts_providers = []  # Track which providers we unload
+                try:
+                    all_providers = TTSProviderFactory._providers
+                    for provider_name, provider in all_providers.items():
+                        if provider.is_model_loaded():
+                            logger.info(f"[VIDEO SCENE - VRAM] Unloading TTS provider: {provider_name}")
+                            provider.unload_model()
+                            unloaded_tts_providers.append(provider_name)
+                except Exception as e:
+                    logger.warning(f"[VIDEO SCENE - VRAM] Failed to unload TTS models: {e}")
+                
+                try:
+                    # Create SCENE_CAPTURE message with generating status (matches image scene capture)
+                    msg_repo = MessageRepository(db)
+                    scene_message = msg_repo.create(
+                        thread_id=thread_id,
+                        role=MessageRole.SCENE_CAPTURE,
+                        content="",  # No text content for scene capture
+                        metadata={
+                            "video_prompt": request.prompt,
+                            "negative_prompt": request.negative_prompt,
+                            "seed": request.seed,
+                            "workflow_id": request.workflow_id or "default",
+                            "status": "generating"
+                        }
+                    )
+                    
+                    # Generate scene capture video
+                    video_repo = VideoRepository(db)
+                    video_record = await video_orchestrator.generate_scene_capture(
+                        video_repository=video_repo,
+                        conversation_id=conversation.id,
+                        thread_id=thread_id,
+                        messages=messages,
+                        character=character,
+                        character_name=character.name,
+                        character_id=conversation.character_id,
+                        workflow_entry=workflow_entry,
+                        prompt=request.prompt,  # Use user-provided prompt if given
+                        negative_prompt=request.negative_prompt,
+                        seed=request.seed
+                    )
+                
+                except Exception as e:
+                    logger.error(f"Video scene capture failed: {e}", exc_info=True)
+                    raise
+                
+                finally:
+                    # Models will reload on-demand when next needed
+                    # No explicit reload here - keeps VRAM free until next user message
+                    logger.info(f"[VIDEO SCENE - VRAM] Generation complete, models will reload on next request")
+                    
+                    # TTS providers will reload on-demand when next used
+                    if unloaded_tts_providers:
+                        logger.info(f"[VIDEO SCENE - VRAM] TTS providers unloaded: {unloaded_tts_providers} (will reload on-demand)")
+            
+            logger.info("[VIDEO SCENE] Scene capture complete")
+        
+        # Convert paths to HTTP URLs
+        # Paths already include data/videos prefix, just need to convert to HTTP format
+        video_path_str = str(video_record.file_path).replace("\\", "/")
+        # Remove 'data/' prefix for HTTP URL
+        http_path = "/" + video_path_str.replace("data/", "")
+        
+        http_thumb_path = None
+        if video_record.thumbnail_path:
+            thumb_path_str = str(video_record.thumbnail_path).replace("\\", "/")
+            http_thumb_path = "/" + thumb_path_str.replace("data/", "")
+        
+        # Update message metadata with completion (matches image scene capture)
+        from sqlalchemy.orm.attributes import flag_modified
+        message = msg_repo.get_by_id(scene_message.id)
+        if message and message.meta_data:
+            message.meta_data["status"] = "completed"
+            message.meta_data["video_id"] = video_record.id
+            message.meta_data["video_path"] = http_path
+            message.meta_data["prompt"] = video_record.prompt
+            message.meta_data["negative_prompt"] = video_record.negative_prompt
+            message.meta_data["format"] = video_record.format
+            message.meta_data["duration"] = video_record.duration_seconds
+            message.meta_data["generation_time"] = video_record.generation_time_seconds
+            if http_thumb_path:
+                message.meta_data["thumbnail_path"] = http_thumb_path
+            # Flag the JSON column as modified so SQLAlchemy knows to update it
+            flag_modified(message, "meta_data")
+            db.commit()
+        
+        logger.info(f"Scene capture video generated for message {scene_message.id}")
+        
+        return VideoGenerationResponse(
+            success=True,
+            video_id=video_record.id,
+            file_path=http_path,
+            thumbnail_path=http_thumb_path,
+            prompt=video_record.prompt,
+            format=video_record.format,
+            duration_seconds=video_record.duration_seconds,
+            generation_time=video_record.generation_time_seconds
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Scene video capture error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversations/{conversation_id}/videos")
+async def get_conversation_videos(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get all videos for a conversation."""
+    from chorus_engine.repositories.video_repository import VideoRepository
+    
+    video_repo = VideoRepository(db)
+    videos = video_repo.list_videos_for_conversation(conversation_id)
+    
+    result_videos = []
+    for video in videos:
+        # Convert filesystem paths to HTTP URLs
+        full_path = Path(video.file_path)
+        relative_path = full_path.relative_to(Path("data/videos"))
+        http_path = f"/videos/{relative_path.as_posix()}"
+        
+        http_thumb_path = None
+        if video.thumbnail_path:
+            thumb_path = Path(video.thumbnail_path)
+            relative_thumb = thumb_path.relative_to(Path("data/videos"))
+            http_thumb_path = f"/videos/{relative_thumb.as_posix()}"
+        
+        result_videos.append({
+            "id": video.id,
+            "file_path": http_path,
+            "thumbnail_path": http_thumb_path,
+            "format": video.format,
+            "duration_seconds": video.duration_seconds,
+            "width": video.width,
+            "height": video.height,
+            "prompt": video.prompt,
+            "negative_prompt": video.negative_prompt,
+            "generation_time": video.generation_time_seconds,
+            "created_at": video.created_at.isoformat() if video.created_at else None
+        })
+    
+    return {"videos": result_videos}
 
 
 # === Voice Sample Management Endpoints (Phase 6) ===
@@ -5928,6 +6865,12 @@ images_dir = Path(__file__).parent.parent.parent / "data" / "images"
 if images_dir.exists():
     app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
     logger.info(f"Mounted images directory: {images_dir}")
+
+# Mount generated videos directory
+videos_dir = Path(__file__).parent.parent.parent / "data" / "videos"
+if videos_dir.exists():
+    app.mount("/videos", StaticFiles(directory=str(videos_dir)), name="videos")
+    logger.info(f"Mounted videos directory: {videos_dir}")
 
 # Mount character profile images
 character_images_dir = Path(__file__).parent.parent.parent / "data" / "character_images"

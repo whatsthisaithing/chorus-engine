@@ -76,6 +76,9 @@ class Conversation(Base):
     # Phase 5: Image generation confirmation preference
     image_confirmation_disabled = Column(String(10), nullable=False, default="false")  # "true" or "false"
     
+    # Video generation confirmation preference
+    video_confirmation_disabled = Column(String(10), nullable=False, default="false")  # "true" or "false"
+    
     # Phase 6: TTS enabled for this conversation (NULL = use character default, 0 = off, 1 = on)
     tts_enabled = Column(Integer, nullable=True, default=None)
     
@@ -351,3 +354,47 @@ class AudioMessage(Base):
     
     def __repr__(self):
         return f"<AudioMessage(id={self.id}, msg_id={self.message_id}, file={self.audio_filename})>"
+
+
+class GeneratedVideo(Base):
+    """
+    A generated video represents an AI-generated video from ComfyUI.
+    
+    Video Generation Feature:
+    - Tracks videos generated during conversations
+    - Stores motion-focused prompts and workflow info
+    - Workflow-agnostic (format, duration, resolution determined by ComfyUI)
+    - Includes thumbnails (first frame extraction)
+    - Links to conversations with metadata
+    """
+    __tablename__ = "videos"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # File paths
+    file_path = Column(String(500), nullable=False)  # e.g., "data/videos/conv_id/1_video.webm"
+    thumbnail_path = Column(String(500), nullable=True)  # First frame thumbnail
+    
+    # Video properties (workflow-agnostic, may be null)
+    format = Column(String(10), nullable=True)  # webm, mp4, webp, gif, etc.
+    duration_seconds = Column(Float, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    
+    # Generation parameters
+    prompt = Column(Text, nullable=False)  # Motion-focused prompt
+    negative_prompt = Column(Text, nullable=True)
+    workflow_file = Column(String(500), nullable=True)  # Path to workflow JSON
+    
+    # ComfyUI metadata
+    comfy_prompt_id = Column(String(100), nullable=True)  # ComfyUI prompt tracking
+    generation_time_seconds = Column(Float, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    def __repr__(self):
+        prompt_preview = self.prompt[:50] + "..." if len(self.prompt) > 50 else self.prompt
+        duration_str = f"{self.duration_seconds:.1f}s" if self.duration_seconds else "unknown"
+        return f"<GeneratedVideo(id={self.id}, format={self.format}, duration={duration_str}, prompt={prompt_preview})>"

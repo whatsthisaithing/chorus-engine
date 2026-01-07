@@ -16,6 +16,8 @@ window.App = {
         lastMemoryCount: {}, // Track memory counts per character for sparkle effect
         memoryPollTimer: null, // Timer for memory polling
         ttsEnabled: false, // Phase 6: TTS status for current conversation
+        galleryImages: [], // Phase 9: Image gallery
+        galleryVideos: [] // Video gallery
     },
     
     /**
@@ -307,6 +309,10 @@ window.App = {
         // Phase 9: Scene capture button
         document.getElementById('sceneCaptureBtn').addEventListener('click', () => {
             this.captureScene();
+        });
+        
+        document.getElementById('videoSceneCaptureBtn').addEventListener('click', () => {
+            this.captureVideoScene();
         });
         
         // Enter key to send (without shift)
@@ -625,6 +631,12 @@ window.App = {
                 imagePromptPreview = imageInfo;
             };
             
+            // Add video callback to onChunk function
+            let videoPromptPreview = null;
+            onChunk.videoCallback = (videoInfo) => {
+                videoPromptPreview = videoInfo;
+            };
+            
             // Add title update callback
             onChunk.titleCallback = (newTitle) => {
                 // Update conversation title in sidebar and header
@@ -661,6 +673,15 @@ window.App = {
                             await this.showImageConfirmDialog(imagePromptPreview);
                         } else {
                             this.autoGenerateImage(imagePromptPreview);
+                        }
+                    }
+                    
+                    // Check for video request
+                    if (videoPromptPreview) {
+                        if (videoPromptPreview.needs_confirmation) {
+                            await this.showVideoConfirmDialog(videoPromptPreview);
+                        } else {
+                            this.autoGenerateVideo(videoPromptPreview);
                         }
                     }
                     
@@ -1053,6 +1074,11 @@ window.App = {
                 name: 'Image Generation', 
                 icon: 'bi-image',
                 enabled: character.capabilities?.image_generation || false 
+            },
+            { 
+                name: 'Video Generation', 
+                icon: 'bi-camera-video',
+                enabled: character.capabilities?.video_generation || false 
             },
             { 
                 name: 'Voice/Audio', 
@@ -1888,6 +1914,153 @@ window.App = {
     },
     
     /**
+     * Show video confirmation dialog
+     */
+    async showVideoConfirmDialog(videoPromptPreview, isSceneCapture = false) {
+        this.pendingVideoRequest = videoPromptPreview;
+        this.pendingVideoRequest.isSceneCapture = isSceneCapture;
+        
+        // Populate the prompt textarea
+        document.getElementById('videoPromptPreview').value = videoPromptPreview.prompt || '';
+        
+        // Populate workflow selector
+        await this.populateVideoWorkflowSelector();
+        
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('videoConfirmModal'));
+        modal.show();
+    },
+    
+    /**
+     * Confirm and generate video
+     */
+    async confirmVideoGeneration() {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('videoConfirmModal'));
+        modal.hide();
+        
+        if (!this.pendingVideoRequest || !this.state.selectedThreadId) return;
+        
+        try {
+            const disableConfirmation = document.getElementById('disableVideoConfirmation').checked;
+            const selectedWorkflow = document.getElementById('videoWorkflowSelector').value;
+            const workflowId = selectedWorkflow !== 'default' ? selectedWorkflow : null;
+            
+            // Get edited prompt from textarea
+            const editedPrompt = document.getElementById('videoPromptPreview').value;
+            
+            // Show progress message
+            const progressDiv = UI.appendVideoProgress();
+            
+            try {
+                let result;
+                
+                if (this.pendingVideoRequest.isSceneCapture) {
+                    // Scene capture path
+                    result = await API.captureVideoScene(
+                        this.state.selectedThreadId,
+                        editedPrompt,
+                        null, // No negative prompt for video
+                        workflowId
+                    );
+                } else {
+                    // Regular generation path
+                    result = await API.generateVideo(
+                        this.state.selectedThreadId,
+                        editedPrompt,
+                        null, // No negative prompt
+                        disableConfirmation,
+                        workflowId
+                    );
+                }
+                
+                // Remove progress indicator
+                if (progressDiv) {
+                    progressDiv.remove();
+                }
+                
+                if (result.success) {
+                    UI.appendGeneratedVideo(result);
+                    UI.showToast(`Video generated! (${result.format}, ${result.duration_seconds}s)`, 'success');
+                    await this.refreshGallery();
+                } else {
+                    UI.showToast('Video generation failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+                
+                this.pendingVideoRequest = null;
+                
+            } catch (error) {
+                if (progressDiv) {
+                    progressDiv.remove();
+                }
+                throw error;
+            }
+            
+        } catch (error) {
+            console.error('Failed to generate video:', error);
+            UI.showToast('Failed to generate video: ' + error.message, 'error');
+        }
+    },
+    
+    /**
+     * Auto-generate video (confirmation disabled)
+     */
+    async autoGenerateVideo(videoPromptPreview) {
+        if (!this.state.selectedThreadId) return;
+        
+        try {
+            // Show progress message
+            const progressDiv = UI.appendVideoProgress();
+            
+            // Generate video using the pre-generated prompt
+            const result = await API.generateVideo(
+                this.state.selectedThreadId,
+                videoPromptPreview.prompt,  // Use generated prompt
+                null,  // No negative prompt
+                false,  // Don't disable confirmations
+                null   // Use default workflow
+            );
+            
+            // Remove progress and show video
+            if (progressDiv) {
+                progressDiv.remove();
+            }
+            
+            if (result.success) {
+                UI.appendGeneratedVideo(result);
+                UI.showToast(`Video generated! (${result.format})`, 'success');
+            } else {
+                UI.showToast('Video generation failed: ' + (result.error || 'Unknown error'), 'error');
+            }
+            
+        } catch (error) {
+            console.error('Failed to auto-generate video:', error);
+            UI.showToast('Failed to generate video: ' + error.message, 'error');
+        }
+    },
+    
+    /**
+     * Capture current scene as video (🎥 button)
+     */
+    async captureVideoScene() {
+        if (!this.state.selectedThreadId) {
+            UI.showToast('Please select a conversation first', 'error');
+            return;
+        }
+        
+        try {
+            // Get scene capture prompt from backend
+            const promptData = await API.captureVideoScenePrompt(this.state.selectedThreadId);
+            
+            // Show video dialog with scene capture flag
+            await this.showVideoConfirmDialog(promptData, true);
+            
+        } catch (error) {
+            console.error('Failed to capture video scene:', error);
+            UI.showToast('Failed to generate video scene prompt: ' + error.message, 'error');
+        }
+    },
+    
+    /**
      * Start polling for new implicit memories after sending a message
      */
     startMemoryPolling() {
@@ -2151,26 +2324,54 @@ window.App = {
      * Phase 9: Update scene capture button visibility
      */
     updateSceneCaptureButton() {
-        const btn = document.getElementById('sceneCaptureBtn');
+        const imageBtn = document.getElementById('sceneCaptureBtn');
+        const videoBtn = document.getElementById('videoSceneCaptureBtn');
         const character = this.state.characters.find(c => c.id === this.state.selectedCharacterId);
         
         console.log('Scene capture button check:', {
-            hasButton: !!btn,
+            hasImageButton: !!imageBtn,
+            hasVideoButton: !!videoBtn,
             characterId: this.state.selectedCharacterId,
             character: character,
             immersionLevel: character?.immersion_level,
+            capabilities: character?.capabilities,
             threadId: this.state.selectedThreadId
         });
         
-        // Show button only for unbounded characters with active conversation
-        if (character && character.immersion_level === 'unbounded' && this.state.selectedThreadId) {
-            btn.style.display = 'inline-block';
-            btn.disabled = false;
-            console.log('✓ Scene capture button enabled');
-        } else {
-            btn.style.display = 'none';
-            btn.disabled = true;
-            console.log('✗ Scene capture button hidden');
+        // Show image button for unbounded characters with image generation enabled and active conversation
+        if (imageBtn) {
+            if (character && character.immersion_level === 'unbounded' && 
+                character.capabilities?.image_generation && this.state.selectedThreadId) {
+                imageBtn.style.display = 'inline-block';
+                imageBtn.disabled = false;
+                console.log('✓ Image scene capture button enabled');
+            } else {
+                imageBtn.style.display = 'none';
+                imageBtn.disabled = true;
+                console.log('✗ Image scene capture button hidden:', {
+                    isUnbounded: character?.immersion_level === 'unbounded',
+                    imageGen: character?.capabilities?.image_generation,
+                    hasThread: !!this.state.selectedThreadId
+                });
+            }
+        }
+        
+        // Show video button for unbounded characters with video generation enabled and active conversation
+        if (videoBtn) {
+            if (character && character.immersion_level === 'unbounded' && 
+                character.capabilities?.video_generation && this.state.selectedThreadId) {
+                videoBtn.style.display = 'inline-block';
+                videoBtn.disabled = false;
+                console.log('✓ Video scene capture button enabled');
+            } else {
+                videoBtn.style.display = 'none';
+                videoBtn.disabled = true;
+                console.log('✗ Video scene capture button hidden:', {
+                    isUnbounded: character?.immersion_level === 'unbounded',
+                    videoGen: character?.capabilities?.video_generation,
+                    hasThread: !!this.state.selectedThreadId
+                });
+            }
         }
     },
     
@@ -2205,6 +2406,66 @@ window.App = {
         }
     },
     
+    /**
+     * Populate video workflow selector dropdown
+     */
+    async populateVideoWorkflowSelector() {
+        const selector = document.getElementById('videoWorkflowSelector');
+        selector.innerHTML = '';
+        
+        // Get current character
+        const characterId = this.state.selectedCharacterId;
+        if (!characterId) {
+            // No character selected, just show default
+            const defaultOption = document.createElement('option');
+            defaultOption.value = 'default';
+            defaultOption.textContent = 'Default';
+            defaultOption.selected = true;
+            selector.appendChild(defaultOption);
+            return;
+        }
+        
+        try {
+            // Fetch workflows from database
+            const response = await API.listWorkflows(characterId);
+            const allWorkflows = response.workflows || [];
+            
+            // Filter for video workflows only
+            const videoWorkflows = allWorkflows.filter(w => w.workflow_type === 'video');
+            
+            // Add each workflow as an option
+            videoWorkflows.forEach((wf, index) => {
+                const option = document.createElement('option');
+                option.value = wf.id;
+                option.textContent = wf.name;
+                
+                // Select the default workflow
+                if (wf.is_default) {
+                    option.selected = true;
+                }
+                
+                selector.appendChild(option);
+            });
+            
+            // If no workflows found, show a placeholder
+            if (videoWorkflows.length === 0) {
+                const defaultOption = document.createElement('option');
+                defaultOption.value = 'default';
+                defaultOption.textContent = 'No workflows configured';
+                defaultOption.selected = true;
+                selector.appendChild(defaultOption);
+            }
+        } catch (error) {
+            console.error('Failed to load video workflows:', error);
+            // Fallback to default
+            const defaultOption = document.createElement('option');
+            defaultOption.value = 'default';
+            defaultOption.textContent = 'Default';
+            defaultOption.selected = true;
+            selector.appendChild(defaultOption);
+        }
+    },
+
     /**
      * Phase 9: Populate workflow selector dropdown
      */
@@ -2270,54 +2531,93 @@ window.App = {
      */
     async loadImageGallery() {
         if (!this.state.selectedConversationId) {
-            this.renderGallery([]);
+            this.renderGallery([], []);
             return;
         }
         
         try {
-            const response = await fetch(`http://localhost:8080/conversations/${this.state.selectedConversationId}/images`);
-            if (!response.ok) {
-                // Gallery endpoint may not exist yet - silently handle
-                if (response.status === 404) {
-                    console.log('Image gallery endpoint not available yet');
-                    this.state.galleryImages = [];
-                    this.renderGallery([]);
-                    return;
-                }
-                throw new Error('Failed to load images');
+            // Load images
+            const imageResponse = await fetch(`http://localhost:8080/conversations/${this.state.selectedConversationId}/images`);
+            let images = [];
+            if (imageResponse.ok) {
+                const imageData = await imageResponse.json();
+                images = imageData.images || [];
             }
             
-            const data = await response.json();
-            this.state.galleryImages = data.images || [];
-            this.renderGallery(this.state.galleryImages);
+            // Load videos
+            const videoResponse = await fetch(`http://localhost:8080/conversations/${this.state.selectedConversationId}/videos`);
+            let videos = [];
+            if (videoResponse.ok) {
+                const videoData = await videoResponse.json();
+                videos = videoData.videos || [];
+                console.log('Loaded videos:', videos.length, videos);
+            } else {
+                console.warn('Failed to load videos:', videoResponse.status, videoResponse.statusText);
+            }
+            
+            this.state.galleryImages = images;
+            this.state.galleryVideos = videos;
+            this.renderGallery(images, videos);
             
         } catch (error) {
             console.error('Failed to load gallery:', error);
             this.state.galleryImages = [];
-            this.renderGallery([]);
+            this.state.galleryVideos = [];
+            this.renderGallery([], []);
         }
     },
     
     /**
-     * Phase 9: Render image gallery
+     * Phase 9: Render image and video gallery
      */
-    renderGallery(images) {
-        const grid = document.getElementById('galleryGrid');
-        const count = document.querySelector('.gallery-count');
+    renderGallery(images, videos) {
+        console.log('renderGallery called with:', images?.length || 0, 'images and', videos?.length || 0, 'videos');
+        const imageGrid = document.getElementById('galleryGrid');
+        const videoGrid = document.getElementById('videoGalleryGrid');
+        const totalCount = document.querySelector('.gallery-count');
+        const imageCount = document.getElementById('imageCount');
+        const videoCount = document.getElementById('videoCount');
         
-        count.textContent = images.length;
+        console.log('HTML elements:', { imageGrid: !!imageGrid, videoGrid: !!videoGrid, totalCount: !!totalCount, imageCount: !!imageCount, videoCount: !!videoCount });
         
-        if (images.length === 0) {
-            grid.innerHTML = '<p class="text-muted text-center mt-4">No images yet</p>';
-            return;
+        const totalMedia = (images?.length || 0) + (videos?.length || 0);
+        totalCount.textContent = totalMedia;
+        imageCount.textContent = images?.length || 0;
+        videoCount.textContent = videos?.length || 0;
+        
+        // Render images
+        if (!images || images.length === 0) {
+            imageGrid.innerHTML = '<p class="text-muted text-center mt-2">No images yet</p>';
+        } else {
+            imageGrid.innerHTML = images.map((img, index) => `
+                <div class="gallery-thumbnail" onclick="App.viewGalleryImage(${index})" title="${this.escapeHtml(img.prompt || 'Image')}">
+                    <img src="${img.thumbnail_path || img.file_path}" alt="Image ${index + 1}">
+                    ${img.is_scene_capture ? '<span class="scene-capture-badge"><i class="bi bi-camera-fill"></i> Scene</span>' : ''}
+                </div>
+            `).join('');
         }
         
-        grid.innerHTML = images.map((img, index) => `
-            <div class="gallery-thumbnail" onclick="App.viewGalleryImage(${index})" title="${this.escapeHtml(img.prompt || 'Image')}">
-                <img src="${img.thumbnail_path || img.file_path}" alt="Image ${index + 1}">
-                ${img.is_scene_capture ? '<span class="scene-capture-badge"><i class="bi bi-camera-fill"></i> Scene</span>' : ''}
-            </div>
-        `).join('');
+        // Render videos
+        if (!videos || videos.length === 0) {
+            videoGrid.innerHTML = '<p class="text-muted text-center mt-2">No videos yet</p>';
+        } else {
+            videoGrid.innerHTML = videos.map((vid, index) => {
+                const isImageFormat = vid.format === 'webp' || vid.format === '.webp' || vid.format === 'gif' || vid.format === '.gif';
+                return `
+                    <div class="gallery-thumbnail" onclick="App.viewGalleryVideo(${index})" title="${this.escapeHtml(vid.prompt || 'Video')}">
+                        ${isImageFormat ? `
+                            <img src="${vid.file_path}" alt="Video ${index + 1}" style="width: 100%; height: 100%; object-fit: cover;">
+                        ` : `
+                            <video muted style="width: 100%; height: 100%; object-fit: cover; pointer-events: none;">
+                                <source src="${vid.file_path}" type="${UI.getVideoMimeType(vid.format)}">
+                            </video>
+                        `}
+                        ${vid.is_scene_capture ? '<span class="scene-capture-badge"><i class="bi bi-camera-video-fill"></i> Scene</span>' : ''}
+                        <span class="video-duration-badge">${vid.format.toUpperCase()}</span>
+                    </div>
+                `;
+            }).join('');
+        }
     },
     
     /**
@@ -2364,6 +2664,101 @@ window.App = {
         modal.addEventListener('hidden.bs.modal', () => {
             modal.remove();
         });
+    },
+    
+    /**
+     * View gallery video in modal
+     */
+    viewGalleryVideo(index) {
+        const vid = this.state.galleryVideos[index];
+        if (!vid) return;
+        
+        const isImageFormat = vid.format === 'webp' || vid.format === '.webp' || vid.format === 'gif' || vid.format === '.gif';
+        
+        // Create and show modal with full video
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content bg-dark text-white">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title">
+                            ${vid.is_scene_capture ? '<i class="bi bi-camera-video-fill me-2"></i>Scene Capture' : '<i class="bi bi-camera-video me-2"></i>Generated Video'}
+                            <span class="badge bg-secondary ms-2">${vid.format.toUpperCase()}</span>
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body text-center">
+                        ${isImageFormat ? `
+                            <img src="${vid.file_path}" class="img-fluid rounded" alt="Full video" style="max-height: 70vh;">
+                        ` : `
+                            <video controls preload="metadata" class="rounded" style="max-width: 100%; max-height: 70vh;">
+                                <source src="${vid.file_path}" type="${UI.getVideoMimeType(vid.format)}">
+                                Your browser does not support video playback.
+                            </video>
+                        `}
+                        ${vid.prompt ? `<p class="modal-label mt-3 small"><strong>Prompt:</strong> ${this.escapeHtml(vid.prompt)}</p>` : ''}
+                        ${vid.duration_seconds ? `<p class="modal-label small"><strong>Duration:</strong> ${vid.duration_seconds.toFixed(1)}s</p>` : ''}
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-outline-danger btn-sm" onclick="App.deleteVideo(${vid.id}, this)">
+                            <i class="bi bi-trash me-1"></i> Delete Video
+                        </button>
+                        <a href="${vid.file_path}" download class="btn btn-outline-primary btn-sm">
+                            <i class="bi bi-download me-1"></i> Download
+                        </a>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // Remove modal from DOM when hidden
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    },
+    
+    /**
+     * Delete a video from the conversation
+     */
+    async deleteVideo(videoId, buttonElement) {
+        // Confirm deletion
+        if (!confirm('Are you sure you want to delete this video? This action cannot be undone.')) {
+            return;
+        }
+        
+        try {
+            const response = await API.deleteVideo(videoId);
+            
+            if (response.success) {
+                UI.showToast('Video deleted successfully', 'success');
+                
+                // Close the modal
+                const modal = buttonElement.closest('.modal');
+                if (modal) {
+                    const bsModal = bootstrap.Modal.getInstance(modal);
+                    if (bsModal) {
+                        bsModal.hide();
+                    }
+                }
+                
+                // Refresh gallery and conversation messages
+                this.refreshGallery();
+                if (this.state.selectedConversationId) {
+                    await this.selectConversation(this.state.selectedConversationId);
+                }
+            } else {
+                UI.showToast(response.message || 'Failed to delete video', 'error');
+            }
+        } catch (error) {
+            console.error('Failed to delete video:', error);
+            UI.showToast('Failed to delete video', 'error');
+        }
     },
     
     /**

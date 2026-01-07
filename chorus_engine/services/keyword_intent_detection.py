@@ -40,7 +40,7 @@ class KeywordIntentDetector:
     # Request indicators - verbs/phrases that indicate user wants something
     REQUEST_INDICATORS = [
         'send', 'show', 'give', 'create', 'generate', 'make', 'draw',
-        'take', 'share', 'post', 'upload',
+        'take', 'share', 'post', 'upload', 'shoot',
         'can you', 'could you', 'would you', 'will you',
         'please', "i'd like", 'i want', 'i need',
         'let me see', 'show me'

@@ -141,13 +141,13 @@ class ImagePromptService:
         # Build system prompt
         system_prompt = self._build_system_prompt(character, workflow_config)
         
-        # Build user prompt
-        user_prompt = f"""User Request: {user_request}
+        # Build user prompt with emphasis on the actual request
+        user_prompt = f"""USER'S IMAGE REQUEST: {user_request}
 
-Recent Context:
+RECENT CONVERSATION CONTEXT:
 {context_str}
 
-Generate an image prompt based on this request."""
+Generate an image prompt based on the USER'S IMAGE REQUEST above. Focus on creating a detailed, vivid prompt that captures what the user is asking for."""
         
         try:
             # Call LLM with character's preferred model (if available)
@@ -254,7 +254,7 @@ DETAIL REQUIREMENTS:
 
 Example of detail level:
 Bad: "woman in a garden"
-Good: "A young woman with flowing auburn hair stands in an enchanted garden at golden hour, soft sunlight filtering through ancient oak trees and casting dappled shadows across her white linen dress. She holds a leather-bound book, her expression thoughtful and serene. Wildflowers in vibrant purples and yellows surround her feet, while butterflies dance in the warm, hazy air. The background shows a stone archway covered in climbing roses, slightly out of focus. Painted in the style of Pre-Raphaelite art, with rich colors, intricate details, and romantic lighting. Shot with shallow depth of field, 85mm lens, soft bokeh."
+Good: "A young woman stands in an enchanted garden at golden hour, soft sunlight filtering through ancient oak trees and casting dappled shadows across her white linen dress. Her hair flows freely in the gentle breeze. She holds a leather-bound book, her expression thoughtful and serene. Wildflowers in vibrant purples and yellows surround her feet, while butterflies dance in the warm, hazy air. The background shows a stone archway covered in climbing roses, slightly out of focus. Painted in the style of Pre-Raphaelite art, with rich colors, intricate details, and romantic lighting. Shot with shallow depth of field, 85mm lens, soft bokeh."
 
 Return ONLY valid JSON in this format:
 {{
@@ -268,8 +268,8 @@ Remember: More detail = better results. Be specific, visual, and evocative!
         
         return prompt
     
-    def _build_context_string(self, messages: List[Dict[str, str]], max_messages: int = 5) -> str:
-        """Build context string from recent messages."""
+    def _build_context_string(self, messages: List[Dict[str, str]], max_messages: int = 3) -> str:
+        """Build context string from recent messages (limited to avoid context pollution)."""
         recent = messages[-max_messages:] if len(messages) > max_messages else messages
         
         context_lines = []

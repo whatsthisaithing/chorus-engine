@@ -58,7 +58,8 @@ memory:
 comfyui:
   enabled: true
   url: http://localhost:8188
-  timeout_seconds: 300
+  timeout_seconds: 300  # Image generation timeout
+  video_timeout_seconds: 600  # Video generation timeout (10 minutes)
   polling_interval_seconds: 2.0
   max_concurrent_jobs: 2
 

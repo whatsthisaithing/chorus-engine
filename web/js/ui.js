@@ -101,6 +101,12 @@ const UI = {
                 badge.innerHTML = '<i class="bi bi-image"></i> Images';
                 capabilitiesContainer.appendChild(badge);
             }
+            if (character.capabilities.video_generation) {
+                const badge = document.createElement('span');
+                badge.className = 'capability-badge';
+                badge.innerHTML = '<i class="bi bi-camera-video"></i> Videos';
+                capabilitiesContainer.appendChild(badge);
+            }
             if (character.capabilities.audio_generation) {
                 const badge = document.createElement('span');
                 badge.className = 'capability-badge';
@@ -203,11 +209,15 @@ const UI = {
         // Hide empty state when appending messages
         this.showEmptyState(false);
         
-        // Phase 9: For scene captures, only render the image, not the message bubble
+        // Phase 9: For scene captures, only render the image/video, not the message bubble
         if (message.role === 'scene_capture') {
-            // Only render if image generation completed successfully
-            if (message.metadata && message.metadata.image_id && message.metadata.status === 'completed') {
-                this.appendSceneCaptureImage(message);
+            // Only render if generation completed successfully
+            if (message.metadata && message.metadata.status === 'completed') {
+                if (message.metadata.image_id) {
+                    this.appendSceneCaptureImage(message);
+                } else if (message.metadata.video_id) {
+                    this.appendSceneCaptureVideo(message);
+                }
             }
             return;
         }
@@ -304,6 +314,62 @@ const UI = {
                 </div>
             `;
             container.appendChild(imageDiv);
+        }
+        
+        // Add video as a SEPARATE message bubble if metadata includes video_id
+        if (message.role === 'assistant' && message.metadata && message.metadata.video_id) {
+            const videoDiv = document.createElement('div');
+            videoDiv.className = 'message assistant-message video-only-message mt-3';
+            const isImageFormat = this.isImageVideoFormat(message.metadata.format);
+            videoDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="generated-video-container">
+                        ${isImageFormat ? `
+                            <img src="${message.metadata.video_path}" 
+                                 alt="Generated animation" 
+                                 class="generated-video"
+                                 style="max-width: 100%; max-height: 600px; border-radius: 8px;"
+                                 loading="lazy">
+                        ` : `
+                            <video controls preload="metadata" class="generated-video" style="max-width: 100%; max-height: 600px; border-radius: 8px;">
+                                <source src="${message.metadata.video_path}" type="${this.getVideoMimeType(message.metadata.format)}">
+                                Your browser does not support the video tag.
+                            </video>
+                        `}
+                        <div class="video-actions">
+                            <button class="btn btn-sm btn-outline-secondary" 
+                                    onclick="UI.viewInlineVideo('${message.metadata.video_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', false, '${message.metadata.format || 'mp4'}')"
+                                    title="View fullscreen">
+                                <i class="bi bi-arrows-fullscreen"></i>
+                            </button>
+                            <a href="${message.metadata.video_path}" 
+                               download 
+                               class="btn btn-sm btn-outline-secondary"
+                               title="Download">
+                                <i class="bi bi-download"></i>
+                            </a>
+                            ${message.metadata.prompt ? `
+                            <button class="btn btn-sm btn-outline-secondary" 
+                                    onclick="UI.showVideoPrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                    title="View prompt">
+                                <i class="bi bi-chat-left-text"></i>
+                            </button>
+                            ` : ''}
+                        </div>
+                        ${message.metadata.generation_time ? `
+                            <small class="text-muted d-block mt-2">
+                                Generated in ${message.metadata.generation_time.toFixed(1)}s
+                            </small>
+                        ` : ''}
+                        ${message.metadata.duration ? `
+                            <small class="text-muted d-block">
+                                Duration: ${message.metadata.duration.toFixed(1)}s • ${(message.metadata.format || 'video').toUpperCase()}
+                            </small>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+            container.appendChild(videoDiv);
         }
         
         return messageDiv;
@@ -753,6 +819,193 @@ const UI = {
         // Fallback scroll in case image loads from cache
         setTimeout(() => this.scrollToBottom(), 100);
     },
+    
+    /**
+     * Append video generation progress indicator
+     */
+    appendVideoProgress() {
+        const container = document.getElementById('messagesContainer');
+        
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'message assistant-message mt-3';
+        progressDiv.innerHTML = `
+            <div class="message-content">
+                <div class="video-progress">
+                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
+                        <span class="visually-hidden">Generating...</span>
+                    </div>
+                    <span>Generating video... (this may take several minutes)</span>
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(progressDiv);
+        this.scrollToBottom();
+        
+        return progressDiv;
+    },
+    
+    /**
+     * Append generated video to chat
+     */
+    appendGeneratedVideo(result) {
+        const container = document.getElementById('messagesContainer');
+        
+        const videoDiv = document.createElement('div');
+        videoDiv.className = 'message assistant-message video-only-message mt-3';
+        
+        const durationText = result.duration_seconds 
+            ? `${result.duration_seconds.toFixed(1)}s` 
+            : 'unknown duration';
+        const formatText = result.format || 'video';
+        const isImageFormat = this.isImageVideoFormat(result.format);
+        
+        videoDiv.innerHTML = `
+            <div class="message-content">
+                <div class="generated-video-container">
+                    ${isImageFormat ? `
+                        <img src="${result.file_path}" 
+                             alt="Generated animation" 
+                             class="generated-video"
+                             style="max-width: 100%; max-height: 600px; border-radius: 8px;"
+                             loading="lazy">
+                    ` : `
+                        <video controls preload="metadata" class="generated-video" style="max-width: 100%; max-height: 600px; border-radius: 8px;">
+                            <source src="${result.file_path}" type="${this.getVideoMimeType(result.format)}">
+                            Your browser does not support video playback.
+                        </video>
+                    `}
+                    <div class="video-actions mt-2">
+                        <a href="${result.file_path}" 
+                           download 
+                           class="btn btn-sm btn-outline-secondary"
+                           title="Download">
+                            <i class="bi bi-download"></i> Download
+                        </a>
+                        ${result.prompt ? `
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.showVideoPrompt('${this.escapeHtml(result.prompt).replace(/'/g, '\\&apos;')}')"
+                                title="View prompt">
+                            <i class="bi bi-chat-left-text"></i> Prompt
+                        </button>
+                        ` : ''}
+                    </div>
+                    <small class="text-muted d-block mt-2">
+                        ${formatText.toUpperCase()} • ${durationText}
+                        ${result.generation_time ? ` • Generated in ${result.generation_time.toFixed(1)}s` : ''}
+                    </small>
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(videoDiv);
+        this.scrollToBottom();
+    },
+    
+    showVideoPrompt(prompt) {
+        // Decode HTML entities
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = prompt;
+        const decodedPrompt = textarea.value;
+        
+        // Show modal with prompt
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Video Generation Prompt</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-info mb-3">
+                            <i class="bi bi-info-circle me-2"></i>
+                            This is the motion-focused prompt that was used to create the video.
+                        </div>
+                        <div class="form-group">
+                            <textarea class="form-control" rows="10" readonly>${this.escapeHtml(decodedPrompt)}</textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    },
+
+    appendSceneCaptureVideo(message) {
+        const container = document.getElementById('messagesContainer');
+        
+        const videoDiv = document.createElement('div');
+        videoDiv.className = 'message assistant-message video-only-message mt-3';
+        videoDiv.setAttribute('data-message-id', message.id);
+        const isImageFormat = this.isImageVideoFormat(message.metadata.format);
+        
+        videoDiv.innerHTML = `
+            <div class="message-content">
+                <div class="generated-video-container">
+                    ${isImageFormat ? `
+                        <img src="${message.metadata.video_path}" 
+                             alt="Scene capture animation" 
+                             class="generated-video"
+                             style="max-width: 100%; max-height: 600px; border-radius: 8px;"
+                             loading="lazy">
+                    ` : `
+                        <video controls preload="metadata" class="generated-video" style="max-width: 100%; max-height: 600px; border-radius: 8px;">
+                            <source src="${message.metadata.video_path}" type="${this.getVideoMimeType(message.metadata.format)}">
+                            Your browser does not support the video tag.
+                        </video>
+                    `}
+                    <span class="badge bg-info scene-capture-badge">
+                        <i class="bi bi-camera-video-fill"></i> Scene Capture
+                    </span>
+                    <div class="video-actions">
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.viewInlineVideo('${message.metadata.video_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', true, '${message.metadata.format || 'mp4'}')"
+                                title="View fullscreen">
+                            <i class="bi bi-arrows-fullscreen"></i>
+                        </button>
+                        <a href="${message.metadata.video_path}" 
+                           download 
+                           class="btn btn-sm btn-outline-secondary"
+                           title="Download">
+                            <i class="bi bi-download"></i>
+                        </a>
+                        ${message.metadata.prompt ? `
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                onclick="UI.showVideoPrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                title="View prompt">
+                            <i class="bi bi-chat-left-text"></i>
+                        </button>
+                        ` : ''}
+                    </div>
+                    ${message.metadata.generation_time ? `
+                        <small class="text-muted d-block mt-2">
+                            Generated in ${message.metadata.generation_time.toFixed(1)}s
+                        </small>
+                    ` : ''}
+                    ${message.metadata.duration ? `
+                        <small class="text-muted d-block">
+                            Duration: ${message.metadata.duration.toFixed(1)}s • ${(message.metadata.format || 'video').toUpperCase()}
+                        </small>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(videoDiv);
+        this.scrollToBottom();
+    },
 
     showImagePrompt(prompt) {
         // Decode HTML entities
@@ -774,6 +1027,70 @@ const UI = {
                         <div class="alert alert-info mb-3">
                             <i class="bi bi-info-circle me-2"></i>
                             This is the AI-generated prompt that was used to create the image.
+                        </div>
+                        <div class="form-group">
+                            <textarea class="form-control" rows="10" readonly>${this.escapeHtml(decodedPrompt)}</textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-primary" onclick="navigator.clipboard.writeText(this.closest('.modal').querySelector('textarea').value); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy to Clipboard', 2000);">Copy to Clipboard</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // Remove modal from DOM when hidden
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    },
+    
+    isImageVideoFormat(format) {
+        // Determine if format is an image-based animation (should use img tag, not video tag)
+        const formatLower = (format || '').toLowerCase().replace('.', '');
+        return formatLower === 'webp' || formatLower === 'gif';
+    },
+
+    getVideoMimeType(format) {
+        // Handle file formats and return proper MIME types
+        const formatLower = (format || 'mp4').toLowerCase().replace('.', '');
+        const mimeTypes = {
+            'webp': 'image/webp',  // Animated WebP
+            'gif': 'image/gif',
+            'mp4': 'video/mp4',
+            'webm': 'video/webm',
+            'avi': 'video/x-msvideo',
+            'mov': 'video/quicktime',
+            'mkv': 'video/x-matroska'
+        };
+        return mimeTypes[formatLower] || `video/${formatLower}`;
+    },
+    
+    showVideoPrompt(prompt) {
+        // Decode HTML entities
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = prompt;
+        const decodedPrompt = textarea.value;
+        
+        // Show modal with prompt
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Video Generation Prompt</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-info mb-3">
+                            <i class="bi bi-info-circle me-2"></i>
+                            This is the AI-generated prompt that was used to create the video.
                         </div>
                         <div class="form-group">
                             <textarea class="form-control" rows="10" readonly>${this.escapeHtml(decodedPrompt)}</textarea>
@@ -820,6 +1137,49 @@ const UI = {
                         <button type="button" class="btn btn-outline-warning btn-sm" onclick="App.setAsProfileImage('${imagePath}')">
                             <i class="bi bi-person-circle me-1"></i> Set as Character Profile
                         </button>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // Remove modal from DOM when hidden
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+    },
+
+    viewInlineVideo(videoPath, prompt = '', isSceneCapture = false, format = 'mp4') {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content bg-dark text-white">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title">
+                            ${isSceneCapture ? '<i class="bi bi-camera-video-fill me-2"></i>Scene Capture' : '<i class="bi bi-film me-2"></i>Generated Video'}
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body text-center">
+                        ${this.isImageVideoFormat(format) ? `
+                            <img src="${videoPath}" class="rounded" style="max-width: 100%; max-height: 70vh;" alt="Generated animation">
+                        ` : `
+                            <video controls autoplay class="rounded" style="max-width: 100%; max-height: 70vh;">
+                                <source src="${videoPath}" type="${this.getVideoMimeType(format)}">
+                                Your browser does not support the video tag.
+                            </video>
+                        `}
+                        ${prompt ? `<p class="modal-label mt-3 small"><strong>Prompt:</strong> ${prompt}</p>` : ''}
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <a href="${videoPath}" download class="btn btn-outline-secondary btn-sm">
+                            <i class="bi bi-download me-1"></i> Download
+                        </a>
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                     </div>
                 </div>

@@ -93,7 +93,7 @@ class WorkflowRepository:
     
     def set_default(self, character_name: str, workflow_name: str) -> bool:
         """
-        Set a workflow as the default for a character.
+        Set a workflow as the default for a character and workflow type.
         
         Args:
             character_name: Character name
@@ -102,20 +102,23 @@ class WorkflowRepository:
         Returns:
             True if successful, False if workflow not found
         """
-        # Unset all defaults for this character
+        # First, get the workflow to find its type
+        workflow = self.get_by_name(character_name, workflow_name)
+        if not workflow:
+            return False
+        
+        # Unset all defaults for this character AND workflow type
         self.db.query(Workflow).filter(
             Workflow.character_name == character_name,
+            Workflow.workflow_type == workflow.workflow_type,
             Workflow.is_default == True
         ).update({"is_default": False})
         
         # Set new default
-        result = self.db.query(Workflow).filter(
-            Workflow.character_name == character_name,
-            Workflow.workflow_name == workflow_name
-        ).update({"is_default": True})
+        workflow.is_default = True
         
         self.db.commit()
-        return result > 0
+        return True
     
     def update_config(self, workflow_id: int, trigger_word: Optional[str] = None,
                      default_style: Optional[str] = None, negative_prompt: Optional[str] = None,

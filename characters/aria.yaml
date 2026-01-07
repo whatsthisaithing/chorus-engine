@@ -133,5 +133,8 @@ memory:
 image_generation:
   enabled: true
 
+video_generation:
+  enabled: true
+
 voice:
   enabled: true

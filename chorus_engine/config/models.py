@@ -48,6 +48,7 @@ class ComfyUIConfig(BaseModel):
     enabled: bool = True
     url: str = "http://localhost:8188"
     timeout_seconds: int = Field(default=300, gt=0)
+    video_timeout_seconds: int = Field(default=600, gt=0)  # Longer timeout for video generation
     polling_interval_seconds: float = Field(default=2.0, gt=0)
     max_concurrent_jobs: int = Field(default=2, gt=0, le=10)
     
@@ -275,6 +276,16 @@ class ImageGenerationConfig(BaseModel):
     enabled: bool = False
 
 
+class VideoGenerationConfig(BaseModel):
+    """Video generation configuration for characters.
+    
+    Note: Workflow settings are managed in the database via the workflow management system.
+    Only the enabled flag is stored in character configuration.
+    """
+    
+    enabled: bool = False
+
+
 class DocumentAnalysisConfig(BaseModel):
     """Document analysis configuration for characters (Phase 1-7)."""
     
@@ -373,6 +384,7 @@ class CharacterConfig(BaseModel):
     ambient_activity: AmbientActivityConfig = Field(default_factory=AmbientActivityConfig)
     visual_identity: Optional[VisualIdentityConfig] = None
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    video_generation: VideoGenerationConfig = Field(default_factory=VideoGenerationConfig)
     
     # Document analysis & code execution (Phase 1-7)
     document_analysis: DocumentAnalysisConfig = Field(default_factory=DocumentAnalysisConfig)

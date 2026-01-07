@@ -278,8 +278,8 @@ class ImageGenerationOrchestrator:
                 callback=progress_callback
             )
             
-            # 6. Retrieve image
-            image_data = await self.comfyui_client.get_result(job_id)
+            # 6. Retrieve image (get_result returns tuple of (bytes, extension))
+            image_data, extension = await self.comfyui_client.get_result(job_id)
             
             # 7. Save to disk
             image_repo = ImageRepository(db)
