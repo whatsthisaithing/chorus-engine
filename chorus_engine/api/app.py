@@ -1067,24 +1067,8 @@ async def get_character(character_id: str):
     
     char = characters[character_id]
     
-    # Build response with optional preferred_llm
-    response = {
-        "id": char.id,
-        "name": char.name,
-        "role": char.role,
-        "personality_traits": char.personality_traits,
-        "system_prompt": char.system_prompt,
-        "immersion_level": char.immersion_level,
-    }
-    
-    # Include preferred_llm if any values are set
-    if char.preferred_llm.model or char.preferred_llm.temperature is not None:
-        response["preferred_llm"] = {
-            "model": char.preferred_llm.model,
-            "temperature": char.preferred_llm.temperature
-        }
-    
-    return response
+    # Return full character configuration as dict
+    return char.model_dump()
 
 
 @app.get("/characters/{character_id}/immersion-notice")

@@ -11,7 +11,7 @@ from .models import SystemConfig, CharacterConfig
 logger = logging.getLogger(__name__)
 
 # Immutable default characters (cannot be modified or deleted via API)
-IMMUTABLE_CHARACTERS = {"nova", "alex"}
+IMMUTABLE_CHARACTERS = {"nova", "alex", "aria", "marcus"}
 
 
 class ConfigLoadError(Exception):

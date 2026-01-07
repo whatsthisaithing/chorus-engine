@@ -27,10 +27,13 @@
                 <!-- CHARACTER Section -->
                 <div class="sidebar-section mb-4">
                     <h6 class="sidebar-section-header text-muted text-uppercase small mb-2">Character</h6>
-                    <div class="mb-2">
-                        <select id="characterSelect" class="form-select form-select-sm bg-dark text-white">
+                    <div class="mb-2 d-flex gap-1">
+                        <select id="characterSelect" class="form-select form-select-sm bg-dark text-white flex-grow-1">
                             <option value="">Loading...</option>
                         </select>
+                        <button id="openCharacterConfig" class="btn btn-sm btn-outline-secondary" title="Character Configuration">
+                            <i class="bi bi-gear-fill"></i>
+                        </button>
                     </div>
                     
                     <!-- Character Profile Card -->
@@ -78,9 +81,6 @@
                         </div>
                     </div>
                     
-                    <button id="manageCharactersBtn" class="btn btn-outline-light btn-sm w-100 mb-2">
-                        <i class="bi bi-person-gear me-1"></i> Manage Characters
-                    </button>
                     <button id="manageVoiceSamplesBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
                         <i class="bi bi-mic-fill me-1"></i> Voice Samples
                     </button>
@@ -1009,7 +1009,7 @@
                 <div class="modal-header">
                     <h5 class="modal-title">
                         <i class="bi bi-person-gear me-2"></i>
-                        Character Management
+                        Character Configuration
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
@@ -1023,78 +1023,474 @@
                                     <i class="bi bi-plus-circle"></i> New
                                 </button>
                             </div>
-                            <div id="characterListPanel" class="list-group" style="max-height: 500px; overflow-y: auto;">
+                            <div id="characterListPanel" class="list-group" style="max-height: 600px; overflow-y: auto;">
                                 <!-- Populated by JS -->
                             </div>
                         </div>
                         
                         <!-- Character Editor -->
                         <div class="col-md-8">
-                            <h6 class="mb-3">Character Editor</h6>
                             <div id="characterEditorPlaceholder" class="text-center text-muted py-5">
                                 <i class="bi bi-person-circle" style="font-size: 3rem;"></i>
                                 <p class="mt-3">Select a character to edit or create a new one</p>
                             </div>
                             <form id="characterForm" style="display: none;">
-                                <div class="mb-3">
-                                    <label class="form-label">Character ID <span class="text-danger">*</span></label>
-                                    <input type="text" class="form-control" id="charId" required 
-                                           pattern="[a-z0-9_\-]+" 
-                                           placeholder="e.g., my-assistant">
-                                    <small class="text-light">Lowercase letters, numbers, underscores, and hyphens only</small>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Name <span class="text-danger">*</span></label>
-                                    <input type="text" class="form-control" id="charName" required 
-                                           placeholder="e.g., My Assistant">
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Role <span class="text-danger">*</span></label>
-                                    <input type="text" class="form-control" id="charRole" required 
-                                           placeholder="e.g., Helpful Assistant">
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">System Prompt <span class="text-danger">*</span></label>
-                                    <textarea class="form-control" id="charSystemPrompt" rows="8" required 
-                                              placeholder="Define the character's personality and behavior..."></textarea>
-                                    <small class="text-light">This is the core instruction that defines how the character behaves</small>
-                                </div>
-                                <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Immersion Level</label>
-                                        <select class="form-select" id="charImmersionLevel">
-                                            <option value="minimal">Minimal - Traditional AI assistant</option>
-                                            <option value="balanced" selected>Balanced - Preferences & opinions</option>
-                                            <option value="full">Full - Personality with experiences</option>
-                                            <option value="unbounded">Unbounded - Complete roleplay</option>
-                                        </select>
+                                <!-- Tab Navigation -->
+                                <ul class="nav nav-tabs mb-3" id="characterConfigTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="basic-tab" data-bs-toggle="tab" data-bs-target="#basic-panel" type="button" role="tab">Basic</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="immersion-tab" data-bs-toggle="tab" data-bs-target="#immersion-panel" type="button" role="tab">Immersion</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="memory-tab" data-bs-toggle="tab" data-bs-target="#memory-panel" type="button" role="tab">Memory</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="features-tab" data-bs-toggle="tab" data-bs-target="#features-panel" type="button" role="tab">Features</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="voice-tab" data-bs-toggle="tab" data-bs-target="#voice-panel" type="button" role="tab">Voice/TTS</button>
+                                    </li>
+                                </ul>
+                                
+                                <!-- Tab Content -->
+                                <div class="tab-content" id="characterConfigContent" style="max-height: 500px; overflow-y: auto; padding-right: 10px;">
+                                    
+                                    <!-- BASIC TAB -->
+                                    <div class="tab-pane fade show active" id="basic-panel" role="tabpanel">
+                                        <div class="mb-3">
+                                            <label class="form-label">Character ID <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control" id="charId" required 
+                                                   pattern="[a-z0-9_\-]+" 
+                                                   placeholder="e.g., my-assistant">
+                                            <small class="text-light opacity-75">Lowercase letters, numbers, underscores, hyphens only. Cannot be changed after creation.</small>
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label">Name <span class="text-danger">*</span></label>
+                                                <input type="text" class="form-control" id="charName" required 
+                                                       placeholder="e.g., My Assistant">
+                                            </div>
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label">Role Type</label>
+                                                <select class="form-select" id="charRoleType">
+                                                    <option value="assistant">Assistant - General-purpose helper</option>
+                                                    <option value="companion">Companion - Conversational partner</option>
+                                                    <option value="analyst">Analyst - Document/data analysis</option>
+                                                    <option value="other">Other - Custom/specialized</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Role Description <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control" id="charRole" required 
+                                                   placeholder="e.g., Helpful Research Assistant">
+                                            <small class="text-light opacity-75">Brief description shown in character selector</small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">System Prompt <span class="text-danger">*</span></label>
+                                            <textarea class="form-control" id="charSystemPrompt" rows="10" required 
+                                                      placeholder="Define the character's personality and behavior..."></textarea>
+                                            <small class="text-light opacity-75">Core instructions that define how the character behaves</small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charCustomSystemPrompt">
+                                                <label class="form-check-label" for="charCustomSystemPrompt">
+                                                    <strong>⚡ Custom System Prompt (Power User Mode)</strong>
+                                                </label>
+                                            </div>
+                                            <small class="text-light opacity-75 d-block mt-1">
+                                                Advanced: Use system_prompt exactly as written, bypassing all automatic immersion guidance. 
+                                                Only enable for specialized use cases where you need complete control.
+                                            </small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Personality Traits</label>
+                                            <input type="text" class="form-control" id="charTraits" 
+                                                   placeholder="e.g., thoughtful, creative, analytical">
+                                            <small class="text-light opacity-75">Comma-separated list of adjectives</small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Profile Image</label>
+                                            <input type="text" class="form-control" id="charProfileImage" 
+                                                   placeholder="e.g., character_name_profile.png">
+                                            <small class="text-light opacity-75">Filename in data/character_images/ (set via "Set as Profile" on generated images)</small>
+                                        </div>
+                                        
+                                        <!-- Preferred LLM Collapsible -->
+                                        <div class="mb-3">
+                                            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#llmPrefsCollapse">
+                                                <i class="bi bi-chevron-down"></i> Preferred LLM Settings (Optional)
+                                            </button>
+                                            <div class="collapse mt-2" id="llmPrefsCollapse">
+                                                <div class="card card-body bg-dark">
+                                                    <small class="text-light opacity-75 mb-2">Override system defaults for this character. All use system LLM provider.</small>
+                                                    <div class="row">
+                                                        <div class="col-md-6 mb-2">
+                                                            <label class="form-label">Model</label>
+                                                            <input type="text" class="form-control form-control-sm" id="charLlmModel" 
+                                                                   placeholder="e.g., qwen2.5:14b">
+                                                        </div>
+                                                        <div class="col-md-6 mb-2">
+                                                            <label class="form-label">Temperature</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmTemperature" 
+                                                                   min="0" max="2" step="0.1" placeholder="0.7">
+                                                        </div>
+                                                        <div class="col-md-6 mb-2">
+                                                            <label class="form-label">Max Tokens</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmMaxTokens" 
+                                                                   placeholder="2048">
+                                                        </div>
+                                                        <div class="col-md-6 mb-2">
+                                                            <label class="form-label">Context Window</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmContextWindow" 
+                                                                   placeholder="8192">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Personality Traits</label>
-                                        <input type="text" class="form-control" id="charTraits" 
-                                               placeholder="e.g., thoughtful, creative, analytical">
-                                        <small class="text-light">Comma-separated</small>
+                                    
+                                    <!-- IMMERSION TAB -->
+                                    <div class="tab-pane fade" id="immersion-panel" role="tabpanel">
+                                        <div id="immersionDisabledWarning" class="alert alert-warning" style="display: none;">
+                                            <i class="bi bi-exclamation-triangle"></i> 
+                                            Immersion settings are disabled when Custom System Prompt mode is enabled.
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Immersion Level</label>
+                                            <select class="form-select" id="charImmersionLevel">
+                                                <option value="minimal">Minimal - Traditional AI assistant</option>
+                                                <option value="balanced">Balanced - Preferences & opinions</option>
+                                                <option value="full">Full - Personality with experiences</option>
+                                                <option value="unbounded">Unbounded - Complete roleplay</option>
+                                            </select>
+                                            <small class="text-light opacity-75">Controls how "in-character" the AI behaves</small>
+                                        </div>
+                                        
+                                        <h6 class="mt-4 mb-3">Immersion Settings</h6>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charAllowPreferences" checked>
+                                                <label class="form-check-label" for="charAllowPreferences">
+                                                    Allow Preferences <small class="text-light opacity-75">- Can express personal preferences</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charAllowOpinions" checked>
+                                                <label class="form-check-label" for="charAllowOpinions">
+                                                    Allow Opinions <small class="text-light opacity-75">- Can have and express opinions</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charAllowExperiences">
+                                                <label class="form-check-label" for="charAllowExperiences">
+                                                    Allow Experiences <small class="text-light opacity-75">- Can reference personal experiences</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charAllowPhysicalMetaphor">
+                                                <label class="form-check-label" for="charAllowPhysicalMetaphor">
+                                                    Allow Physical Metaphor <small class="text-light opacity-75">- Can use physical metaphors ("I feel energized")</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charAllowPhysicalSensation">
+                                                <label class="form-check-label" for="charAllowPhysicalSensation">
+                                                    Allow Physical Sensation <small class="text-light opacity-75">- Can describe physical sensations</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3 mt-3">
+                                            <label class="form-label">Disclaimer Behavior</label>
+                                            <select class="form-select" id="charDisclaimerBehavior">
+                                                <option value="never">Never - Never mention being AI</option>
+                                                <option value="only_when_asked">Only When Asked - Clarify if questioned</option>
+                                                <option value="always">Always - Regular AI disclaimers</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <h6 class="mt-4 mb-3">Emotional Range</h6>
+                                        <div class="mb-3">
+                                            <label class="form-label">Baseline Emotion</label>
+                                            <select class="form-select" id="charEmotionalBaseline">
+                                                <option value="positive">Positive</option>
+                                                <option value="neutral">Neutral</option>
+                                                <option value="contemplative">Contemplative</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Allowed Emotions</label>
+                                            <input type="text" class="form-control" id="charEmotionalAllowed" 
+                                                   placeholder="e.g., positive, curious, thoughtful, encouraging">
+                                            <small class="text-light opacity-75">Comma-separated list</small>
+                                        </div>
                                     </div>
+                                    
+                                    <!-- MEMORY TAB -->
+                                    <div class="tab-pane fade" id="memory-panel" role="tabpanel">
+                                        <h6 class="mb-3">Memory Configuration</h6>
+                                        <div class="mb-3">
+                                            <label class="form-label">Memory Scope</label>
+                                            <select class="form-select" id="charMemoryScope">
+                                                <option value="character">Character - Separate per character</option>
+                                                <option value="global">Global - Shared across all</option>
+                                                <option value="thread">Thread - Per conversation</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <h6 class="mt-4 mb-3">Core Memories</h6>
+                                        <small class="text-light opacity-75 d-block mb-2">Important background facts that define the character</small>
+                                        <div id="coreMemoriesList" class="mb-3">
+                                            <!-- Populated dynamically -->
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="addCoreMemoryBtn">
+                                            <i class="bi bi-plus-circle"></i> Add Core Memory
+                                        </button>
+                                        
+                                        <h6 class="mt-4 mb-3">Memory Profile</h6>
+                                        <small class="text-light opacity-75 d-block mb-2">Control what types of memories are extracted from conversations</small>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charExtractFacts" checked>
+                                                <label class="form-check-label" for="charExtractFacts">
+                                                    Extract Facts <small class="text-light opacity-75">- Basic factual information</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charExtractProjects" checked>
+                                                <label class="form-check-label" for="charExtractProjects">
+                                                    Extract Projects <small class="text-light opacity-75">- Goals, plans, ongoing projects</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charExtractExperiences">
+                                                <label class="form-check-label" for="charExtractExperiences">
+                                                    Extract Experiences <small class="text-light opacity-75">- Shared experiences (null = use immersion defaults)</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charExtractStories">
+                                                <label class="form-check-label" for="charExtractStories">
+                                                    Extract Stories <small class="text-light opacity-75">- Narratives and anecdotes (null = use immersion defaults)</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charExtractRelationship">
+                                                <label class="form-check-label" for="charExtractRelationship">
+                                                    Extract Relationship <small class="text-light opacity-75">- Relationship dynamics (null = use immersion defaults)</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charTrackEmotionalWeight" checked>
+                                                <label class="form-check-label" for="charTrackEmotionalWeight">
+                                                    Track Emotional Weight <small class="text-light opacity-75">- Track emotional significance</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charTrackParticipants" checked>
+                                                <label class="form-check-label" for="charTrackParticipants">
+                                                    Track Participants <small class="text-light opacity-75">- Track who was involved</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- FEATURES TAB -->
+                                    <div class="tab-pane fade" id="features-panel" role="tabpanel">
+                                        <h6 class="mb-3">Media Generation</h6>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charImageGenEnabled">
+                                                <label class="form-check-label" for="charImageGenEnabled">
+                                                    <strong>Image Generation Enabled</strong>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charVideoGenEnabled">
+                                                <label class="form-check-label" for="charVideoGenEnabled">
+                                                    <strong>Video Generation Enabled</strong>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        
+                                        <h6 class="mt-4 mb-3">Document Analysis</h6>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charDocAnalysisEnabled">
+                                                <label class="form-check-label" for="charDocAnalysisEnabled">
+                                                    <strong>Document Analysis Enabled</strong>
+                                                </label>
+                                            </div>
+                                            <small class="text-light opacity-75 d-block mt-1">Enable document ingestion, semantic search, Q&A with citations</small>
+                                        </div>
+                                        <div class="collapse mt-2" id="docAnalysisAdvanced">
+                                            <div class="card card-body bg-dark">
+                                                <small class="text-light opacity-75 mb-2">Advanced Options</small>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Max Documents</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charDocMaxDocuments" 
+                                                           placeholder="Unlimited">
+                                                    <small class="text-light opacity-75">Maximum documents this character can access</small>
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Allowed Document Types</label>
+                                                    <input type="text" class="form-control form-control-sm" id="charDocAllowedTypes" 
+                                                           placeholder="e.g., policy, guideline, reference">
+                                                    <small class="text-light opacity-75">Comma-separated list (empty = all types allowed)</small>
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Max Chunks</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charDocMaxChunks" 
+                                                           placeholder="System default">
+                                                    <small class="text-light opacity-75">Maximum chunks to retrieve per query</small>
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Document Budget Ratio</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charDocBudgetRatio" 
+                                                           min="0" max="1" step="0.01" placeholder="System default">
+                                                    <small class="text-light opacity-75">Portion of context window for documents (0.0-1.0)</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-secondary mb-3" type="button" data-bs-toggle="collapse" data-bs-target="#docAnalysisAdvanced">
+                                            <i class="bi bi-chevron-down"></i> Advanced Options
+                                        </button>
+                                        
+                                        <h6 class="mt-4 mb-3">Code Execution</h6>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charCodeExecEnabled">
+                                                <label class="form-check-label" for="charCodeExecEnabled">
+                                                    <strong>Code Execution Enabled</strong>
+                                                </label>
+                                            </div>
+                                            <small class="text-light opacity-75 d-block mt-1">Enable Python code generation and execution for data analysis</small>
+                                        </div>
+                                        <div class="collapse mt-2" id="codeExecAdvanced">
+                                            <div class="card card-body bg-dark">
+                                                <small class="text-light opacity-75 mb-2">Advanced Options</small>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Max Execution Time (seconds)</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charCodeMaxTime" 
+                                                           value="30" placeholder="30">
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label">Allowed Libraries</label>
+                                                    <input type="text" class="form-control form-control-sm" id="charCodeAllowedLibs" 
+                                                           placeholder="e.g., pandas, numpy, matplotlib">
+                                                    <small class="text-light opacity-75">Comma-separated list (empty = default whitelist)</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#codeExecAdvanced">
+                                            <i class="bi bi-chevron-down"></i> Advanced Options
+                                        </button>
+                                    </div>
+                                    
+                                    <!-- VOICE/TTS TAB -->
+                                    <div class="tab-pane fade" id="voice-panel" role="tabpanel">
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charVoiceEnabled">
+                                                <label class="form-check-label" for="charVoiceEnabled">
+                                                    <strong>Voice/TTS Enabled</strong>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charVoiceAlwaysOn">
+                                                <label class="form-check-label" for="charVoiceAlwaysOn">
+                                                    Always On <small class="text-light opacity-75">- Auto-generate TTS for every message</small>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">TTS Provider</label>
+                                            <select class="form-select" id="charTtsProvider">
+                                                <option value="comfyui">ComfyUI</option>
+                                                <option value="chatterbox">Chatterbox (Embedded TTS)</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- ComfyUI Settings -->
+                                        <div id="ttsComfyuiSettings" class="mb-3">
+                                            <h6 class="mb-2">ComfyUI Settings</h6>
+                                            <small class="text-light opacity-75 d-block mb-2">Workflows and voice samples are managed via the Workflow Management UI</small>
+                                            <div class="mb-2">
+                                                <label class="form-label">Fallback Workflow Name</label>
+                                                <input type="text" class="form-control" id="charTtsComfyWorkflow" 
+                                                       placeholder="Optional fallback if no database workflow set">
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Chatterbox Settings -->
+                                        <div id="ttsChatterboxSettings" class="mb-3" style="display: none;">
+                                            <h6 class="mb-2">Chatterbox Settings</h6>
+                                            <div class="row">
+                                                <div class="col-md-6 mb-2">
+                                                    <label class="form-label">Temperature</label>
+                                                    <input type="number" class="form-control" id="charTtsChatterboxTemp" 
+                                                           min="0" max="1" step="0.1" value="0.8" placeholder="0.8">
+                                                    <small class="text-light opacity-75">0.0 (monotone) to 1.0 (expressive)</small>
+                                                </div>
+                                                <div class="col-md-6 mb-2">
+                                                    <label class="form-label">Chunk Threshold</label>
+                                                    <input type="number" class="form-control" id="charTtsChatterboxChunkThreshold" 
+                                                           value="200" placeholder="200">
+                                                    <small class="text-light opacity-75">Max characters per chunk (~13-15s audio)</small>
+                                                </div>
+                                            </div>
+                                            <div class="mb-2">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" id="charTtsChatterboxCloning" checked>
+                                                    <label class="form-check-label" for="charTtsChatterboxCloning">
+                                                        Use Voice Cloning
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
                                 </div>
                                 
-                                <!-- LLM Preferences -->
-                                <h6 class="mb-3 mt-3">LLM Preferences (Optional)</h6>
-                                <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Preferred Model</label>
-                                        <input type="text" class="form-control" id="charLlmModel" 
-                                               placeholder="e.g., qwen2.5:14b-instruct">
-                                        <small class="text-muted">Leave blank to use system default</small>
-                                    </div>
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Temperature</label>
-                                        <input type="number" class="form-control" id="charLlmTemperature" 
-                                               min="0" max="2" step="0.1" placeholder="e.g., 0.7">
-                                        <small class="text-muted">0.0 (focused) to 2.0 (creative)</small>
-                                    </div>
-                                </div>
-                                
-                                <div class="d-flex gap-2 mb-3">
+                                <!-- Form Actions -->
+                                <div class="d-flex gap-2 mt-3 border-top pt-3">
                                     <button type="submit" class="btn btn-primary">
                                         <i class="bi bi-save"></i> Save Character
                                     </button>
@@ -1105,7 +1501,7 @@
                                         <i class="bi bi-trash"></i> Delete
                                     </button>
                                 </div>
-                                <div id="characterFormStatus" class="alert d-none" role="alert"></div>
+                                <div id="characterFormStatus" class="alert d-none mt-2" role="alert"></div>
                             </form>
                         </div>
                     </div>
