@@ -53,10 +53,20 @@ if errorlevel 1 (
 
 echo [OK] Dependencies installed
 
-REM Check if port 8080 is available
-netstat -ano | findstr ":8080" >nul
+REM Read API host and port from config
+for /f %%i in ('%PYTHON_CMD% utilities\get_config.py api_host 2^>nul') do set API_HOST=%%i
+for /f %%i in ('%PYTHON_CMD% utilities\get_config.py api_port 2^>nul') do set API_PORT=%%i
+
+REM Fallback to defaults if config read fails
+if "%API_HOST%"=="" set API_HOST=localhost
+if "%API_PORT%"=="" set API_PORT=8080
+
+echo [INFO] Server configured for %API_HOST%:%API_PORT%
+
+REM Check if configured port is available
+netstat -ano | findstr ":%API_PORT%" >nul
 if not errorlevel 1 (
-    echo [WARNING] Port 8080 is already in use!
+    echo [WARNING] Port %API_PORT% is already in use!
     echo Another instance might be running, or another application is using the port.
     choice /C YN /M "Do you want to continue anyway?"
     if errorlevel 2 exit /b 1
@@ -67,8 +77,8 @@ echo ============================================
 echo    Starting Chorus Engine Server
 echo ============================================
 echo.
-echo Backend API: http://localhost:8080/docs
-echo Web Interface: http://localhost:8080
+echo Backend API: http://%API_HOST%:%API_PORT%/docs
+echo Web Interface: http://%API_HOST%:%API_PORT%
 echo.
 echo Press Ctrl+C to stop the server
 echo ============================================

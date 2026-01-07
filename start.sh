@@ -59,9 +59,23 @@ fi
 
 echo -e "${GREEN}[OK] Dependencies installed${NC}"
 
-# Check if port 8080 is available
-if lsof -Pi :8080 -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo -e "${YELLOW}[WARNING] Port 8080 is already in use!${NC}"
+# Read API host and port from config
+API_HOST=$($PYTHON_CMD utilities/get_config.py api_host 2>/dev/null)
+API_PORT=$($PYTHON_CMD utilities/get_config.py api_port 2>/dev/null)
+
+# Fallback to defaults if config read fails
+if [ -z "$API_HOST" ]; then
+    API_HOST="localhost"
+fi
+if [ -z "$API_PORT" ]; then
+    API_PORT="8080"
+fi
+
+echo -e "${CYAN}[INFO] Server configured for ${API_HOST}:${API_PORT}${NC}"
+
+# Check if configured port is available
+if lsof -Pi :$API_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo -e "${YELLOW}[WARNING] Port $API_PORT is already in use!${NC}"
     echo "Another instance might be running, or another application is using the port."
     read -p "Do you want to continue anyway? (y/N): " -n 1 -r
     echo
@@ -75,8 +89,8 @@ echo "============================================"
 echo "   Starting Chorus Engine Server"
 echo "============================================"
 echo ""
-echo -e "${GREEN}Backend API:    http://localhost:8080/docs${NC}"
-echo -e "${GREEN}Web Interface:  http://localhost:8080${NC}"
+echo -e "${GREEN}Backend API:    http://${API_HOST}:${API_PORT}/docs${NC}"
+echo -e "${GREEN}Web Interface:  http://${API_HOST}:${API_PORT}${NC}"
 echo ""
 echo -e "${YELLOW}Opening browser...${NC}"
 echo ""
@@ -88,9 +102,9 @@ echo ""
 open_browser() {
     sleep 3
     if command -v xdg-open &> /dev/null; then
-        xdg-open "http://localhost:8080" 2>/dev/null
+        xdg-open "http://${API_HOST}:${API_PORT}" 2>/dev/null
     elif command -v open &> /dev/null; then
-        open "http://localhost:8080" 2>/dev/null
+        open "http://${API_HOST}:${API_PORT}" 2>/dev/null
     fi
 }
 
