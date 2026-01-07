@@ -4,7 +4,7 @@
  */
 
 window.DocumentAutocomplete = (function() {
-    const API_BASE = 'http://localhost:8080';
+    const API_BASE = window.location.origin;
     let autocompleteContainer = null;
     let currentSuggestions = [];
     let selectedIndex = -1;

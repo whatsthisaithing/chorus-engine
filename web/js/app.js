@@ -2386,7 +2386,7 @@ window.App = {
         
         try {
             // Get scene capture prompt from backend (no /api prefix - direct route)
-            const response = await fetch(`http://localhost:8080/threads/${this.state.selectedThreadId}/capture-scene-prompt`, {
+            const response = await fetch(`/threads/${this.state.selectedThreadId}/capture-scene-prompt`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -2537,7 +2537,7 @@ window.App = {
         
         try {
             // Load images
-            const imageResponse = await fetch(`http://localhost:8080/conversations/${this.state.selectedConversationId}/images`);
+            const imageResponse = await fetch(`/conversations/${this.state.selectedConversationId}/images`);
             let images = [];
             if (imageResponse.ok) {
                 const imageData = await imageResponse.json();
@@ -2545,7 +2545,7 @@ window.App = {
             }
             
             // Load videos
-            const videoResponse = await fetch(`http://localhost:8080/conversations/${this.state.selectedConversationId}/videos`);
+            const videoResponse = await fetch(`/conversations/${this.state.selectedConversationId}/videos`);
             let videos = [];
             if (videoResponse.ok) {
                 const videoData = await videoResponse.json();

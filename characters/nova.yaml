@@ -86,7 +86,6 @@ emotional_range:
 memory:
   scope: character
   vector_store: chroma_default
-
 memory_profile:
   extract_facts: true
   extract_projects: true
@@ -95,15 +94,11 @@ memory_profile:
   extract_relationship: null
   track_emotional_weight: true
   track_participants: true
-
-profile_image: nova_333870_full.png
-
+profile_image: nova_profile.png
 image_generation:
   enabled: true
-
 video_generation:
   enabled: true
-
 voice:
   enabled: true
   always_on: false
@@ -115,13 +110,10 @@ voice:
       temperature: 0.8
       use_voice_cloning: true
       chunk_threshold: 200
-
 document_analysis:
   enabled: false
-
 code_execution:
   enabled: false
-
 preferred_llm:
   model: null
   temperature: 0.7

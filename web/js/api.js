@@ -3,7 +3,7 @@
  * Handles all HTTP requests to the backend
  */
 
-const API_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = window.location.origin;
 
 class API {
     /**
