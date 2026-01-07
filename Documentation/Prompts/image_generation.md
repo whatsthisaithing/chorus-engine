@@ -1,7 +1,7 @@
 # Image Generation Prompt Specification
 
-**Version**: 1.0  
-**Date**: December 31, 2025  
+**Version**: 1.1  
+**Date**: January 7, 2026  
 **Component**: `ImagePromptService`  
 **File Location**: `chorus_engine/services/image_prompt_service.py`
 
@@ -10,6 +10,8 @@
 ## Overview
 
 The image generation prompt instructs the LLM to create detailed, vivid image descriptions for Stable Diffusion/ComfyUI based on user requests and conversation context. This transforms casual user requests like "show me a sunset" into 100-300 word professional image prompts.
+
+**Note**: For motion-based generation, see [Video Generation Prompts](video_generation.md). Images are static; videos emphasize dynamic action and movement.
 
 ## Purpose
 
@@ -20,6 +22,8 @@ Image prompt generation serves multiple functions:
 3. **Style Consistency**: Apply character-specific artistic styles
 4. **Detail Enhancement**: Add technical specifications (lighting, composition, atmosphere)
 5. **Character Depiction**: Ensure character appears at current age/appearance
+
+**Image vs. Video**: Images focus on static composition, lighting, and atmosphere. For dynamic action and movement, use [video generation](video_generation.md) instead.
 
 ## Architecture
 

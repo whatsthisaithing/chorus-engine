@@ -1,8 +1,9 @@
 # ComfyUI Workflow Orchestration System Design
 
-**Phases**: Phase 5 (Image Generation), Phase 6 (Audio Generation)  
+**Phases**: Phase 5 (Image Generation), Phase 6 (Audio Generation), Phase 7 (Video Generation)  
 **Created**: December 2025  
-**Status**: Image and Audio Complete, Video Future
+**Updated**: January 2026  
+**Status**: Image, Audio, and Video Complete
 
 ---
 
@@ -1031,15 +1032,157 @@ The system has proven successful through:
 - Nova: Anime-style images with character-specific LoRAs
 - Alex: Photorealistic technical diagrams
 - Both characters: Custom TTS workflows with voice samples
+- Video: Motion-focused generation with AnimateDiff/CogVideoX
 - Community can share workflows (just export JSON)
 
-Future enhancements (video support, real-time progress, batch generation) build naturally on this foundation. The workflow-first approach provides the perfect balance of user control and automated convenience.
+Future enhancements (real-time progress, batch generation) build naturally on this foundation. The workflow-first approach provides the perfect balance of user control and automated convenience.
 
-**Status**: Production-ready for image and audio generation, video support planned, recommended pattern for all multimodal generation needs.
+**Status**: Production-ready for image, audio, and video generation. Recommended pattern for all multimodal generation needs.
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: January 4, 2026  
+## Video Generation Architecture
+
+### Video vs. Image: Key Differences
+
+**Video Generation** (Phase 7, January 2026):
+- **Focus**: Motion, dynamic action, temporal progression
+- **Prompt Strategy**: Action verbs, camera movement, pacing
+- **Timeout**: 600 seconds (vs. 300 for images)
+- **File Size**: 5-50MB (vs. 1-5MB for images)
+- **Workflows**: Whatever you like (Wan 2.2 tested)
+- **Validation**: Motion keyword checking
+
+### VideoGenerationOrchestrator
+
+**Service**: `VideoGenerationOrchestrator`  
+**Location**: `chorus_engine/services/video_generation_orchestrator.py`
+
+**Workflow**:
+```
+1. Generate motion-focused prompt (VideoPromptService)
+2. Load video workflow from database
+3. Inject prompt via WorkflowManager
+4. Submit to ComfyUI
+5. Poll for completion (longer timeout)
+6. Download result
+7. Extract thumbnail from first frame
+8. Store video file
+9. Create database record
+```
+
+**Key Methods**:
+- `generate_video()` - Full generation pipeline
+- Reuses WorkflowManager for prompt injection (same as images)
+- Longer timeout (600s vs 300s)
+- Video-specific storage handling
+
+### VideoPromptService
+
+**Service**: `VideoPromptService`  
+**Location**: `chorus_engine/services/video_prompt_service.py`
+
+**Motion-Focused Prompting**:
+- Emphasizes dynamic action and movement
+- Includes camera motion guidance (pan, zoom, track)
+- Specifies pacing/timing (slow motion, transitions)
+- Validates for motion keywords
+- Temperature: 0.3 (same as images for consistency)
+
+**Prompt Template Differences**:
+
+| Aspect | Image Prompt | Video Prompt |
+|--------|--------------|--------------|
+| Focus | Static composition | Dynamic motion |
+| Length | 100-300 words | 100-150 words |
+| Verbs | Descriptive (is, has) | Action (moves, flows) |
+| Camera | Optional framing | Essential motion |
+| Examples | "sunset over ocean" | "waves crash in slow motion" |
+
+**Context Usage**:
+- Extracts motion-related details from conversation
+- Last 3 messages for normal generation
+- Last 10 messages for scene capture
+- Prioritizes recent messages for current state
+
+### Video Scene Capture
+
+**Trigger**: 🎥 "Capture Scene" button  
+**Perspective**: Third-person observer  
+**Purpose**: Capture current conversation moment with motion
+
+**Scene Capture Prompt Strategy**:
+- Always third-person perspective
+- Focuses on what's actively happening
+- Includes all participants in motion
+- Describes visible actions, gestures, expressions
+- Camera movement to capture scene dynamically
+
+**Example**: Conversation about discussing art → "Close shot of {character.name} speaking, hands moving expressively as they explain concepts, facial expressions shifting with enthusiasm, subtle head tilts and nods during conversation. Gentle camera drift following hand gestures."
+
+### Video Storage
+
+**Service**: `VideoStorageService`  
+**Location**: `chorus_engine/services/video_storage.py`
+
+**Storage Structure**:
+```
+data/videos/
+  {conversation_id}/
+    {video_id}.mp4 (or .webm, .gif, etc.)
+```
+
+**File Handling**:
+- Accepts any video format ComfyUI produces
+- Extension auto-detected from ComfyUI output
+- Atomic file operations (temp → final)
+- Database record includes file size, format, duration
+
+### Video Workflows
+
+**Workflow Placeholders**:
+- `__CHORUS_PROMPT__` - Motion-focused description
+- `__CHORUS_NEGATIVE_PROMPT__` - Things to avoid
+- `__CHORUS_SEED__` - Reproducibility (optional)
+- Future: `__CHORUS_DURATION__`, `__CHORUS_FPS__`
+
+**Workflow Configuration** (Database):
+```yaml
+default_style: "cinematic, smooth motion"
+self_description: "{character} appearance for consistent depiction"
+negative_prompt: "static shots, jerky motion, poor lighting"
+trigger_word: "FLUX_TRIGGER" # Character-specific LoRA trigger
+```
+---
+
+## Workflow Orchestration Comparison
+
+### Image vs. Audio vs. Video
+
+| Feature | Image | Audio | Video |
+|---------|-------|-------|-------|
+| **Prompt Service** | ImagePromptService | (N/A - direct text) | VideoPromptService |
+| **Orchestrator** | ImageGenerationOrchestrator | AudioGenerationOrchestrator | VideoGenerationOrchestrator |
+| **Prompt Focus** | Static composition | N/A | Dynamic motion |
+| **Timeout** | 300s | 120s | 600s |
+| **File Size** | 1-5MB | 0.5-2MB | 5-50MB |
+| **Post-Processing** | Thumbnail | Waveform | Thumbnail extraction |
+| **Context Window** | 10 messages | N/A | 3-10 messages |
+| **Validation** | Visual keywords | N/A | Motion keywords |
+
+### Common Architecture
+
+All three generation types share:
+- **WorkflowManager** for placeholder injection
+- **ComfyUIClient** for job submission/polling
+- **Database-managed workflows** (not filesystem)
+- **Confirmation dialogs** before generation
+- **User can edit prompt** before submission
+- **Inline display** in conversation thread
+
+---
+
+**Document Version**: 1.1  
+**Last Updated**: January 7, 2026  
 **Author**: System Design Documentation  
-**Phases**: Phase 5 (Image), Phase 6 (Audio)
+**Phases**: Phase 5 (Image), Phase 6 (Audio), Phase 7 (Video)

@@ -52,11 +52,13 @@ Chorus Engine supports three types of workflows:
 
 | Type | Purpose | Placeholders |
 |------|---------|--------------|
-| **Image** | Generate images from text prompts | `__CHORUS_PROMPT__`, `__CHORUS_REFERENCE_IMAGE__`, `__CHORUS_CHARACTER_NAME__` |
+| **Image** | Generate images from text prompts | `__CHORUS_PROMPT__`, `__CHORUS_NEGATIVE__`, `__CHORUS_SEED__` |
 | **TTS** | Generate voice audio from text | `__CHORUS_TEXT__`, `__CHORUS_VOICE_SAMPLE__`, `__CHORUS_VOICE_TRANSCRIPT__` |
-| **Video** | Generate videos (future) | TBD |
+| **Video** | Generate short videos (2-4 seconds) | `__CHORUS_PROMPT__`, `__CHORUS_NEGATIVE__`, `__CHORUS_SEED__` |
 
 Each workflow type has specific placeholders that Chorus Engine replaces at generation time.
+
+**Note**: All workflow types use the same placeholder injection system. The system automatically searches for placeholders in any text field within the workflow and replaces them with actual values.
 
 ---
 
@@ -123,13 +125,15 @@ Chorus Engine scans the workflow JSON for placeholder strings and replaces them 
 
 Image workflows generate images from text prompts, optional reference images, and character context.
 
-### Required Placeholders
+### Supported Placeholders
 
-| Placeholder | Purpose | Example Value |
-|-------------|---------|---------------|
-| `__CHORUS_PROMPT__` | The image generation prompt | "A futuristic cityscape at sunset" |
-| `__CHORUS_REFERENCE_IMAGE__` | Optional reference image path | `data/images/character/reference.png` |
-| `__CHORUS_CHARACTER_NAME__` | Character name | "Nova" |
+| Placeholder | Purpose | Example Value | Required? |
+|-------------|---------|---------------|----------|
+| `__CHORUS_PROMPT__` | The image generation prompt | "A futuristic cityscape at sunset" | Yes |
+| `__CHORUS_NEGATIVE__` | Negative prompt (things to avoid) | "blurry, low quality, distorted" | No |
+| `__CHORUS_SEED__` | Seed for reproducibility | 42 | No |
+
+**Note**: These placeholders can appear anywhere in any text field in your workflow. The system will find and replace them automatically.
 
 ### Creating an Image Workflow
 
@@ -317,9 +321,88 @@ Install your chosen model's ComfyUI nodes.
 
 ## Video Workflows
 
-### Status
+### Overview
 
-Video workflow support is planned for a future phase. This section will be updated when video generation is implemented.
+Video workflows generate short videos from motion-focused text prompts. Videos emphasize dynamic action, movement, and transitions rather than static composition.
+
+**Key Differences from Images**:
+- **Motion-Focused**: Prompts describe what HAPPENS, not just what things look like
+- **Longer Timeout**: 600 seconds (vs 300 for images) due to computational complexity
+- **Automatic Thumbnails**: First frame automatically extracted as thumbnail
+- **Format Detection**: System auto-detects video format (.mp4, .webm, .gif, etc.)
+
+### Supported Placeholders
+
+| Placeholder | Purpose | Example Value | Required? |
+|-------------|---------|---------------|----------|
+| `__CHORUS_PROMPT__` | Motion-focused video prompt | "Person walks forward, waves, and smiles" | Yes |
+| `__CHORUS_NEGATIVE__` | Negative prompt (things to avoid) | "static, still image, frozen" | No |
+| `__CHORUS_SEED__` | Seed for reproducibility | 42 | No |
+
+**Note**: Video prompts are automatically optimized for motion. The system generates prompts that emphasize:
+- **Action verbs**: walks, waves, turns, gestures
+- **Camera movement**: pans, zooms, follows
+- **Timing**: begins, then, finally
+- **Energy**: gracefully, energetically, smoothly
+
+See [Video Generation Prompts](Prompts/video_generation.md) for detailed prompt engineering guidance.
+
+### Creating a Video Workflow
+
+**Step 1: Design in ComfyUI**
+
+Open ComfyUI and setup your preferred video generation workflow
+
+**Step 2: Add Placeholder Nodes**
+
+1. Replace your positive prompt text with `__CHORUS_PROMPT__`
+
+2. (Optional) Add negative prompt support
+   - Use `__CHORUS_NEGATIVE__` in negative prompt text fields
+   - Example: "static, still image, frozen, __CHORUS_NEGATIVE__"
+
+3. (Optional) Add seed control
+   - Use `__CHORUS_SEED__` in KSampler or noise seed fields
+   - Must be in a numeric field (not text)
+
+**Step 3: Configure Output**
+
+1. Add a **SaveVideo** or **VHSVideoCombine** node (or equivalent)
+2. Set output format (webp or MP4 recommended)
+
+**Step 4: Test with Motion Prompts**
+
+1. Replace `__CHORUS_PROMPT__` with a test motion prompt:
+   - Good: "cat walks across room, pauses, then sits down"
+   - Bad: "portrait of a cat sitting" (too static)
+
+2. Run the workflow in ComfyUI
+3. Verify video shows actual motion
+4. Adjust settings if needed (frame count, FPS, steps)
+5. Restore placeholders before export
+
+**Step 5: Export Workflow**
+
+1. In ComfyUI, click **Save** → **Export (API Format)**
+2. Save with descriptive name (e.g., `wan22_motion.json`)
+
+**Step 6: Upload to Chorus Engine**
+
+1. Go to **Workflows** tab in web interface
+2. Select character
+3. Select **Video** as type
+4. Upload the JSON file
+5. Optionally set as default
+
+### Video Scene Capture
+
+Video workflows also support scene capture (🎥 button in UI):
+- Captures current conversation moment as short video
+- Emphasizes gestures, expressions, and movement
+- Uses third-person observer perspective
+- Prompts automatically focus on motion and action
+
+See [Scene Capture Guide](Prompts/scene_capture.md) for details on video vs. image scene capture.
 
 ---
 
@@ -501,4 +584,4 @@ Video workflow support is planned for a future phase. This section will be updat
 
 ---
 
-**Last Updated**: Phase 6 Complete (TTS Integration)
+**Last Updated**: Phase 7 Complete (Video Generation) - January 7, 2026

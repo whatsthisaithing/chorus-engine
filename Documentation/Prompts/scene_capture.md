@@ -1,17 +1,23 @@
 # Scene Capture Prompt Specification
 
-**Version**: 1.0  
-**Date**: January 3, 2026  
-**Component**: `SceneCapturePromptService`  
-**File Location**: `chorus_engine/services/scene_capture_prompt_service.py`
+**Version**: 1.1  
+**Date**: January 7, 2026  
+**Component**: `SceneCapturePromptService` (Images), `VideoPromptService` (Videos)  
+**File Locations**: 
+- Images: `chorus_engine/services/scene_capture_prompt_service.py`
+- Videos: `chorus_engine/services/video_prompt_service.py`
 
 ---
 
 ## Overview
 
-Scene capture is a specialized image generation feature that allows users to manually capture the current visual state of a conversation from a third-person observer perspective. Unlike normal in-conversation image generation (which responds to user requests), scene capture provides an omniscient narrator viewpoint of "what's happening right now."
+Scene capture is a specialized generation feature that allows users to manually capture the current visual state of a conversation from a third-person observer perspective. Unlike normal in-conversation generation (which responds to user requests), scene capture provides an omniscient narrator viewpoint of "what's happening right now."
 
-**Key Concept**: Think of it as taking a photograph of the current scene from an invisible camera in the room, capturing all participants, their positions, actions, and the environment.
+**Key Concept**: Think of it as taking a photograph (or video) of the current scene from an invisible camera in the room, capturing all participants, their positions, actions, and the environment.
+
+**Image vs. Video Scene Capture**:
+- **📷 Image**: Captures static moment, composition, lighting, atmosphere
+- **🎥 Video**: Captures motion, action, gestures, dynamic energy (see [Video Generation](video_generation.md))
 
 ---
 
@@ -48,6 +54,21 @@ Scene capture is a specialized image generation feature that allows users to man
 3. **Action Moments**: Visualizing what's happening "right now" in roleplay
 4. **Atmosphere**: Capturing mood, lighting, environment of current scene
 5. **Continuity**: Creating visual record of conversation progression
+
+### Image vs. Video Scene Capture
+
+**📷 Image Scene Capture** (Static):
+- Freezes a single moment in time
+- Emphasizes composition, lighting, atmosphere
+- Good for: portraits, environments, poses, aesthetic moments
+- Example: "Two people sitting across from each other at a candlelit table, warm lighting, intimate atmosphere"
+
+**🎥 Video Scene Capture** (Dynamic):
+- Captures motion and action
+- Emphasizes movement, gestures, energy
+- Good for: actions, interactions, transitions, dynamic moments
+- Example: "Character leans forward, gesturing expressively while speaking, then sits back with a smile"
+- See [Video Generation](video_generation.md) for details on motion-focused prompting
 
 ### Not Ideal For
 
