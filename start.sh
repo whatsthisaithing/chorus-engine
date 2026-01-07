@@ -100,12 +100,28 @@ open_browser &
 # Handle Ctrl+C gracefully
 trap 'echo -e "\n${YELLOW}Shutting down Chorus Engine...${NC}"; exit 0' INT TERM
 
-# Start the server
-$PYTHON_CMD -m chorus_engine.main
-
-# If server exits with error
-if [ $? -ne 0 ]; then
-    echo ""
-    echo -e "${RED}[ERROR] Server exited with an error${NC}"
-    exit 1
-fi
+# Restart loop
+while true; do
+    # Start the server
+    $PYTHON_CMD -m chorus_engine.main
+    EXIT_CODE=$?
+    
+    # Check if exit code is 42 (restart request)
+    if [ $EXIT_CODE -eq 42 ]; then
+        echo ""
+        echo -e "${YELLOW}[INFO] Restarting server...${NC}"
+        echo ""
+        sleep 2
+        continue
+    fi
+    
+    # If server exits with error or normal exit, stop loop
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo ""
+        echo -e "${RED}[ERROR] Server exited with an error${NC}"
+        exit 1
+    fi
+    
+    # Normal exit (0), stop
+    break
+done

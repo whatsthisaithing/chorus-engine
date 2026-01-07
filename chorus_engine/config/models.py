@@ -339,6 +339,7 @@ class PreferredLLMConfig(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
+    context_window: Optional[int] = Field(default=None, gt=0, description="Override context window for different model capabilities")
 
 
 class CharacterConfig(BaseModel):

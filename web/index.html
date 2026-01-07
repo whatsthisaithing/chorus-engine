@@ -434,6 +434,282 @@
         </div>
     </div>
 
+    <!-- System Settings Modal -->
+    <div class="modal fade" id="systemSettingsModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">
+                        <i class="bi bi-gear-fill me-2"></i>System Configuration
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                
+                <div class="modal-body">
+                    <!-- Warning Banner -->
+                    <div class="alert alert-danger d-flex align-items-start" role="alert">
+                        <i class="bi bi-exclamation-triangle-fill me-3 fs-4"></i>
+                        <div>
+                            <h6 class="alert-heading mb-2">⚠️ Warning: Advanced System Configuration</h6>
+                            <p class="mb-2">Changes to these settings affect the entire system and <strong>require a server restart</strong> to take effect.</p>
+                            <p class="mb-0">
+                                <strong>Recommendation:</strong> Backup your <code>config/system.yaml</code> file before making changes.
+                                Incorrect configuration can prevent the system from starting.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Settings Form -->
+                    <form id="systemSettingsForm">
+                        <!-- LLM Provider Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-cpu me-2"></i>LLM Provider Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Provider</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="llm_provider" required>
+                                            <option value="ollama">Ollama (Multi-model, auto-loading)</option>
+                                            <option value="lmstudio">LM Studio (Multi-model, JIT loading)</option>
+                                            <option value="koboldcpp">KoboldCpp (Single-model, manual loading)</option>
+                                        </select>
+                                        <div class="form-text text-secondary">Choose your LLM backend. Ollama and LM Studio support multiple models, KoboldCpp requires manual model loading.</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Base URL</label>
+                                        <input type="url" class="form-control bg-dark text-light border-secondary" id="llm_base_url" required placeholder="http://localhost:11434">
+                                        <div class="form-text text-secondary">API endpoint for your LLM provider. Defaults: Ollama (11434), LM Studio (1234), KoboldCpp (5001).</div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Model</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_model" required placeholder="qwen2.5:14b-instruct">
+                                        <div class="form-text text-secondary">Default model name. For KoboldCpp, this is just a label (actual model set at startup).</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Context Window</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_context_window" required min="1024" max="200000" step="1" placeholder="32768">
+                                        <div class="form-text text-secondary">Maximum context size in tokens. MUST match model capabilities and provider settings.</div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Max Response Tokens</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_max_response_tokens" required min="256" max="8192" placeholder="4096">
+                                        <div class="form-text text-secondary">Maximum tokens for model responses.</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Temperature</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_temperature" required min="0" max="2" step="0.1" placeholder="0.7">
+                                        <div class="form-text text-secondary">Creativity/randomness (0.0-2.0). Higher = more creative.</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Timeout (seconds)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_timeout_seconds" required min="10" max="600" placeholder="120">
+                                        <div class="form-text text-secondary">Request timeout for LLM API calls.</div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="llm_unload_during_image_generation">
+                                            <label class="form-check-label text-light" for="llm_unload_during_image_generation">
+                                                Unload during image/video generation <span class="badge bg-info">VRAM Management</span>
+                                            </label>
+                                            <div class="form-text text-secondary">Free up VRAM by unloading LLM during media generation. Increases generation speed but adds reload time.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Memory Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-database me-2"></i>Memory & Embedding Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Embedding Model</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="memory_embedding_model" required placeholder="all-MiniLM-L6-v2">
+                                        <div class="form-text text-secondary">Sentence transformer model for memory embeddings.</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Vector Store</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="memory_vector_store" required>
+                                            <option value="chroma">Chroma</option>
+                                        </select>
+                                        <div class="form-text text-secondary">Vector database for memory storage.</div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Default Budget (tokens)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="memory_default_budget_tokens" required min="100" max="10000" placeholder="1000">
+                                        <div class="form-text text-secondary">Default token budget for memory retrieval.</div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Explicit Min Similarity</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="memory_explicit_minimum" required min="0" max="1" step="0.01" placeholder="0.70">
+                                        <div class="form-text text-secondary">Minimum similarity for explicit memories (0.0-1.0).</div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Implicit Min Similarity</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="memory_implicit_minimum" required min="0" max="1" step="0.01" placeholder="0.75">
+                                        <div class="form-text text-secondary">Minimum similarity for implicit memories (0.0-1.0).</div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Search API Min</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="memory_search_api_minimum" required min="0" max="1" step="0.01" placeholder="0.65">
+                                        <div class="form-text text-secondary">Minimum similarity for search API (0.0-1.0).</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ComfyUI Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-image me-2"></i>ComfyUI Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="comfyui_enabled">
+                                            <label class="form-check-label text-light" for="comfyui_enabled">
+                                                Enable ComfyUI Integration
+                                            </label>
+                                            <div class="form-text text-secondary">Enable image and video generation via ComfyUI.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="comfyui_settings" style="display: none;">
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label text-light">ComfyUI URL</label>
+                                            <input type="url" class="form-control bg-dark text-light border-secondary" id="comfyui_url" placeholder="http://localhost:8188">
+                                            <div class="form-text text-secondary">ComfyUI server address.</div>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label text-light">Polling Interval (seconds)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="comfyui_polling_interval_seconds" min="0.5" max="10" step="0.5" placeholder="2.0">
+                                            <div class="form-text text-secondary">How often to check job status.</div>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Image Timeout (seconds)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="comfyui_timeout_seconds" min="30" max="1800" placeholder="300">
+                                            <div class="form-text text-secondary">Maximum time for image generation.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Video Timeout (seconds)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="comfyui_video_timeout_seconds" min="60" max="3600" placeholder="600">
+                                            <div class="form-text text-secondary">Maximum time for video generation.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Max Concurrent Jobs</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="comfyui_max_concurrent_jobs" min="1" max="10" placeholder="2">
+                                            <div class="form-text text-secondary">Maximum parallel generation jobs.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Document Analysis Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-file-earmark-text me-2"></i>Document Analysis Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="document_analysis_enabled">
+                                            <label class="form-check-label text-light" for="document_analysis_enabled">
+                                                Enable Document Analysis
+                                            </label>
+                                            <div class="form-text text-secondary">Enable document ingestion and semantic search.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="document_analysis_settings" style="display: none;">
+                                    <div class="row">
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Default Max Chunks</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="document_analysis_default_max_chunks" min="1" max="50" placeholder="3">
+                                            <div class="form-text text-secondary">Fallback chunk limit.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Max Chunks Cap</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="document_analysis_max_chunks_cap" min="1" max="100" placeholder="25">
+                                            <div class="form-text text-secondary">Absolute safety limit.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Chunk Token Estimate</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="document_analysis_chunk_token_estimate" min="128" max="2048" placeholder="512">
+                                            <div class="form-text text-secondary">Average chunk size (tokens).</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Budget Ratio</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="document_analysis_document_budget_ratio" min="0.05" max="0.5" step="0.05" placeholder="0.15">
+                                            <div class="form-text text-secondary">% of context for documents (0.15 = 15%).</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- General Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-sliders me-2"></i>General Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">API Host</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="api_host" required placeholder="localhost">
+                                        <div class="form-text text-secondary">Server bind address (use 0.0.0.0 for network access).</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">API Port</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="api_port" required min="1024" max="65535" placeholder="8080">
+                                        <div class="form-text text-secondary">Server port number.</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <div class="form-check form-switch mt-4">
+                                            <input class="form-check-input" type="checkbox" id="debug">
+                                            <label class="form-check-label text-light" for="debug">
+                                                Debug Mode
+                                            </label>
+                                            <div class="form-text text-secondary">Enable detailed logging.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <i class="bi bi-x-circle me-1"></i>Cancel
+                    </button>
+                    <button type="button" class="btn btn-warning" id="saveSystemSettingsBtn">
+                        <i class="bi bi-save me-1"></i>Save & Restart Server
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Document Library Modal -->
     <div class="modal fade" id="documentLibraryModal" tabindex="-1" aria-labelledby="documentLibraryModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -1638,6 +1914,7 @@
     <script src="js/workflow-management.js?v=2"></script>
     <script src="js/memory-panel.js?v=2"></script>
     <script src="js/pending-memories-panel.js?v=1"></script>
+    <script src="js/system_settings.js?v=1"></script>
     <script src="js/app.js?v=9"></script>
     <script src="js/document-library.js?v=1"></script>
     <script src="js/document-autocomplete.js?v=1"></script>

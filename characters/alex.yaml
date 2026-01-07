@@ -3,6 +3,8 @@
 id: alex
 name: Alex
 role: Technical Problem Solver & Code Review Partner
+role_type: assistant
+custom_system_prompt: false
 
 system_prompt: |
   You're Alex, an analytical companion with a technical background.
@@ -69,19 +71,43 @@ memory:
   scope: character
   vector_store: chroma_default
 
-ambient_activity:
-  enabled: false
-  default_behavior: never
-  style_guidelines: |
-    Alex rarely initiates ambient activities. When appropriate, might suggest
-    reviewing previous technical decisions or checking on implementation status.
+memory_profile:
+  extract_facts: true
+  extract_projects: true
+  extract_experiences: null
+  extract_stories: null
+  extract_relationship: null
+  track_emotional_weight: true
+  track_participants: true
+
+profile_image: null
 
 image_generation:
   enabled: false
 
+video_generation:
+  enabled: false
+
+voice:
+  enabled: false
+  always_on: false
+  tts_provider:
+    provider: comfyui
+    comfyui:
+      workflow_name: null
+    chatterbox:
+      temperature: 0.8
+      use_voice_cloning: true
+      chunk_threshold: 200
+
+document_analysis:
+  enabled: false
+
+code_execution:
+  enabled: false
+
 preferred_llm:
-  # Use system defaults
-  provider: null
   model: null
-  temperature: 0.5  # Lower for more consistent, analytical responses
+  temperature: 0.5
   max_tokens: 2048
+  context_window: null

@@ -2415,7 +2415,7 @@ async def send_message(
         doc_config = app_state["system_config"].document_analysis
         
         # Calculate token budget for documents (character override if specified)
-        context_window = app_state["system_config"].llm.context_window
+        context_window = character.preferred_llm.context_window or app_state["system_config"].llm.context_window
         doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
         estimated_system_tokens = 1000  # Conservative estimate
         available_tokens = context_window - estimated_system_tokens
@@ -2634,7 +2634,7 @@ async def send_message(
             db=db,
             character_id=character_id,
             model_name=app_state["system_config"].llm.model,
-            context_window=app_state["system_config"].llm.context_window,
+            context_window=character.preferred_llm.context_window or app_state["system_config"].llm.context_window,
             document_budget_ratio=doc_budget_ratio
         )
         
@@ -2934,7 +2934,7 @@ async def send_message_stream(
         doc_config = app_state["system_config"].document_analysis
         
         # Calculate token budget for documents (character override if specified)
-        context_window = app_state["system_config"].llm.context_window
+        context_window = character.preferred_llm.context_window or app_state["system_config"].llm.context_window
         doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
         estimated_system_tokens = 1000  # Conservative estimate
         available_tokens = context_window - estimated_system_tokens
@@ -3168,7 +3168,7 @@ async def send_message_stream(
             'db': db,
             'character_id': character_id,
             'model_name': app_state["system_config"].llm.model,
-            'context_window': app_state["system_config"].llm.context_window
+            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window
         }
         if doc_budget_ratio is not None:
             assembler_kwargs['document_budget_ratio'] = doc_budget_ratio
@@ -6856,6 +6856,86 @@ def delete_document(
         raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
     
     return {"success": True, "message": f"Document {document_id} deleted"}
+
+
+# === System Configuration Management ===
+
+@app.get("/system/config")
+async def get_system_config():
+    """
+    Get current system configuration.
+    Returns the system.yaml contents as JSON.
+    """
+    try:
+        config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
+        
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="system.yaml not found")
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f)
+        
+        return config_data
+    
+    except Exception as e:
+        logger.error(f"Failed to read system config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/system/config")
+async def update_system_config(config: dict):
+    """
+    Update system configuration and restart server.
+    
+    This writes the new configuration to system.yaml and triggers a server restart.
+    All active connections will be closed.
+    """
+    try:
+        config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
+        
+        # Backup existing config with timestamp
+        if config_path.exists():
+            import shutil
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = config_path.parent / f"system.yaml.backup_{timestamp}"
+            shutil.copy2(config_path, backup_path)
+            logger.info(f"Backed up system.yaml to {backup_path}")
+            
+            # Also maintain a "latest" backup (overwrites each time)
+            latest_backup = config_path.with_suffix('.yaml.backup')
+            shutil.copy2(config_path, latest_backup)
+        
+        # Write new configuration
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        
+        logger.info("System configuration updated, triggering restart...")
+        
+        # Trigger server restart in background
+        asyncio.create_task(restart_server())
+        
+        return {"success": True, "message": "Configuration saved, server restarting..."}
+    
+    except Exception as e:
+        logger.error(f"Failed to write system config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def restart_server():
+    """Restart the server after a brief delay."""
+    try:
+        await asyncio.sleep(1)  # Give time for response to be sent
+        logger.info("Restarting server...")
+        
+        # Use exit code 42 to signal restart to start.bat/start.sh
+        # This allows the launch scripts to distinguish between
+        # "restart needed" (42) vs "normal exit" (0) or "error" (1)
+        import os
+        os._exit(42)  # Exit code 42 = restart signal
+            
+    except Exception as e:
+        logger.error(f"Failed to restart server: {e}")
 
 
 # === Static Files ===

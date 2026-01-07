@@ -123,6 +123,12 @@ class ConfigLoader:
         
         for file_path in characters_dir.glob("*.yaml"):
             character_id = file_path.stem
+            
+            # Skip template file
+            if character_id == "template":
+                logger.debug("Skipping template.yaml (not a real character)")
+                continue
+            
             try:
                 config = self.load_character(character_id)
                 characters[character_id] = config

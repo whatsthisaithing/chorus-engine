@@ -1,110 +1,33 @@
-# System configuration for Chorus Engine
-# This file is optional - defaults will be used if not present
-
-# ===========================
-# LLM Provider Configuration
-# ===========================
-
-# Option 1: Ollama (multi-model, auto-loading)
-# llm:
-#   provider: ollama
-#   base_url: http://localhost:11434
-#   model: qwen2.5:14b-instruct
-#   context_window: 32768  # Qwen2.5 supports much larger context
-#   max_response_tokens: 4096
-#   temperature: 0.7
-#   timeout_seconds: 120
-#   unload_during_image_generation: true
-
-# Option 2: LM Studio (multi-model, JIT loading)
 llm:
   provider: lmstudio
-  base_url: http://localhost:1234 #/v1
+  base_url: http://localhost:1234
   model: qwen/qwen2.5-coder-14b
-  context_window: 31500  # IMPORTANT: Must match the context length set in LM Studio when loading the model!
-                         # LM Studio default is often 4096 - change this when loading your model
-                         # Recommended: 31500 (for 32K context supporting model) for rich conversations with documents and memory
+  context_window: 31500
   max_response_tokens: 4096
   temperature: 0.7
   timeout_seconds: 120
   unload_during_image_generation: true
-
-# Option 3: KoboldCpp (single-model, manual loading)
-# User must start KoboldCpp separately with:
-#   koboldcpp.exe --model path/to/model.gguf --port 5001 --contextsize 8192 --gpulayers 99
-# Note: All characters will use the same loaded model (preferred_llm_model ignored)
-# Note: Cannot unload for ComfyUI (VRAM shared between KoboldCpp and ComfyUI)
-# llm:
-#   provider: koboldcpp
-#   base_url: http://localhost:5001
-#   model: "qwen-14b"  # Label for logging (actual model loaded at KoboldCpp startup)
-#   context_window: 28672  # MUST match --contextsize flag in KoboldCpp startup
-#   max_response_tokens: 4096
-#   temperature: 0.7
-#   timeout_seconds: 120
-#   unload_during_image_generation: false  # Cannot unload KoboldCpp models dynamically
-
 memory:
   embedding_model: all-MiniLM-L6-v2
   vector_store: chroma
-  implicit_enabled: false
-  ephemeral_ttl_hours: 24
+  default_budget_tokens: 1000
   similarity_thresholds:
-    explicit_minimum: 0.70
+    explicit_minimum: 0.7
     implicit_minimum: 0.75
     search_api_minimum: 0.65
-  default_budget_tokens: 1000
-
 comfyui:
   enabled: true
   url: http://localhost:8188
-  timeout_seconds: 300  # Image generation timeout
-  video_timeout_seconds: 600  # Video generation timeout (10 minutes)
-  polling_interval_seconds: 2.0
+  timeout_seconds: 300
+  video_timeout_seconds: 1200
+  polling_interval_seconds: 2
   max_concurrent_jobs: 2
-
-# Intent Detection System (Phase 7)
-intent_detection:
-  enabled: false  # Using keyword-based detection (no LLM overhead)
-  model: gemma2:9b  # Better at structured output than small models
-  temperature: 0.2  # Low for consistency, but not too low to avoid token corruption
-  keep_loaded: true
-  fallback_to_keywords: true
-
-# Document Analysis System
 document_analysis:
   enabled: true
-  default_max_chunks: 3              # Fallback if token calculation unavailable
-  max_chunks_cap: 25                 # Absolute safety limit
-  chunk_token_estimate: 512          # Average chunk size for calculations
-  document_budget_ratio: 0.15        # 15% of available context for documents
-  
-  # Intent-specific confidence thresholds
-  thresholds:
-    image: 0.7
-    video: 0.7
-    memory: 0.8
-    ambient: 0.6
-
-# VRAM Management (Phase 7)
-vram_management:
-  # Unload all models during ComfyUI generation
-  unload_during_comfy: true
-  
-  # Models to reload after generation
-  always_reload:
-    - intent_model
-    - character_model
-  
-  # Verification
-  verify_unload: true
-  verify_reload: true
-
-paths:
-  characters: characters
-  workflows: workflows
-  data: data
-
-debug: true
+  default_max_chunks: 3
+  max_chunks_cap: 25
+  chunk_token_estimate: 512
+  document_budget_ratio: 0.15
 api_host: localhost
 api_port: 8080
+debug: true

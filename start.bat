@@ -74,6 +74,7 @@ echo Press Ctrl+C to stop the server
 echo ============================================
 echo.
 
+:restart_loop
 REM Start the server
 if exist python_embeded\python.exe (
     REM Embedded Python - run directly from current directory
@@ -83,8 +84,19 @@ if exist python_embeded\python.exe (
     %PYTHON_CMD% -m chorus_engine.main
 )
 
-REM If server exits, pause to show any error messages
-if errorlevel 1 (
+REM Check exit code
+set EXIT_CODE=%ERRORLEVEL%
+
+if %EXIT_CODE%==42 (
+    echo.
+    echo [INFO] Restarting server...
+    echo.
+    timeout /t 2 /nobreak >nul
+    goto :restart_loop
+)
+
+REM If server exits with error, pause to show any error messages
+if %EXIT_CODE% NEQ 0 (
     echo.
     echo [ERROR] Server exited with an error
     pause

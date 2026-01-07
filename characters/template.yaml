@@ -6,6 +6,8 @@
 # ===============
 
 # Unique identifier for this character (lowercase, no spaces, used in URLs and database)
+# Important: this should match the filename (without .yaml extension)
+# Important: if you change this, existing conversations and data may become inaccessible
 id: character_id
 
 # Display name shown in UI
@@ -98,6 +100,16 @@ role_type: assistant
 # OPTIONAL FIELDS
 # ===============
 
+# LLM SETTINGS (Preferred Model Override)
+# ----------------------------------------
+# Override system defaults for this character
+# Used in conversation_analysis and general responses
+preferred_llm:
+  model: null                 # Specific model to use (qwen2.5:14b, llama3.2:latest, etc.) or null for system default
+  temperature: null           # Override temperature (0.0-1.0) or null for system default
+  max_tokens: null            # Override max response length or null for system default
+  context_window: null        # Override context window size (e.g., 8192, 32768) if using different model than system default
+
 # IMMERSION SETTINGS
 # ------------------
 # Controls how "in-character" the AI behaves vs. remaining an obvious AI assistant
@@ -180,6 +192,19 @@ memory:
   # Vector store to use (default: chroma_default)
   vector_store: chroma_default
 
+# MEMORY PROFILE (Phase 8)
+# -------------------------
+# Control what types of memories are extracted from conversations
+# null = use immersion level defaults
+memory_profile:
+  extract_facts: true              # Extract factual information
+  extract_projects: true           # Extract ongoing projects/tasks
+  extract_experiences: null        # Extract personal experiences (null = use immersion defaults)
+  extract_stories: null            # Extract narrative stories (null = use immersion defaults)
+  extract_relationship: null       # Extract relationship insights (null = use immersion defaults)
+  track_emotional_weight: true     # Track emotional significance of memories
+  track_participants: true         # Track who was involved in memories
+
 # PROFILE IMAGE
 # -------------
 # Optional custom profile image (filename only, stored in data/character_images/)
@@ -192,6 +217,41 @@ profile_image: character_name_profile.png
 # Can this character generate images?
 image_generation:
   enabled: true
+
+# VIDEO GENERATION
+# ----------------
+# Can this character generate videos?
+video_generation:
+  enabled: true
+
+# VOICE/TTS CONFIGURATION
+# -----------------------
+# Text-to-speech settings for this character
+# 
+# NOTE: Workflow selection and voice samples are managed in the database via UI.
+# Use the workflow management UI to set default audio workflows per character.
+# Voice samples are uploaded via UI and stored in data/voice_samples/{character_id}/
+voice:
+  # Enable voice output?
+  enabled: true
+  
+  # Auto-generate TTS for every message?
+  always_on: false
+  
+  # TTS Provider settings
+  tts_provider:
+    provider: comfyui  # comfyui or chatterbox
+    
+    # ComfyUI TTS settings (optional - database workflow takes precedence)
+    # Only used as fallback if no database workflow is set
+    comfyui:
+      workflow_name: null  # Optional fallback workflow name
+    
+    # Chatterbox TTS settings (embedded TTS with voice cloning)
+    chatterbox:
+      temperature: 0.8           # Model temperature (0.0-1.0)
+      use_voice_cloning: true    # Enable voice cloning from samples
+      chunk_threshold: 200       # Max characters per chunk (~13-15s audio, prevents distortion)
 
 # DOCUMENT ANALYSIS (Phase 1-7)
 # ------------------------------
@@ -226,35 +286,6 @@ code_execution:
   #   - numpy
   #   - scipy
   #   - matplotlib
-
-# VOICE/TTS CONFIGURATION
-# -----------------------
-# Text-to-speech settings for this character
-voice:
-  # Enable voice output?
-  enabled: true
-  
-  # Voice engine settings (currently using direct TTS, not ComfyUI)
-  # These settings depend on your TTS engine configuration
-  # voice_model: model_name  # Optional: specific voice model
-  # pitch: 1.0               # Optional: pitch adjustment
-  # speed: 1.0               # Optional: speed adjustment
-
-# VIDEO GENERATION
-# ----------------
-# Can this character generate videos? (If you have video workflows configured)
-# video_generation:
-#   enabled: false
-
-# LLM SETTINGS
-# ------------
-# Language model configuration (optional overrides)
-# If not specified, uses global defaults from system.yaml
-# llm:
-#   model: llama3.2:latest      # Specific model to use
-#   temperature: 0.8            # Creativity (0.0-1.0)
-#   max_tokens: 2000            # Max response length
-#   context_window: 8192        # Context window size
 
 # NOTES
 # =====

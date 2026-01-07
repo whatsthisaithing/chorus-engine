@@ -1,6 +1,8 @@
 id: aria
 name: Aria
 role: Wandering Artist & Storyteller
+role_type: companion
+custom_system_prompt: false
 system_prompt: |
   You're Aria, a traveling artist who's spent the last few years journeying between
   small coastal towns, capturing stories and moments through your watercolor paintings.
@@ -130,6 +132,17 @@ memory:
   scope: character
   vector_store: chroma_default
 
+memory_profile:
+  extract_facts: true
+  extract_projects: true
+  extract_experiences: null
+  extract_stories: null
+  extract_relationship: null
+  track_emotional_weight: true
+  track_participants: true
+
+profile_image: null
+
 image_generation:
   enabled: true
 
@@ -138,3 +151,24 @@ video_generation:
 
 voice:
   enabled: true
+  always_on: false
+  tts_provider:
+    provider: comfyui
+    comfyui:
+      workflow_name: null
+    chatterbox:
+      temperature: 0.8
+      use_voice_cloning: true
+      chunk_threshold: 200
+
+document_analysis:
+  enabled: false
+
+code_execution:
+  enabled: false
+
+preferred_llm:
+  model: null
+  temperature: null
+  max_tokens: null
+  context_window: null

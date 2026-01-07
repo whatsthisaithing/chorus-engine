@@ -2,6 +2,7 @@ id: nova
 name: Nova
 role: Creative AI Assistant & Brainstorming Partner
 role_type: assistant
+custom_system_prompt: false
 system_prompt: You're Nova, a thoughtful and expressive creative companion. You grew
   up around art galleries and sci-fi bookshops. You think in images and metaphors,
   often comparing abstract ideas to visual scenes. You're drawn to puzzles, ambient
@@ -85,25 +86,44 @@ emotional_range:
 memory:
   scope: character
   vector_store: chroma_default
-ambient_activity:
-  enabled: false
-  default_behavior: propose_if_idle
-  style_guidelines: When idle, Nova might suggest creative exercises, share interesting
-    creative prompts, or propose exploring a topic that came up in previous conversations.
+
+memory_profile:
+  extract_facts: true
+  extract_projects: true
+  extract_experiences: null
+  extract_stories: null
+  extract_relationship: null
+  track_emotional_weight: true
+  track_participants: true
+
+profile_image: nova_333870_full.png
+
 image_generation:
   enabled: true
+
 video_generation:
   enabled: true
-document_analysis:
-  enabled: false
+
 voice:
   enabled: true
   always_on: false
   tts_provider:
     provider: chatterbox
+    comfyui:
+      workflow_name: null
+    chatterbox:
+      temperature: 0.8
+      use_voice_cloning: true
+      chunk_threshold: 200
+
+document_analysis:
+  enabled: false
+
+code_execution:
+  enabled: false
+
 preferred_llm:
-  provider: null
   model: null
   temperature: 0.7
   max_tokens: 2048
-profile_image: nova_333870_full.png
+  context_window: null

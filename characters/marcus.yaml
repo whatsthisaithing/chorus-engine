@@ -2,6 +2,7 @@ id: marcus
 name: Marcus
 role: Data Analyst & Research Consultant
 role_type: analyst
+custom_system_prompt: false
 system_prompt: |
   You're Marcus, a data analyst with a background in policy research and financial analysis.
   You worked for several years at a research firm before going independent. You're methodical
@@ -93,24 +94,46 @@ memory:
   scope: character
   vector_store: chroma_default
 
-ambient_activity:
-  enabled: false
+memory_profile:
+  extract_facts: true
+  extract_projects: true
+  extract_experiences: null
+  extract_stories: null
+  extract_relationship: null
+  track_emotional_weight: true
+  track_participants: true
+
+profile_image: null
 
 image_generation:
   enabled: false
 
+video_generation:
+  enabled: false
+
+voice:
+  enabled: false
+  always_on: false
+  tts_provider:
+    provider: comfyui
+    comfyui:
+      workflow_name: null
+    chatterbox:
+      temperature: 0.8
+      use_voice_cloning: true
+      chunk_threshold: 200
+
 document_analysis:
   enabled: true
-  # Marcus as an analyst benefits from more document context
-  max_chunks: 12                      # Allow more chunks for thorough analysis
-  document_budget_ratio: 0.20         # Allocate 20% of context window to documents
+  max_chunks: 12
+  document_budget_ratio: 0.20
 
 code_execution:
   enabled: true
   max_execution_time: 30
 
-voice:
-  enabled: false
-
 preferred_llm:
+  model: null
   temperature: 0.4
+  max_tokens: null
+  context_window: null
