@@ -84,12 +84,13 @@ def main():
     
     logger = logging.getLogger(__name__)
     logger.info(f"Starting Chorus Engine server (debug mode: {debug_mode})...")
+    logger.info(f"Server will listen on {system_config.api_host}:{system_config.api_port}")
     
     # Run server
     uvicorn.run(
         "chorus_engine.api.app:app",
-        host="localhost",
-        port=8080,
+        host=system_config.api_host,
+        port=system_config.api_port,
         reload=False,  # Disable hot reload - use manual restart for changes
         log_level="info",  # Use info level for uvicorn itself
         log_config=None,  # Don't modify uvicorn's log config - use our basicConfig
