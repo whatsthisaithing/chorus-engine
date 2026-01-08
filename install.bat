@@ -85,6 +85,15 @@ echo [*] Pip installed successfully
 echo.
 
 :install_deps
+
+REM Create config/system.yaml from template if it doesn't exist
+if not exist config\system.yaml (
+    echo [*] Creating config\system.yaml from template...
+    copy config\system.yaml.template config\system.yaml
+    echo [*] Config file created - you can customize config\system.yaml
+    echo.
+)
+
 echo [3/3] Installing Chorus Engine dependencies...
 echo This may take several minutes...
 echo.

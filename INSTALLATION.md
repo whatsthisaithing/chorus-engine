@@ -157,12 +157,28 @@ Even after running `install.bat`:
 ### Port 8080 already in use
 - Another Chorus Engine instance might be running
 - Check for other applications using port 8080
-- You can change the port in `config/system.yaml`
+- You can change the port in `config/system.yaml` (created from template on first install)
 
 ### Import errors when starting
 - Make sure dependencies are installed: see relevant error message
 - **Portable mode**: Re-run `install.bat` or `install.sh`
 - **Developer mode**: Run `pip install -r requirements.txt` again
+
+---
+
+## Configuration
+
+### config/system.yaml
+
+On first install, `config/system.yaml` is created from `config/system.yaml.template`. This file contains:
+- Port configuration
+- Database settings
+- LLM provider settings
+- TTS/voice settings
+
+**Important**: `config/system.yaml` is NOT tracked in git - your local changes won't cause conflicts when updating. If you want to see what changed in the template, check `config/system.yaml.template` after pulling updates.
+
+---
 
 ## Updating Chorus Engine
 

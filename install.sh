@@ -47,6 +47,14 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Create config/system.yaml from template if it doesn't exist
+if [ ! -f "config/system.yaml" ]; then
+    echo "[*] Creating config/system.yaml from template..."
+    cp config/system.yaml.template config/system.yaml
+    echo "[*] Config file created - you can customize config/system.yaml"
+    echo ""
+fi
+
 echo "[2/2] Installing Chorus Engine dependencies..."
 echo "This may take several minutes..."
 echo ""

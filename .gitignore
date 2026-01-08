@@ -41,6 +41,9 @@ python_embeded/
 *.swo
 *~
 
+# Configuration files - users customize these locally
+config/system.yaml
+
 # Data and runtime files - NO database or vector store data should ever be committed
 data/
 # Exception: Allow default character image
