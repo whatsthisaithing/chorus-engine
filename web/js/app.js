@@ -27,6 +27,9 @@ window.App = {
         console.log('Initializing Chorus Engine...');
         
         try {
+            // Initialize theme system
+            await ThemeManager.initialize();
+            
             // Check backend health
             const health = await API.getHealth();
             console.log('Backend health:', health);
@@ -332,6 +335,9 @@ window.App = {
         
         this.state.selectedCharacterId = characterId;
         this.state.currentCharacter = characterId;
+        
+        // Apply character's theme (or system default)
+        await ThemeManager.applyCharacterTheme(characterId);
         
         // IMPORTANT: Reset conversation state when switching characters
         // This prevents documents from being uploaded to wrong conversation

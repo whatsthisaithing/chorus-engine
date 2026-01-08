@@ -91,6 +91,24 @@ class PathsConfig(BaseModel):
         return Path(v)
 
 
+class UIConfig(BaseModel):
+    """UI configuration."""
+    
+    color_scheme: str = Field(
+        default="stage-night",
+        description="Color scheme/theme name"
+    )
+
+
+class UIConfig(BaseModel):
+    """UI configuration."""
+    
+    color_scheme: str = Field(
+        default="stage-night",
+        description="Color scheme/theme name"
+    )
+
+
 class SystemDocumentAnalysisConfig(BaseModel):
     """System-level document analysis configuration."""
     
@@ -134,6 +152,7 @@ class SystemConfig(BaseModel):
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+    ui: UIConfig = Field(default_factory=UIConfig)
     debug: bool = False
     api_host: str = "localhost"
     api_port: int = Field(default=8080, gt=0, le=65535)
@@ -331,6 +350,13 @@ class CodeExecutionConfig(BaseModel):
         description="Whitelist of allowed Python libraries. None = default whitelist (pandas, numpy, etc.)"
     )
 
+class UIPreferences(BaseModel):
+    """UI preferences for character."""
+    
+    color_scheme: Optional[str] = Field(
+        default=None,
+        description="Color scheme override for this character (null = use system default)"
+    )
 
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""
@@ -390,6 +416,9 @@ class CharacterConfig(BaseModel):
     # Document analysis & code execution (Phase 1-7)
     document_analysis: DocumentAnalysisConfig = Field(default_factory=DocumentAnalysisConfig)
     code_execution: CodeExecutionConfig = Field(default_factory=CodeExecutionConfig)
+    
+    # UI preferences
+    ui_preferences: UIPreferences = Field(default_factory=UIPreferences)
     
     # Profile customization
     profile_image: Optional[str] = Field(default=None, description="Filename of profile image in data/character_images/")

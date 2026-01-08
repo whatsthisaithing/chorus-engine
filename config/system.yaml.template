@@ -89,6 +89,13 @@ paths:
   workflows: workflows
   data: data
 
+# ===========================
+# UI Configuration
+# ===========================
+ui:
+  color_scheme: stage-night  # Options: stage-night, spotlight-bright, noir-absolute, cobalt-depths, 
+                              #          forest-canopy, ember-glow, monochrome-studio, sunset-boulevard, arctic-twilight
+
 debug: true
 api_host: localhost
 api_port: 8080

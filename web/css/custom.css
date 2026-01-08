@@ -56,6 +56,42 @@ html, body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     background-color: var(--bg-primary);
     color: var(--text-primary);
+    transition: background-color 0.8s ease-in-out,
+                color 0.8s ease-in-out;
+}
+
+/* Smooth theme transitions for all elements */
+* {
+    transition: background-color 0.8s ease-in-out,
+                color 0.8s ease-in-out,
+                border-color 0.8s ease-in-out !important;
+}
+
+/* Theme-aware text utilities */
+.text-theme-secondary {
+    color: var(--text-secondary) !important;
+}
+
+.text-theme-tertiary {
+    color: var(--text-tertiary) !important;
+}
+
+/* Theme-aware button overrides */
+.btn-outline-light {
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.btn-outline-light:hover {
+    color: var(--bg-primary) !important;
+    background-color: var(--text-primary) !important;
+    border-color: var(--text-primary) !important;
+}
+
+.btn-outline-light:disabled {
+    color: var(--text-muted) !important;
+    border-color: var(--border-color) !important;
+    opacity: 0.6;
 }
 
 .container-fluid {
@@ -86,11 +122,10 @@ html, body {
 
 /* Character Profile Card */
 .character-profile-card {
-    background: linear-gradient(135deg, var(--bg-secondary) 0%, #1a1625 100%);
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--profile-gradient-end) 100%);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 12px;
-    transition: all 0.3s ease;
 }
 
 .profile-avatar-container {

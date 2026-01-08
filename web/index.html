@@ -20,7 +20,7 @@
         <div class="row h-100">
             <!-- Sidebar -->
             <div class="col-md-3 col-lg-2 sidebar bg-dark text-white p-3 d-flex flex-column">
-                <h4 class="mb-4" style="white-space: nowrap;">
+                <h4 class="mb-4 text-theme-secondary" style="white-space: nowrap;">
                     Chorus Engine
                 </h4>
                 
@@ -101,14 +101,14 @@
                     <button id="memoryPanelBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
                         <i class="bi bi-database me-1"></i> Memory
                     </button>
-                    <button id="pending-memories-btn" class="btn btn-outline-secondary btn-sm w-100 mb-3" disabled>
+                    <button id="pending-memories-btn" class="btn btn-outline-light btn-sm w-100 mb-3" disabled>
                         <i class="bi bi-hourglass-split me-1"></i> Pending Memories
                         <span id="pending-count" class="badge bg-danger">0</span>
                     </button>
                     
                     <!-- Conversation List -->
                     <div class="mb-3">
-                        <h6 class="small text-light">Recent</h6>
+                        <h6 class="small text-theme-secondary">Recent</h6>
                         <div id="conversationList" class="conversation-list">
                             <!-- Populated by JS -->
                         </div>
@@ -225,7 +225,7 @@
                 <!-- Messages Area -->
                 <div class="flex-grow-1 overflow-auto p-3" id="messagesContainer">
                     <!-- Messages populated by JS -->
-                    <div class="text-center text-light mt-5" id="emptyState">
+                    <div class="text-center text-theme-secondary mt-5" id="emptyState">
                         <i class="bi bi-chat-text" style="font-size: 4rem;"></i>
                         <p class="mt-3">Select a character and start a new conversation</p>
                     </div>
@@ -340,7 +340,7 @@
                         <div class="spinner-border text-info" role="status">
                             <span class="visually-hidden">Analyzing...</span>
                         </div>
-                        <p class="mt-3 text-light">Analyzing conversation...</p>
+                        <p class="mt-3 text-theme-secondary">Analyzing conversation...</p>
                     </div>
                     
                     <div id="analysisResults" style="display: none;">
@@ -410,7 +410,7 @@
                         <div class="spinner-border text-info" role="status">
                             <span class="visually-hidden">Loading...</span>
                         </div>
-                        <p class="mt-2 text-light">Loading analysis history...</p>
+                        <p class="mt-2 text-theme-secondary">Loading analysis history...</p>
                     </div>
 
                     <!-- Error message -->
@@ -424,7 +424,7 @@
                     <!-- Empty state -->
                     <div id="historyEmpty" class="text-center py-4" style="display: none;">
                         <i class="bi bi-inbox" style="font-size: 3rem; color: #ccc;"></i>
-                        <p class="text-light mt-2">No analyses yet. Click "Analyze Now" to create the first one!</p>
+                        <p class="text-theme-secondary mt-2">No analyses yet. Click "Analyze Now" to create the first one!</p>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -437,7 +437,7 @@
     <!-- System Settings Modal -->
     <div class="modal fade" id="systemSettingsModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content bg-dark text-light">
+            <div class="modal-content bg-dark text-theme-secondary">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title">
                         <i class="bi bi-gear-fill me-2"></i>System Configuration
@@ -695,6 +695,40 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- UI Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-palette me-2"></i>User Interface</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Color Scheme</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="ui_color_scheme">
+                                            <option value="stage-night">Stage Night (default)</option>
+                                            <option value="spotlight-bright">Spotlight Bright</option>
+                                            <option value="noir-absolute">Noir Absolute</option>
+                                            <option value="cobalt-depths">Cobalt Depths</option>
+                                            <option value="forest-canopy">Forest Canopy</option>
+                                            <option value="ember-glow">Ember Glow</option>
+                                            <option value="monochrome-studio">Monochrome Studio</option>
+                                            <option value="sunset-boulevard">Sunset Boulevard</option>
+                                            <option value="arctic-twilight">Arctic Twilight</option>
+                                        </select>
+                                        <div class="form-text text-secondary">System default theme. Can be overridden per-character.</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <div class="mt-4">
+                                            <button type="button" class="btn btn-sm btn-outline-light" id="previewThemeBtn">
+                                                <i class="bi bi-eye me-1"></i>Preview Selected Theme
+                                            </button>
+                                            <div class="form-text text-secondary mt-2">Preview changes without saving. Note: Requires server restart to become new default.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </form>
                 </div>
                 
@@ -761,8 +795,8 @@
                     <div class="card bg-dark border-secondary mb-4" id="uploadZone">
                         <div class="card-body text-center py-4" style="border: 3px dashed #444; border-radius: 8px; cursor: pointer;">
                             <h4 class="text-light"><i class="bi bi-cloud-upload text-primary"></i> Drop Files Here</h4>
-                            <p class="text-light mb-3">Or click to browse</p>
-                            <p class="small text-white-50 mb-3">Supported: PDF, DOCX, TXT, CSV, XLSX, Markdown</p>
+                            <p class="text-theme-secondary mb-3">Or click to browse</p>
+                            <p class="small text-theme-tertiary mb-3">Supported: PDF, DOCX, TXT, CSV, XLSX, Markdown</p>
                             
                             <div class="row justify-content-center" onclick="event.stopPropagation();">
                                 <div class="col-md-4">
@@ -809,8 +843,8 @@
                         </div>
                         <div id="documentsEmpty" class="text-center py-5" style="display: none;">
                             <i class="bi bi-inbox" style="font-size: 3rem; color: #999;"></i>
-                            <p class="text-light mt-3">No documents uploaded yet</p>
-                            <p class="small text-white-50">Upload documents to reference them in conversations using <code>#doc:filename</code></p>
+                            <p class="text-theme-secondary mt-3">No documents uploaded yet</p>
+                            <p class="small text-theme-tertiary">Upload documents to reference them in conversations using <code>#doc:filename</code></p>
                         </div>
                     </div>
                 </div>
@@ -850,7 +884,7 @@
                     <div id="docUploadProgress" style="display: none;">
                         <div class="text-center py-3">
                             <div class="spinner-border text-primary" role="status"></div>
-                            <p class="text-light mt-2">Uploading and processing...</p>
+                            <p class="text-theme-secondary mt-2">Uploading and processing...</p>
                         </div>
                     </div>
                 </div>
@@ -1064,7 +1098,7 @@
                                             <input type="text" class="form-control" id="charId" required 
                                                    pattern="[a-z0-9_\-]+" 
                                                    placeholder="e.g., my-assistant">
-                                            <small class="text-light opacity-75">Lowercase letters, numbers, underscores, hyphens only. Cannot be changed after creation.</small>
+                                            <small class="text-theme-secondary">Lowercase letters, numbers, underscores, hyphens only. Cannot be changed after creation.</small>
                                         </div>
                                         
                                         <div class="row">
@@ -1088,14 +1122,14 @@
                                             <label class="form-label">Role Description <span class="text-danger">*</span></label>
                                             <input type="text" class="form-control" id="charRole" required 
                                                    placeholder="e.g., Helpful Research Assistant">
-                                            <small class="text-light opacity-75">Brief description shown in character selector</small>
+                                            <small class="text-theme-secondary">Brief description shown in character selector</small>
                                         </div>
                                         
                                         <div class="mb-3">
                                             <label class="form-label">System Prompt <span class="text-danger">*</span></label>
                                             <textarea class="form-control" id="charSystemPrompt" rows="10" required 
                                                       placeholder="Define the character's personality and behavior..."></textarea>
-                                            <small class="text-light opacity-75">Core instructions that define how the character behaves</small>
+                                            <small class="text-theme-secondary">Core instructions that define how the character behaves</small>
                                         </div>
                                         
                                         <div class="mb-3">
@@ -1105,7 +1139,7 @@
                                                     <strong>⚡ Custom System Prompt (Power User Mode)</strong>
                                                 </label>
                                             </div>
-                                            <small class="text-light opacity-75 d-block mt-1">
+                                            <small class="text-theme-secondary d-block mt-1">
                                                 Advanced: Use system_prompt exactly as written, bypassing all automatic immersion guidance. 
                                                 Only enable for specialized use cases where you need complete control.
                                             </small>
@@ -1115,14 +1149,31 @@
                                             <label class="form-label">Personality Traits</label>
                                             <input type="text" class="form-control" id="charTraits" 
                                                    placeholder="e.g., thoughtful, creative, analytical">
-                                            <small class="text-light opacity-75">Comma-separated list of adjectives</small>
+                                            <small class="text-theme-secondary">Comma-separated list of adjectives</small>
                                         </div>
                                         
                                         <div class="mb-3">
                                             <label class="form-label">Profile Image</label>
                                             <input type="text" class="form-control" id="charProfileImage" 
                                                    placeholder="e.g., character_name_profile.png">
-                                            <small class="text-light opacity-75">Filename in data/character_images/ (set via "Set as Profile" on generated images)</small>
+                                            <small class="text-theme-secondary">Filename in data/character_images/ (set via "Set as Profile" on generated images)</small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Color Scheme</label>
+                                            <select class="form-select" id="charColorScheme">
+                                                <option value="">Use System Default</option>
+                                                <option value="stage-night">Stage Night</option>
+                                                <option value="spotlight-bright">Spotlight Bright</option>
+                                                <option value="noir-absolute">Noir Absolute</option>
+                                                <option value="cobalt-depths">Cobalt Depths</option>
+                                                <option value="forest-canopy">Forest Canopy</option>
+                                                <option value="ember-glow">Ember Glow</option>
+                                                <option value="monochrome-studio">Monochrome Studio</option>
+                                                <option value="sunset-boulevard">Sunset Boulevard</option>
+                                                <option value="arctic-twilight">Arctic Twilight</option>
+                                            </select>
+                                            <small class="text-theme-secondary">Theme to use when this character is selected (leave as system default unless you want character-specific theming)</small>
                                         </div>
                                         
                                         <!-- Preferred LLM Collapsible -->
@@ -1132,7 +1183,7 @@
                                             </button>
                                             <div class="collapse mt-2" id="llmPrefsCollapse">
                                                 <div class="card card-body bg-dark">
-                                                    <small class="text-light opacity-75 mb-2">Override system defaults for this character. All use system LLM provider.</small>
+                                                    <small class="text-theme-secondary mb-2">Override system defaults for this character. All use system LLM provider.</small>
                                                     <div class="row">
                                                         <div class="col-md-6 mb-2">
                                                             <label class="form-label">Model</label>
@@ -1175,7 +1226,7 @@
                                                 <option value="full">Full - Personality with experiences</option>
                                                 <option value="unbounded">Unbounded - Complete roleplay</option>
                                             </select>
-                                            <small class="text-light opacity-75">Controls how "in-character" the AI behaves</small>
+                                            <small class="text-theme-secondary">Controls how "in-character" the AI behaves</small>
                                         </div>
                                         
                                         <h6 class="mt-4 mb-3">Immersion Settings</h6>
@@ -1183,7 +1234,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charAllowPreferences" checked>
                                                 <label class="form-check-label" for="charAllowPreferences">
-                                                    Allow Preferences <small class="text-light opacity-75">- Can express personal preferences</small>
+                                                    Allow Preferences <small class="text-theme-secondary">- Can express personal preferences</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1191,7 +1242,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charAllowOpinions" checked>
                                                 <label class="form-check-label" for="charAllowOpinions">
-                                                    Allow Opinions <small class="text-light opacity-75">- Can have and express opinions</small>
+                                                    Allow Opinions <small class="text-theme-secondary">- Can have and express opinions</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1199,7 +1250,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charAllowExperiences">
                                                 <label class="form-check-label" for="charAllowExperiences">
-                                                    Allow Experiences <small class="text-light opacity-75">- Can reference personal experiences</small>
+                                                    Allow Experiences <small class="text-theme-secondary">- Can reference personal experiences</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1207,7 +1258,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charAllowPhysicalMetaphor">
                                                 <label class="form-check-label" for="charAllowPhysicalMetaphor">
-                                                    Allow Physical Metaphor <small class="text-light opacity-75">- Can use physical metaphors ("I feel energized")</small>
+                                                    Allow Physical Metaphor <small class="text-theme-secondary">- Can use physical metaphors ("I feel energized")</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1215,7 +1266,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charAllowPhysicalSensation">
                                                 <label class="form-check-label" for="charAllowPhysicalSensation">
-                                                    Allow Physical Sensation <small class="text-light opacity-75">- Can describe physical sensations</small>
+                                                    Allow Physical Sensation <small class="text-theme-secondary">- Can describe physical sensations</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1242,7 +1293,7 @@
                                             <label class="form-label">Allowed Emotions</label>
                                             <input type="text" class="form-control" id="charEmotionalAllowed" 
                                                    placeholder="e.g., positive, curious, thoughtful, encouraging">
-                                            <small class="text-light opacity-75">Comma-separated list</small>
+                                            <small class="text-theme-secondary">Comma-separated list</small>
                                         </div>
                                     </div>
                                     
@@ -1259,7 +1310,7 @@
                                         </div>
                                         
                                         <h6 class="mt-4 mb-3">Core Memories</h6>
-                                        <small class="text-light opacity-75 d-block mb-2">Important background facts that define the character</small>
+                                        <small class="text-theme-secondary d-block mb-2">Important background facts that define the character</small>
                                         <div id="coreMemoriesList" class="mb-3">
                                             <!-- Populated dynamically -->
                                         </div>
@@ -1268,12 +1319,12 @@
                                         </button>
                                         
                                         <h6 class="mt-4 mb-3">Memory Profile</h6>
-                                        <small class="text-light opacity-75 d-block mb-2">Control what types of memories are extracted from conversations</small>
+                                        <small class="text-theme-secondary d-block mb-2">Control what types of memories are extracted from conversations</small>
                                         <div class="mb-2">
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charExtractFacts" checked>
                                                 <label class="form-check-label" for="charExtractFacts">
-                                                    Extract Facts <small class="text-light opacity-75">- Basic factual information</small>
+                                                    Extract Facts <small class="text-theme-secondary">- Basic factual information</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1281,7 +1332,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charExtractProjects" checked>
                                                 <label class="form-check-label" for="charExtractProjects">
-                                                    Extract Projects <small class="text-light opacity-75">- Goals, plans, ongoing projects</small>
+                                                    Extract Projects <small class="text-theme-secondary">- Goals, plans, ongoing projects</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1289,7 +1340,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charExtractExperiences">
                                                 <label class="form-check-label" for="charExtractExperiences">
-                                                    Extract Experiences <small class="text-light opacity-75">- Shared experiences (null = use immersion defaults)</small>
+                                                    Extract Experiences <small class="text-theme-secondary">- Shared experiences (null = use immersion defaults)</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1297,7 +1348,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charExtractStories">
                                                 <label class="form-check-label" for="charExtractStories">
-                                                    Extract Stories <small class="text-light opacity-75">- Narratives and anecdotes (null = use immersion defaults)</small>
+                                                    Extract Stories <small class="text-theme-secondary">- Narratives and anecdotes (null = use immersion defaults)</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1305,7 +1356,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charExtractRelationship">
                                                 <label class="form-check-label" for="charExtractRelationship">
-                                                    Extract Relationship <small class="text-light opacity-75">- Relationship dynamics (null = use immersion defaults)</small>
+                                                    Extract Relationship <small class="text-theme-secondary">- Relationship dynamics (null = use immersion defaults)</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1313,7 +1364,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charTrackEmotionalWeight" checked>
                                                 <label class="form-check-label" for="charTrackEmotionalWeight">
-                                                    Track Emotional Weight <small class="text-light opacity-75">- Track emotional significance</small>
+                                                    Track Emotional Weight <small class="text-theme-secondary">- Track emotional significance</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1321,7 +1372,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charTrackParticipants" checked>
                                                 <label class="form-check-label" for="charTrackParticipants">
-                                                    Track Participants <small class="text-light opacity-75">- Track who was involved</small>
+                                                    Track Participants <small class="text-theme-secondary">- Track who was involved</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1355,34 +1406,34 @@
                                                     <strong>Document Analysis Enabled</strong>
                                                 </label>
                                             </div>
-                                            <small class="text-light opacity-75 d-block mt-1">Enable document ingestion, semantic search, Q&A with citations</small>
+                                            <small class="text-theme-secondary d-block mt-1">Enable document ingestion, semantic search, Q&A with citations</small>
                                         </div>
                                         <div class="collapse mt-2" id="docAnalysisAdvanced">
                                             <div class="card card-body bg-dark">
-                                                <small class="text-light opacity-75 mb-2">Advanced Options</small>
+                                                <small class="text-theme-secondary mb-2">Advanced Options</small>
                                                 <div class="mb-2">
                                                     <label class="form-label">Max Documents</label>
                                                     <input type="number" class="form-control form-control-sm" id="charDocMaxDocuments" 
                                                            placeholder="Unlimited">
-                                                    <small class="text-light opacity-75">Maximum documents this character can access</small>
+                                                    <small class="text-theme-secondary">Maximum documents this character can access</small>
                                                 </div>
                                                 <div class="mb-2">
                                                     <label class="form-label">Allowed Document Types</label>
                                                     <input type="text" class="form-control form-control-sm" id="charDocAllowedTypes" 
                                                            placeholder="e.g., policy, guideline, reference">
-                                                    <small class="text-light opacity-75">Comma-separated list (empty = all types allowed)</small>
+                                                    <small class="text-theme-secondary">Comma-separated list (empty = all types allowed)</small>
                                                 </div>
                                                 <div class="mb-2">
                                                     <label class="form-label">Max Chunks</label>
                                                     <input type="number" class="form-control form-control-sm" id="charDocMaxChunks" 
                                                            placeholder="System default">
-                                                    <small class="text-light opacity-75">Maximum chunks to retrieve per query</small>
+                                                    <small class="text-theme-secondary">Maximum chunks to retrieve per query</small>
                                                 </div>
                                                 <div class="mb-2">
                                                     <label class="form-label">Document Budget Ratio</label>
                                                     <input type="number" class="form-control form-control-sm" id="charDocBudgetRatio" 
                                                            min="0" max="1" step="0.01" placeholder="System default">
-                                                    <small class="text-light opacity-75">Portion of context window for documents (0.0-1.0)</small>
+                                                    <small class="text-theme-secondary">Portion of context window for documents (0.0-1.0)</small>
                                                 </div>
                                             </div>
                                         </div>
@@ -1398,11 +1449,11 @@
                                                     <strong>Code Execution Enabled</strong>
                                                 </label>
                                             </div>
-                                            <small class="text-light opacity-75 d-block mt-1">Enable Python code generation and execution for data analysis</small>
+                                            <small class="text-theme-secondary d-block mt-1">Enable Python code generation and execution for data analysis</small>
                                         </div>
                                         <div class="collapse mt-2" id="codeExecAdvanced">
                                             <div class="card card-body bg-dark">
-                                                <small class="text-light opacity-75 mb-2">Advanced Options</small>
+                                                <small class="text-theme-secondary mb-2">Advanced Options</small>
                                                 <div class="mb-2">
                                                     <label class="form-label">Max Execution Time (seconds)</label>
                                                     <input type="number" class="form-control form-control-sm" id="charCodeMaxTime" 
@@ -1412,7 +1463,7 @@
                                                     <label class="form-label">Allowed Libraries</label>
                                                     <input type="text" class="form-control form-control-sm" id="charCodeAllowedLibs" 
                                                            placeholder="e.g., pandas, numpy, matplotlib">
-                                                    <small class="text-light opacity-75">Comma-separated list (empty = default whitelist)</small>
+                                                    <small class="text-theme-secondary">Comma-separated list (empty = default whitelist)</small>
                                                 </div>
                                             </div>
                                         </div>
@@ -1435,7 +1486,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charVoiceAlwaysOn">
                                                 <label class="form-check-label" for="charVoiceAlwaysOn">
-                                                    Always On <small class="text-light opacity-75">- Auto-generate TTS for every message</small>
+                                                    Always On <small class="text-theme-secondary">- Auto-generate TTS for every message</small>
                                                 </label>
                                             </div>
                                         </div>
@@ -1451,7 +1502,7 @@
                                         <!-- ComfyUI Settings -->
                                         <div id="ttsComfyuiSettings" class="mb-3">
                                             <h6 class="mb-2">ComfyUI Settings</h6>
-                                            <small class="text-light opacity-75 d-block mb-2">Workflows and voice samples are managed via the Workflow Management UI</small>
+                                            <small class="text-theme-secondary d-block mb-2">Workflows and voice samples are managed via the Workflow Management UI</small>
                                             <div class="mb-2">
                                                 <label class="form-label">Fallback Workflow Name</label>
                                                 <input type="text" class="form-control" id="charTtsComfyWorkflow" 
@@ -1467,13 +1518,13 @@
                                                     <label class="form-label">Temperature</label>
                                                     <input type="number" class="form-control" id="charTtsChatterboxTemp" 
                                                            min="0" max="1" step="0.1" value="0.8" placeholder="0.8">
-                                                    <small class="text-light opacity-75">0.0 (monotone) to 1.0 (expressive)</small>
+                                                    <small class="text-theme-secondary">0.0 (monotone) to 1.0 (expressive)</small>
                                                 </div>
                                                 <div class="col-md-6 mb-2">
                                                     <label class="form-label">Chunk Threshold</label>
                                                     <input type="number" class="form-control" id="charTtsChatterboxChunkThreshold" 
                                                            value="200" placeholder="200">
-                                                    <small class="text-light opacity-75">Max characters per chunk (~13-15s audio)</small>
+                                                    <small class="text-theme-secondary">Max characters per chunk (~13-15s audio)</small>
                                                 </div>
                                             </div>
                                             <div class="mb-2">
@@ -2031,7 +2082,7 @@
                                     <h6 class="mb-0"><i class="bi bi-file-text me-2"></i>System Prompt</h6>
                                 </div>
                                 <div class="card-body">
-                                    <p id="modalSystemPrompt" class="small text-white-50" style="white-space: pre-wrap;">
+                                    <p id="modalSystemPrompt" class="small text-theme-tertiary" style="white-space: pre-wrap;">
                                         <!-- Populated by JS -->
                                     </p>
                                 </div>
@@ -2043,7 +2094,7 @@
                                     <h6 class="mb-0"><i class="bi bi-palette me-2"></i>Visual Identity</h6>
                                 </div>
                                 <div class="card-body">
-                                    <p id="modalVisualIdentity" class="small text-white-50" style="white-space: pre-wrap;">
+                                    <p id="modalVisualIdentity" class="small text-theme-tertiary" style="white-space: pre-wrap;">
                                         <!-- Populated by JS -->
                                     </p>
                                 </div>
@@ -2175,7 +2226,7 @@
                             </button>
                         </div>
                     </div>
-                    <pre id="serverLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                    <pre id="serverLogsContent" class="bg-dark text-theme-secondary p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -2208,7 +2259,7 @@
                             </button>
                         </div>
                     </div>
-                    <pre id="conversationLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                    <pre id="conversationLogsContent" class="bg-dark text-theme-secondary p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -2241,7 +2292,7 @@
                             </button>
                         </div>
                     </div>
-                    <pre id="extractionLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                    <pre id="extractionLogsContent" class="bg-dark text-theme-secondary p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -2274,7 +2325,7 @@
                             </button>
                         </div>
                     </div>
-                    <pre id="imageRequestLogsContent" class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
+                    <pre id="imageRequestLogsContent" class="bg-dark text-theme-secondary p-3 rounded" style="max-height: 600px; overflow-y: auto; font-size: 0.85rem; font-family: 'Courier New', monospace;">Loading...</pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -2304,6 +2355,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     
     <!-- Custom JS -->
+    <script src="js/themes.js?v=2"></script>
     <script src="js/api.js?v=10"></script>
     <script src="js/ui.js?v=8"></script>
     <script src="js/character-management.js?v=4"></script>
@@ -2342,3 +2394,6 @@
     </script>
 </body>
 </html>
+
+
+

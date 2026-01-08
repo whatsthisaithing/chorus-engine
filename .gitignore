@@ -74,6 +74,7 @@ Thumbs.db
 
 # User-specific configs (keep example configs)
 config/system_local.yaml
+config/system.yaml.backup*
 
 # Character files - ignore all user-created characters, keep defaults only
 characters/*.yaml

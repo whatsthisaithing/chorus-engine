@@ -1378,6 +1378,17 @@ async def import_character(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to import character: {e}")
 
 
+@app.get("/config")
+async def get_system_config():
+    """
+    Get the current system configuration.
+    
+    Returns system config as JSON for frontend use.
+    """
+    system_config = app_state["system_config"]
+    return system_config.model_dump()
+
+
 @app.get("/config/system/export")
 async def export_system_config():
     """

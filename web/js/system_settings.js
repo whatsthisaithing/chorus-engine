@@ -41,6 +41,16 @@ class SystemSettingsManager {
         if (saveBtn) {
             saveBtn.addEventListener('click', () => this.saveSettings());
         }
+        
+        // Theme preview button
+        const previewBtn = document.getElementById('previewThemeBtn');
+        if (previewBtn) {
+            previewBtn.addEventListener('click', () => {
+                const selectedTheme = document.getElementById('ui_color_scheme').value;
+                ThemeManager.applyTheme(selectedTheme);
+                UI.showToast(`Preview: ${THEMES[selectedTheme].displayName}`, 'info');
+            });
+        }
     }
 
     async show() {
@@ -105,6 +115,9 @@ class SystemSettingsManager {
         document.getElementById('api_host').value = config.api_host || 'localhost';
         document.getElementById('api_port').value = config.api_port || 8080;
         document.getElementById('debug').checked = config.debug || false;
+        
+        // UI Configuration
+        document.getElementById('ui_color_scheme').value = config.ui?.color_scheme || 'stage-night';
     }
 
     collectFormData() {
@@ -143,6 +156,9 @@ class SystemSettingsManager {
                 max_chunks_cap: parseInt(document.getElementById('document_analysis_max_chunks_cap').value),
                 chunk_token_estimate: parseInt(document.getElementById('document_analysis_chunk_token_estimate').value),
                 document_budget_ratio: parseFloat(document.getElementById('document_analysis_document_budget_ratio').value)
+            },
+            ui: {
+                color_scheme: document.getElementById('ui_color_scheme').value
             },
             api_host: document.getElementById('api_host').value,
             api_port: parseInt(document.getElementById('api_port').value),

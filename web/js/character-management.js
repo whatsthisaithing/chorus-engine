@@ -238,6 +238,7 @@ window.CharacterManagement = {
         document.getElementById('charCustomSystemPrompt').checked = character.custom_system_prompt || false;
         document.getElementById('charTraits').value = character.personality_traits ? character.personality_traits.join(', ') : '';
         document.getElementById('charProfileImage').value = character.profile_image || '';
+        document.getElementById('charColorScheme').value = character.ui_preferences?.color_scheme || '';
         
         // Preferred LLM
         document.getElementById('charLlmModel').value = character.preferred_llm?.model || '';
@@ -611,6 +612,14 @@ window.CharacterManagement = {
             if (llmContextWindow) characterData.preferred_llm.context_window = parseInt(llmContextWindow);
         }
         
+        // UI preferences
+        const colorScheme = document.getElementById('charColorScheme').value.trim();
+        if (colorScheme) {
+            characterData.ui_preferences = {
+                color_scheme: colorScheme
+            };
+        }
+        
         return characterData;
     },
     
@@ -650,6 +659,11 @@ window.CharacterManagement = {
             
             // Reload characters in main app
             await App.loadCharacters();
+            
+            // If editing the currently selected character, reapply theme immediately
+            if (this.isEditMode && character.id === App.state.selectedCharacterId) {
+                await ThemeManager.applyCharacterTheme(character.id);
+            }
             
         } catch (error) {
             console.error('Failed to save character:', error);

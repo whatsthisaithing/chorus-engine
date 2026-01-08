@@ -287,6 +287,16 @@ code_execution:
   #   - scipy
   #   - matplotlib
 
+# UI PREFERENCES
+# --------------
+# Optional per-character UI customization
+ui_preferences:
+  # Color scheme override for this character
+  # If not set, uses system default from system.yaml
+  # Options: stage-night, spotlight-bright, noir-absolute, cobalt-depths,
+  #          forest-canopy, ember-glow, monochrome-studio, sunset-boulevard, arctic-twilight
+  color_scheme: null  # null = use system default
+
 # NOTES
 # =====
 # - Required fields: id, name, role, system_prompt
