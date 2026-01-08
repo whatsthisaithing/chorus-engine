@@ -2455,6 +2455,39 @@ async def send_message(
         is_private=(conversation.is_private == "true")
     )
     
+    # Phase 6.5: Semantic intent detection (embedding-based)
+    semantic_intents = []
+    semantic_has_image = False
+    semantic_has_video = False
+    
+    try:
+        from chorus_engine.services.semantic_intent_detection import get_intent_detector
+        
+        detector = get_intent_detector()  # Uses shared EmbeddingService
+        semantic_intents = detector.detect(request.message, enable_multi_intent=True, debug=False)
+        
+        if semantic_intents:
+            logger.info(
+                f"[SEMANTIC INTENT] Detected {len(semantic_intents)} intent(s): " +
+                ", ".join([f"{i.name}({i.confidence:.2f})" for i in semantic_intents])
+            )
+            
+            # Set flags for downstream processing
+            for intent in semantic_intents:
+                if intent.name == "send_image":
+                    semantic_has_image = True
+                    logger.info(f"[SEMANTIC INTENT] Image generation intent detected with {intent.confidence:.2f} confidence")
+                elif intent.name == "send_video":
+                    semantic_has_video = True
+                    logger.info(f"[SEMANTIC INTENT] Video generation intent detected with {intent.confidence:.2f} confidence")
+                elif intent.name == "set_reminder":
+                    logger.info(f"[SEMANTIC INTENT] Reminder intent detected with {intent.confidence:.2f} confidence")
+                    # TODO: Integrate with reminder system when implemented (currently a placeholder)
+        
+    except Exception as e:
+        logger.warning(f"[SEMANTIC INTENT] Detection failed: {e}")
+        # Non-fatal: continue with existing intent detection
+    
     # Phase 7: Detect intents using unified intent detection service
     intent_service = app_state.get("intent_detection_service")
     detected_intents: Optional[IntentResult] = None
@@ -2612,6 +2645,70 @@ async def send_message(
             logger.error(f"Failed to access image info field: {e}. Image info: {image_info if 'image_info' in locals() else 'None'}")
         except Exception as e:
             logger.error(f"Failed to detect image request: {e}", exc_info=True)
+    
+    # Phase 5.5: Check if user is requesting a video (based on semantic intent)
+    video_request_detected = False
+    video_prompt_preview = None
+    video_orchestrator = app_state.get("video_orchestrator")
+    
+    if video_orchestrator and semantic_has_video:
+        # Check if character has video generation enabled
+        video_config = getattr(character, 'video_generation', None)
+        if video_config and video_config.enabled:
+            # Check if confirmations are disabled
+            needs_confirmation = getattr(conversation, 'video_confirmation_disabled', 'false') != "true"
+            
+            # Use character's preferred model for video prompt generation
+            model_for_prompt = character.preferred_llm.model if character.preferred_llm else None
+            logger.info(f"[VIDEO DETECTION] Using model for prompt generation: {model_for_prompt}")
+            
+            # Ensure character's model is loaded
+            if model_for_prompt and llm_client:
+                try:
+                    await llm_client.ensure_model_loaded(model_for_prompt)
+                    logger.info(f"[VIDEO DETECTION] Character model loaded: {model_for_prompt}")
+                except Exception as e:
+                    logger.warning(f"[VIDEO DETECTION] Could not load character model: {e}")
+            
+            # Get recent conversation context (last 10 messages)
+            recent_messages = msg_repo.get_thread_history(thread_id, limit=10)
+            
+            # Convert to Message objects for prompt service
+            from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+            messages = []
+            for msg_dict in recent_messages:
+                msg = MessageModel(
+                    id=msg_dict.get("id"),
+                    thread_id=thread_id,
+                    role=MessageRole(msg_dict["role"]),
+                    content=msg_dict["content"],
+                    created_at=msg_dict.get("created_at")
+                )
+                messages.append(msg)
+            
+            try:
+                # Generate video prompt from conversation context
+                video_info = await video_orchestrator.prompt_service.generate_video_prompt(
+                    messages=messages,
+                    character=character,
+                    character_name=character.name,
+                    custom_instruction=None,
+                    trigger_words=None,
+                    model=model_for_prompt,
+                    workflow_config=None
+                )
+                
+                video_request_detected = True
+                video_prompt_preview = {
+                    "prompt": video_info["prompt"],
+                    "negative_prompt": video_info["negative_prompt"],
+                    "needs_trigger": video_info.get("needs_trigger", False),
+                    "needs_confirmation": needs_confirmation
+                }
+                logger.info(f"Video request detected in thread {thread_id}: {video_info['prompt'][:50]}...")
+                
+            except Exception as e:
+                logger.error(f"Failed to detect video request: {e}", exc_info=True)
     
     # Get conversation history (includes the user message we just saved)
     history = msg_repo.get_thread_history(thread_id)
@@ -2974,28 +3071,57 @@ async def send_message_stream(
         is_private=(conversation.is_private == "true")
     )
     
-    # Phase 7.5: Fast keyword-based intent detection (no LLM, instant)
-    keyword_detector = app_state.get("keyword_detector")
-    detected_intents = None
+    # Phase 6.5: Semantic intent detection (embedding-based, runs in parallel with keyword)
+    semantic_intents = []
+    semantic_has_image = False
+    semantic_has_video = False
     
-    if keyword_detector:
-        detected_intents = keyword_detector.detect(request.message)
-        logger.info(
-            f"[KEYWORD INTENT - STREAM] Message: '{request.message[:50]}...'"
-        )
-        logger.info(
-            f"[KEYWORD INTENT - STREAM] Detected intents: image={detected_intents.generate_image}, "
-            f"video={detected_intents.generate_video}, memory={detected_intents.record_memory}, "
-            f"ambient={detected_intents.query_ambient}"
-        )
+    try:
+        from chorus_engine.services.semantic_intent_detection import get_intent_detector
+        
+        detector = get_intent_detector()  # Uses shared EmbeddingService
+        semantic_intents = detector.detect(request.message, enable_multi_intent=True, debug=False)
+        
+        if semantic_intents:
+            logger.info(
+                f"[SEMANTIC INTENT - STREAM] Detected {len(semantic_intents)} intent(s): " +
+                ", ".join([f"{i.name}({i.confidence:.2f})" for i in semantic_intents])
+            )
+            
+            # Set flags for image and video detection
+            for intent in semantic_intents:
+                if intent.name == "send_image":
+                    semantic_has_image = True
+                elif intent.name == "send_video":
+                    semantic_has_video = True
     
-    # Phase 5: Check if user is requesting an image (based on keyword detection)
+    except Exception as e:
+        logger.warning(f"[SEMANTIC INTENT - STREAM] Detection failed: {e}")
+        # Non-fatal: continue without intent detection
+    
+    # Phase 7.5: LEGACY - Fast keyword-based intent detection (DISABLED)
+    # TODO: Remove this entire block once semantic intent detection is proven stable
+    # keyword_detector = app_state.get("keyword_detector")
+    # detected_intents = None
+    # 
+    # if keyword_detector:
+    #     detected_intents = keyword_detector.detect(request.message)
+    #     logger.info(
+    #         f"[KEYWORD INTENT - STREAM] Message: '{request.message[:50]}...'"
+    #     )
+    #     logger.info(
+    #         f"[KEYWORD INTENT - STREAM] Detected intents: image={detected_intents.generate_image}, "
+    #         f"video={detected_intents.generate_video}, memory={detected_intents.record_memory}, "
+    #         f"ambient={detected_intents.query_ambient}"
+    #     )
+    
+    # Phase 5: Check if user is requesting an image (based on SEMANTIC intent detection)
     image_request_detected = False
     image_prompt_preview = None
     orchestrator = app_state.get("image_orchestrator")
     
-    # Gate behind Phase 7 intent detection - only run orchestrator if image intent detected
-    if orchestrator and character.image_generation.enabled and detected_intents and detected_intents.generate_image:
+    # Use semantic intent detection instead of keyword detection
+    if orchestrator and character.image_generation.enabled and semantic_has_image:
         # Note: Workflow config is fetched from database and used directly by orchestrator
         # (Not stored on character config object anymore - Phase 5 change)
         
@@ -3067,7 +3193,8 @@ async def send_message_stream(
     video_prompt_preview = None
     video_orchestrator = app_state.get("video_orchestrator")
     
-    if video_orchestrator and detected_intents and detected_intents.generate_video:
+    # Use semantic intent detection (keyword detection disabled - see LEGACY block above)
+    if video_orchestrator and semantic_has_video:
         # Check if character has video generation enabled
         video_config = getattr(character, 'video_generation', None)
         if video_config and video_config.enabled:
