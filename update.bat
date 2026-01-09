@@ -43,28 +43,31 @@ cd /d "%~dp0"
 REM Check for Git and pull latest code
 echo [1/4] Checking for code updates...
 git --version >nul 2>&1
-if not errorlevel 1 (
-    echo [INFO] Git found - pulling latest code...
-    git pull
-    if errorlevel 1 (
-        echo [WARNING] Git pull failed (may have local changes)
-        echo You can manually resolve conflicts or use:
-        echo   git stash     - Save local changes
-        echo   git pull      - Get updates
-        echo   git stash pop - Restore local changes
-        echo.
-        set /p CONTINUE="Continue anyway? (y/n): "
-        if /i not "!CONTINUE!"=="y" (
-            echo Update cancelled
-            pause
-            exit /b 1
-        )
-    ) else (
-        echo [OK] Code updated successfully
+if errorlevel 1 (
+    echo [SKIP] Git not found - skipping code update
+    goto :after_git_update
+)
+
+echo [INFO] Git found - pulling latest code...
+git pull
+if errorlevel 1 (
+    echo [WARNING] Git pull failed ^(may have local changes^)
+    echo You can manually resolve conflicts or use:
+    echo   git stash     - Save local changes
+    echo   git pull      - Get updates
+    echo   git stash pop - Restore local changes
+    echo.
+    set /p CONTINUE="Continue anyway? (y/n): "
+    if /i not "!CONTINUE!"=="y" (
+        echo Update cancelled
+        pause
+        exit /b 1
     )
 ) else (
-    echo [SKIP] Git not found - skipping code update
+    echo [OK] Code updated successfully
 )
+
+:after_git_update
 echo.
 
 REM Determine Python environment
