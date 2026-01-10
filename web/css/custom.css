@@ -61,11 +61,11 @@ html, body {
 }
 
 /* Smooth theme transitions for all elements */
-* {
+/* * {
     transition: background-color 0.8s ease-in-out,
                 color 0.8s ease-in-out,
                 border-color 0.8s ease-in-out !important;
-}
+} */
 
 /* Theme-aware text utilities */
 .text-theme-secondary {
