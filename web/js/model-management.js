@@ -863,12 +863,14 @@ class ModelManager {
     // Show/hide model management menu item based on provider
     updateMenuVisibility(provider) {
         const menuItem = document.getElementById('modelManagementMenuItem');
-        if (menuItem) {
-            if (provider === 'ollama') {
-                menuItem.style.display = '';
-            } else {
-                menuItem.style.display = 'none';
-            }
+        const bannerBtn = document.getElementById('openModelManagerBtn');
+        
+        if (provider === 'ollama') {
+            if (menuItem) menuItem.style.display = '';
+            if (bannerBtn) bannerBtn.style.display = '';
+        } else {
+            if (menuItem) menuItem.style.display = 'none';
+            if (bannerBtn) bannerBtn.style.display = 'none';
         }
     }
     

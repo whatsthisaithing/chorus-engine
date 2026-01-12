@@ -38,6 +38,9 @@ transformers==4.46.3
 # Model Downloads (HuggingFace)
 huggingface_hub
 
+# GPU Detection
+nvidia-ml-py3
+
 # TTS (Text-to-Speech)
 chatterbox-tts
 

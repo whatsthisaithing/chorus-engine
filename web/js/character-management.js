@@ -8,6 +8,7 @@ const IMMUTABLE_CHARACTERS = ['nova', 'alex', 'aria', 'marcus'];
 window.CharacterManagement = {
     currentCharacter: null,
     isEditMode: false,
+    llmProvider: 'ollama', // Default, will be updated when config loads
     
     /**
      * Initialize character management
@@ -100,10 +101,26 @@ window.CharacterManagement = {
     },
     
     /**
-     * Load downloaded models from Model Manager
+     * Load downloaded models from Model Manager (Ollama only)
      */
     async loadDownloadedModels() {
         try {
+            // Check LLM provider first
+            const configResponse = await fetch('/system/config');
+            const config = await configResponse.json();
+            this.llmProvider = config.llm.provider || 'ollama';
+            
+            // Only show dropdown for Ollama
+            const selectContainer = document.getElementById('charLlmModelSelectContainer');
+            if (selectContainer) {
+                selectContainer.style.display = this.llmProvider === 'ollama' ? '' : 'none';
+            }
+            
+            // Exit early if not Ollama
+            if (this.llmProvider !== 'ollama') {
+                return;
+            }
+            
             // Load both curated and custom models
             const [downloadedResponse, customResponse] = await Promise.all([
                 fetch('/api/models/downloaded'),

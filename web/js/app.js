@@ -35,7 +35,7 @@ window.App = {
             console.log('Backend health:', health);
             
             if (!health.llm_available) {
-                UI.showToast('Warning: LLM is not available. Check Ollama server.', 'warning');
+                UI.showToast('Warning: LLM engine is not available. Check your LLM server configuration.', 'warning');
             }
             
             // Check model status (Phase 10)
@@ -71,6 +71,11 @@ window.App = {
         try {
             const response = await fetch('/system/config');
             const config = await response.json();
+            
+            // Update Model Manager visibility based on provider
+            if (typeof modelManager !== 'undefined') {
+                modelManager.updateMenuVisibility(config.llm.provider || 'ollama');
+            }
             
             const banner = document.getElementById('modelMissingBanner');
             const messageInput = document.getElementById('messageInput');
