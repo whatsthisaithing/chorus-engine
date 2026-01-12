@@ -62,6 +62,11 @@ comfyui:
   polling_interval_seconds: 2.0
   max_concurrent_jobs: 2
 
+# TTS (Text-to-Speech) Configuration
+tts:
+  default_provider: chatterbox  # Options: chatterbox (embedded, fast) or comfyui (workflow-based)
+                                # Characters can override this in their voice config
+
 # Intent Detection System - Implemented but disabled as system caused VRAM management issues and was unnecessary
 # intent_detection:
 #   enabled: false  # Using keyword-based detection (no LLM overhead)

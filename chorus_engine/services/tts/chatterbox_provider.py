@@ -70,6 +70,38 @@ class ChatterboxTTSProvider(BaseTTSProvider):
             self._model = ChatterboxTurboTTS.from_pretrained(device=self._device)
             logger.info("[Chatterbox] Model loaded successfully")
             
+            # CRITICAL FIX: Monkey-patch prepare_conditionals to fix librosa float64 issue
+            # librosa.resample() returns float64, which causes "expected Float but found Double"
+            # errors when CUDA operations are used (CUDA is strict, CPU was forgiving)
+            # This issue appeared after reinstalling PyTorch with CUDA support
+            import librosa
+            import numpy as np
+            
+            original_prepare_conditionals = self._model.prepare_conditionals
+            
+            def patched_prepare_conditionals(audio_prompt_path, exaggeration=1.0, norm_loudness=True):
+                """Patched to ensure float32 for CUDA compatibility."""
+                import librosa
+                
+                # Monkey-patch librosa.resample to return float32
+                original_resample = librosa.resample
+                
+                def float32_resample(y, **kwargs):
+                    result = original_resample(y, **kwargs)
+                    return result.astype(np.float32) if isinstance(result, np.ndarray) else result
+                
+                librosa.resample = float32_resample
+                
+                try:
+                    # Call original with patched librosa
+                    return original_prepare_conditionals(audio_prompt_path, exaggeration, norm_loudness)
+                finally:
+                    # Restore original librosa.resample
+                    librosa.resample = original_resample
+            
+            self._model.prepare_conditionals = patched_prepare_conditionals
+            logger.info("[Chatterbox] Applied CUDA float32 compatibility patch for voice cloning")
+            
         except ImportError as e:
             logger.error(f"[Chatterbox] Package not installed: {e}")
             logger.error("[Chatterbox] Install with: pip install chatterbox-tts --no-deps")
@@ -132,8 +164,13 @@ class ChatterboxTTSProvider(BaseTTSProvider):
     
     async def _generate_single(self, request: TTSRequest, start_time: float) -> TTSResult:
         """Generate audio for a single text without chunking."""
+        # Check if voice cloning should be used
+        use_voice_cloning = True
+        if request.provider_config and 'use_voice_cloning' in request.provider_config:
+            use_voice_cloning = request.provider_config.get('use_voice_cloning', True)
+        
         # Generate audio
-        if request.voice_sample_path and Path(request.voice_sample_path).exists():
+        if use_voice_cloning and request.voice_sample_path and Path(request.voice_sample_path).exists():
             # Voice cloning mode
             logger.info(f"[Chatterbox] Generating with voice cloning: {request.voice_sample_path}")
             wav = self._model.generate(
@@ -142,7 +179,10 @@ class ChatterboxTTSProvider(BaseTTSProvider):
             )
         else:
             # Default voice mode
-            logger.info("[Chatterbox] Generating with default voice (no cloning)")
+            if not use_voice_cloning:
+                logger.info("[Chatterbox] Voice cloning disabled by config, using default voice")
+            else:
+                logger.info("[Chatterbox] Generating with default voice (no cloning)")
             wav = self._model.generate(request.text)
         
         # Save audio file
@@ -184,6 +224,11 @@ class ChatterboxTTSProvider(BaseTTSProvider):
     
     async def _generate_chunked(self, request: TTSRequest, chunk_threshold: int, start_time: float) -> TTSResult:
         """Generate audio for long text by chunking and concatenating."""
+        # Check if voice cloning should be used
+        use_voice_cloning = True
+        if request.provider_config and 'use_voice_cloning' in request.provider_config:
+            use_voice_cloning = request.provider_config.get('use_voice_cloning', True)
+        
         # Split text into chunks
         chunks = self._split_into_chunks(request.text, chunk_threshold)
         logger.info(f"[Chatterbox] Split text into {len(chunks)} chunks")
@@ -195,7 +240,7 @@ class ChatterboxTTSProvider(BaseTTSProvider):
         for i, chunk in enumerate(chunks, 1):
             logger.info(f"[Chatterbox] Generating chunk {i}/{len(chunks)} ({len(chunk)} chars)")
             
-            if request.voice_sample_path and Path(request.voice_sample_path).exists():
+            if use_voice_cloning and request.voice_sample_path and Path(request.voice_sample_path).exists():
                 wav = self._model.generate(chunk, audio_prompt_path=request.voice_sample_path)
             else:
                 wav = self._model.generate(chunk)
@@ -341,7 +386,8 @@ class ChatterboxTTSProvider(BaseTTSProvider):
     
     def is_available(self) -> bool:
         """Check if Chatterbox provider is available."""
-        return TORCH_AVAILABLE and self._model is not None
+        # Lazy loading: model loads on first request, so just check if PyTorch is available
+        return TORCH_AVAILABLE
     
     def unload_model(self) -> None:
         """Unload Chatterbox model from VRAM."""

@@ -2839,9 +2839,6 @@ async def send_message(
                 
                 # Phase 7: Unload ALL models before audio generation (for ComfyUI or embedded models)
                 character_model = model  # Already determined above
-                system_config = app_state.get("system_config")
-                use_intent_model = system_config.intent_detection.enabled if system_config else False
-                intent_model = app_state.get("intent_model", "gemma2:9b") if use_intent_model else None
                 
                 logger.info(f"[TTS - VRAM] Unloading ALL models to maximize VRAM for {provider_name}...")
                 
@@ -2854,7 +2851,8 @@ async def send_message(
                 
                 try:
                     # Use unified TTS service instead of direct orchestrator
-                    tts_service = TTSService(db)
+                    system_config = app_state.get("system_config")
+                    tts_service = TTSService(db, system_config)
                     
                     result = await tts_service.generate_audio(
                         text=assistant_message.content,
@@ -2883,22 +2881,14 @@ async def send_message(
                         logger.error(f"[TTS] Audio generation failed: {result.error_message}")
                 
                 finally:
-                    # Phase 7: Reload models after audio generation
+                    # Reload character model after audio generation
                     if llm_client:
                         try:
-                            logger.info(f"[TTS - VRAM] Reloading models after generation...")
-                            if use_intent_model and intent_model:
-                                # Reload both intent and character models
-                                await llm_client.reload_models_after_generation(
-                                    character_model=character_model,
-                                    intent_model=intent_model
-                                )
-                            else:
-                                # Only reload character model (keyword-based detection in use)
-                                await llm_client.reload_model()
-                            logger.info(f"[TTS - VRAM] Models reloaded successfully")
+                            logger.info(f"[TTS - VRAM] Reloading character model after generation...")
+                            await llm_client.reload_model()
+                            logger.info(f"[TTS - VRAM] Character model reloaded successfully")
                         except Exception as e:
-                            logger.error(f"[TTS - VRAM] Failed to reload models: {e}")
+                            logger.error(f"[TTS - VRAM] Failed to reload character model: {e}")
                         
                         logger.info("[TTS] Releasing ComfyUI lock")
             
@@ -3879,8 +3869,6 @@ async def capture_scene(
         llm_usage_lock = app_state.get("llm_usage_lock")
         llm_client = app_state.get("llm_client")
         system_config = app_state.get("system_config")
-        use_intent_model = system_config.intent_detection.enabled if system_config else False
-        intent_model = app_state.get("intent_model", "gemma2:9b") if use_intent_model else None
         character_model = character.preferred_llm.model if character.preferred_llm.model else system_config.llm.model
         
         if not llm_usage_lock:
@@ -4012,17 +4000,11 @@ async def capture_scene(
                 # Reload models after image generation (same as normal flow)
                 if llm_client:
                     try:
-                        logger.info(f"[SCENE CAPTURE - VRAM] Reloading LLM models after generation...")
-                        if use_intent_model and intent_model:
-                            await llm_client.reload_models_after_generation(
-                                character_model=character_model,
-                                intent_model=intent_model
-                            )
-                        else:
-                            await llm_client.reload_model()
-                        logger.info(f"[SCENE CAPTURE - VRAM] LLM models reloaded successfully")
+                        logger.info(f"[SCENE CAPTURE - VRAM] Reloading character model after generation...")
+                        await llm_client.reload_model()
+                        logger.info(f"[SCENE CAPTURE - VRAM] Character model reloaded successfully")
                     except Exception as e:
-                        logger.error(f"[SCENE CAPTURE - VRAM] Failed to reload LLM models: {e}")
+                        logger.error(f"[SCENE CAPTURE - VRAM] Failed to reload character model: {e}")
                     
                     # Reload TTS models that were unloaded
                     from chorus_engine.services.tts.provider_factory import TTSProviderFactory
@@ -5944,8 +5926,6 @@ async def generate_message_audio(
         # Phase 7: Unload ALL models before audio generation to free VRAM
         llm_client = app_state.get("llm_client")
         system_config = app_state.get("system_config")
-        use_intent_model = system_config.intent_detection.enabled if system_config else False
-        intent_model = app_state.get("intent_model", "gemma2:9b") if use_intent_model else None
         character = app_state["characters"].get(conversation.character_id)
         character_model = character.preferred_llm.model if character and character.preferred_llm.model else system_config.llm.model
         
@@ -5961,7 +5941,8 @@ async def generate_message_audio(
         
         try:
             # Use unified TTS service
-            tts_service = TTSService(db)
+            system_config = app_state.get("system_config")
+            tts_service = TTSService(db, system_config)
             
             result = await tts_service.generate_audio(
                 text=message.content,
@@ -5998,22 +5979,14 @@ async def generate_message_audio(
             }
         
         finally:
-            # Phase 7: Reload models after audio generation
+            # Reload character model after audio generation
             if llm_client:
                 try:
-                    logger.info(f"[AUDIO GEN - VRAM] Reloading models after generation...")
-                    if use_intent_model and intent_model:
-                        # Reload both intent and character models
-                        await llm_client.reload_models_after_generation(
-                            character_model=character_model,
-                            intent_model=intent_model
-                        )
-                    else:
-                        # Only reload character model (keyword-based detection in use)
-                        await llm_client.reload_model()
-                        logger.info(f"[AUDIO GEN - VRAM] Models reloaded successfully")
+                    logger.info(f"[AUDIO GEN - VRAM] Reloading character model after generation...")
+                    await llm_client.reload_model()
+                    logger.info(f"[AUDIO GEN - VRAM] Character model reloaded successfully")
                 except Exception as e:
-                    logger.error(f"[AUDIO GEN - VRAM] Failed to reload models: {e}")
+                    logger.error(f"[AUDIO GEN - VRAM] Failed to reload character model: {e}")
             
             logger.info("[AUDIO GEN] Audio generation complete")
     

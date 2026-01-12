@@ -26,14 +26,16 @@ class TTSService:
     Routes TTS requests to appropriate provider based on character config.
     """
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, system_config=None):
         """
         Initialize TTS service.
         
         Args:
             db: Database session
+            system_config: System configuration (optional)
         """
         self.db = db
+        self.system_config = system_config
         self.preprocessor = AudioPreprocessingService()
         self.voice_sample_repo = VoiceSampleRepository(db)
         self.workflow_repo = WorkflowRepository(db)
@@ -93,9 +95,14 @@ class TTSService:
                 logger.warning(f"[TTS] Voice sample file not found: {voice_sample_file}")
         
         # Step 4: Determine provider
-        provider_name = "comfyui"  # default
+        # Check system config for default provider, fallback to chatterbox
+        provider_name = "chatterbox"  # fallback default
+        if self.system_config and hasattr(self.system_config, 'tts'):
+            provider_name = getattr(self.system_config.tts, 'default_provider', 'chatterbox')
+        
         provider_config = {}
         
+        # Character-specific provider overrides system default
         if character.voice and hasattr(character.voice, 'tts_provider'):
             provider_name = character.voice.tts_provider.provider
             

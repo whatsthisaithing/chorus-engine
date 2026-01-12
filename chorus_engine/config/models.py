@@ -68,7 +68,7 @@ class ComfyUIConfig(BaseModel):
 class IntentDetectionConfig(BaseModel):
     """Intent detection system configuration (Phase 7)."""
     
-    enabled: bool = True
+    enabled: bool = False
     model: str = "gemma2:9b"
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     keep_loaded: bool = True
@@ -145,6 +145,15 @@ class SystemDocumentAnalysisConfig(BaseModel):
     )
 
 
+class SystemTTSConfig(BaseModel):
+    """System-level TTS configuration."""
+    
+    default_provider: Literal["comfyui", "chatterbox"] = Field(
+        default="chatterbox",
+        description="Default TTS provider when character doesn't specify one"
+    )
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -153,6 +162,7 @@ class SystemConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
+    tts: SystemTTSConfig = Field(default_factory=SystemTTSConfig)
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
