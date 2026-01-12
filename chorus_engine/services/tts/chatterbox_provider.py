@@ -49,8 +49,8 @@ class ChatterboxTTSProvider(BaseTTSProvider):
         self._model = None
         self._device = None
         
-        # Load model on init
-        self._initialize_model()
+        # Model will be lazy-loaded on first TTS request
+        logger.info("[Chatterbox] Provider initialized (model will load on first use)")
     
     def _initialize_model(self):
         """Load Chatterbox model."""

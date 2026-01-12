@@ -24,8 +24,10 @@ Local AI Character Orchestration System - A FastAPI-based system for managing AI
 
 **Both Modes Require:**
 - **LLM Provider** - Choose one:
-  - **[Ollama](https://ollama.ai/)** (default: `http://localhost:11434`) - Recommended for simplicity
-  - **[LM Studio](https://lmstudio.ai/)** (default: `http://localhost:1234`) - Better model management UI
+  - **Integrated Provider** (built-in, recommended) - Downloads models automatically, GPU-accelerated
+  - **[Ollama](https://ollama.ai/)** - External service, good for sharing models across apps
+  - **[LM Studio](https://lmstudio.ai/)** - External service with model management UI
+  - **[KoboldCpp](https://github.com/LostRuins/koboldcpp)** - Lightweight external service
 
 ### Windows-Specific Setup
 
@@ -55,39 +57,62 @@ winget install Microsoft.VisualStudio.2022.BuildTools --silent --override "--wai
 
 Or download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
 
-#### GPU Setup (Recommended for TTS)
+#### GPU Setup (Highly Recommended)
 
-**Why GPU?** Chatterbox TTS requires significant compute for real-time voice synthesis. CPU-only mode works but is ~10-50x slower.
+**Why GPU?** 
+- **TTS (Chatterbox)**: GPU provides ~10-50x faster voice synthesis (2-3s vs 30-60s per voice line)
+- **Integrated LLM**: GPU enables local AI chat at reasonable speeds (vs very slow CPU inference)
+- **Overall Experience**: GPU transforms Chorus Engine from "technically works" to "actually usable"
 
 **Requirements:**
-- NVIDIA GPU (GTX 1060 or better)
-- ~2GB VRAM minimum for Turbo model
-- CUDA Toolkit 12.1 or newer (13.0 for RTX 50-series)
+- NVIDIA GPU (GTX 1060 6GB or better recommended)
+- ~4GB VRAM minimum (8GB+ recommended for integrated LLM)
+- **CUDA Toolkit 12.1+** (only for integrated LLM provider)
 
-**Check your setup:**
+**Important Notes:**
+- **PyTorch**: Bundles its own CUDA runtime - no system CUDA installation needed for TTS
+- **llama-cpp-python**: Requires CUDA 12.1 runtime installed system-wide for GPU acceleration
+- If you only use external LLM providers (Ollama/LM Studio), no CUDA installation needed at all
+
+**Installation:**
+
+**CUDA 12.1 Runtime** (required ONLY for integrated LLM with GPU):
+- Download: https://developer.nvidia.com/cuda-12-1-0-download-archive
+- Select: Windows > x86_64 > 11 > exe (network)
+- **Custom Installation**: Check only "CUDA Runtime Libraries" (saves 2.5GB)
+- This is all you need - PyTorch already includes CUDA for TTS
+
+**Verify Installation:**
 ```powershell
-# Check if you have an NVIDIA GPU and CUDA version
+# Check NVIDIA driver and CUDA version
 nvidia-smi
 
-# Check compute capability (important for kernel compatibility)
+# Check compute capability (5.0+ required for modern features)
 nvidia-smi --query-gpu=name,compute_cap --format=csv
 ```
 
 **GPU Compatibility:**
-- **RTX 50-series (5090, etc.)**: ✅ Supported (CUDA 13.0)
-- **RTX 40-series (4090, 4080, etc.)**: ✅ Supported (CUDA 13.0)
-- **RTX 30-series (3090, 3080, etc.)**: ✅ Supported (CUDA 13.0)
-- **GTX 10/20-series**: ✅ Supported (CUDA 13.0)
+- **RTX 50-series (5090, etc.)**: ✅ Fully supported (PyTorch 2.9 cu130)
+- **RTX 40-series (4090, 4080, etc.)**: ✅ Supported
+- **RTX 30-series (3090, 3080, etc.)**: ✅ Supported
+- **GTX 10/20-series**: ✅ Supported
 
-*Note: We use PyTorch 2.9 with CUDA 13.0 which supports all modern NVIDIA GPUs from Pascal (GTX 10-series) through Blackwell (RTX 50-series) architectures.*
+*Note: PyTorch 2.9 with cu130 supports all modern NVIDIA GPUs from Pascal (GTX 10-series) through Blackwell (RTX 50-series). The CUDA runtime is bundled in the PyTorch wheel. For the integrated LLM, llama-cpp-python needs CUDA 12.1 runtime installed separately.*
 
-**Install CUDA Toolkit** (if not already installed):
-- Download from: https://developer.nvidia.com/cuda-downloads
-- Choose CUDA 12.6 for newest GPUs (RTX 50-series)
-- Choose CUDA 12.4 for RTX 30/40-series
-- Restart after installation
+*Note: We use PyTorch 2.9 with CUDA 13.0 which supports all modern NVIDIA GPUs from Pascal (GTX 10-series) through Blackwell (RTX 50-series) architectures. The integrated LLM uses llama-cpp-python with CUDA 12.1 wheels for maximum compatibility.*
 
-**Note:** The portable installation (`install.bat`) automatically installs CUDA-enabled PyTorch. For manual installations, see PyTorch section below.
+**CPU-Only Alternative:**
+If you don't have an NVIDIA GPU or can't install CUDA 12.1:
+- TTS will work but be very slow (30-60s per voice line vs 2-3s with GPU)
+- Integrated LLM will work but be very slow (consider using Ollama/LM Studio instead)
+- All other features work normally
+
+**CUDA Installation** (optional - only needed for integrated LLM GPU acceleration):
+- **For integrated LLM**: Install CUDA 12.1 runtime (see instructions above)
+- **For TTS only**: No CUDA installation needed (PyTorch includes it)
+- Restart your terminal/PowerShell after CUDA installation
+
+**Note:** The portable installation (`install.bat`) automatically installs CUDA-enabled PyTorch and llama-cpp-python. It will detect if CUDA 12.1 is installed and inform you if it's missing.
 
 ### Installation
 
@@ -103,11 +128,18 @@ install.bat
 
 This will:
 - Download Python 3.11.7 embedded (~30MB)
-- Install PyTorch with CUDA 12.4 support
+- Install PyTorch 2.9 with CUDA 13.0 support
+- Install llama-cpp-python with CUDA 12.1 support
 - Install all dependencies automatically
 - Set up a self-contained environment
+- Check for CUDA runtime and provide guidance if missing
 
 **No Python installation required!** Everything is downloaded and configured for you.
+
+**After Installation:**
+- If you see CUDA warnings, install the required CUDA versions (see GPU Setup above)
+- The server will still start and work (falling back to CPU where needed)
+- For best performance, install both CUDA 13.0 and 12.1
 
 ---
 
@@ -122,42 +154,91 @@ This will:
    **IMPORTANT:** Install PyTorch with CUDA support FIRST (before requirements.txt):
    
    ```bash
-   # For CUDA 12.6 (newest - RTX 50-series/5090)
-   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
-   
-   # For CUDA 12.4 (RTX 30/40-series, recommended for most users)
-   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+   # For CUDA 13.0 (recommended - supports RTX 50-series and all modern GPUs)
+   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu130
    
    # Then install remaining dependencies
    pip install -r requirements.txt
+   
+   # Finally install llama-cpp-python with CUDA 12.1 support (for integrated LLM)
+   pip install llama-cpp-python --prefer-binary --only-binary=llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
    ```
    
-   **Alternative CUDA versions:**
-   - CUDA 12.1: `--index-url https://download.pytorch.org/whl/cu121` (PyTorch 2.5.1, may conflict)
-   - CUDA 11.8: `--index-url https://download.pytorch.org/whl/cu118` (older GPUs)
-   - CPU only (slow): Just use `pip install torch torchaudio`
+   **Alternative CUDA versions for PyTorch:**
+   - CUDA 12.4: `--index-url https://download.pytorch.org/whl/cu124` (older but stable)
+   - CUDA 12.1: `--index-url https://download.pytorch.org/whl/cu121` (compatibility)
+   - CUDA 11.8: `--index-url https://download.pytorch.org/whl/cu118` (legacy GPUs)
+   - CPU only: Just use `pip install torch torchaudio` (very slow for TTS/LLM)
 
    **Note**: First install may take several minutes:
    - ChromaDB compiles native components (requires C++ build tools)
    - PyTorch downloads (~2GB with CUDA)
+   - llama-cpp-python CUDA wheel (~450MB)
    - Sentence transformers model downloads on first use (~80MB)
 
 ---
 
 ### Post-Installation Setup
 
-3. **Install and start your LLM provider:**
+3. **Configure your LLM provider:**
 
-**Option A: Ollama (Recommended)**
+The system supports multiple LLM providers. Configure in `config/system.yaml`:
+
+**Option A: Integrated Provider (Recommended - Built-in)**
+```yaml
+llm:
+  provider: integrated  # Built-in llama.cpp, no external service needed
+  model: "data/models/Qwen2.5-14B-Instruct-Q4_K_M.gguf"  # Path to GGUF model
+  n_gpu_layers: -1  # -1 = all layers on GPU (requires CUDA 12.1)
+  n_threads: 8      # CPU threads for CPU-only inference
+```
+
+Download models via web UI (Settings > Model Management) or manually from HuggingFace.
+See `Documentation/INTEGRATED_LLM_GUIDE.md` for detailed setup and model recommendations.
+
+**Option B: Ollama (External Service with Integrated Model Manager)**
+```yaml
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: mistral:7b-instruct
+```
+
+Install and start Ollama:
 ```bash
 # Download from https://ollama.ai/
-# Pull a model (e.g., Mistral 7B)
+# Start Ollama service
+```
+
+**Model Management**: When using Ollama, Chorus Engine provides an **integrated Model Manager** for downloading and managing models through the web interface. This includes:
+- Curated model library with performance ratings and VRAM estimates
+- Direct HuggingFace GGUF import (automatic chat template extraction)
+- Database tracking of downloaded models
+- Easy model selection in character editor
+
+See [Documentation/MODEL_MANAGER.md](Documentation/MODEL_MANAGER.md) for complete guide.
+
+**Quick Start with Model Manager**:
+1. Start Chorus Engine with Ollama provider configured
+2. Click gear icon (⚙️) → **Model Management**
+3. Browse curated models or import from HuggingFace
+4. Download with one click (automatic VRAM estimation)
+5. Select models per character in character editor
+
+**Manual Model Installation** (alternative):
+```bash
 ollama pull mistral:7b-instruct
 ```
 
-**Option B: LM Studio**
-- Download from https://lmstudio.ai/
-- Start LM Studio and enable local server
+**Option C: LM Studio (External Service)**
+```yaml
+llm:
+  provider: lmstudio
+  base_url: http://localhost:1234
+  model: local-model  # Name shown in LM Studio
+```
+
+**Option D: KoboldCpp (External Service)**
 - Download a model from the model library
 - Load the model in LM Studio
 

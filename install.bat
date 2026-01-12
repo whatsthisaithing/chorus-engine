@@ -116,17 +116,50 @@ if errorlevel 1 (
     python_embeded\python.exe -m pip install torch torchaudio
 )
 
+REM Verify PyTorch CUDA installation
+echo.
+echo Verifying PyTorch installation...
+python_embeded\python.exe -c "import torch; print('PyTorch version:', torch.__version__); cuda_available = torch.cuda.is_available(); print('CUDA available:', cuda_available); exit(0 if cuda_available or 'cpu' in torch.__version__ else 1)"
+
+if errorlevel 1 (
+    echo [WARNING] PyTorch CUDA verification failed!
+    echo [INFO] PyTorch may have been downgraded or installed incorrectly
+    echo [INFO] TTS will be significantly slower without GPU acceleration
+    echo.
+) else (
+    python_embeded\python.exe -c "import torch; print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU-only mode')"
+)
+
 REM Install remaining dependencies
 echo.
 echo Installing remaining dependencies...
+echo (PyTorch already installed, ensuring no downgrade...)
 echo.
-python_embeded\python.exe -m pip install -r requirements.txt
+REM Use --no-deps for chatterbox-tts to prevent torch downgrade, install others normally
+python_embeded\python.exe -m pip install fastapi==0.115.5 uvicorn[standard]==0.32.1 pydantic==2.10.3 pydantic-settings==2.6.1 httpx==0.28.1 pyyaml==6.0.2 python-multipart==0.0.21 sqlalchemy==2.0.36 alembic==1.13.1 chromadb==0.5.23 sentence-transformers==3.3.1 transformers==4.46.3 huggingface_hub pynvml
 
 if errorlevel 1 (
-    echo [ERROR] Failed to install dependencies
+    echo [ERROR] Failed to install core dependencies
     pause
     exit /b 1
 )
+
+echo.
+echo Installing chatterbox-tts (without deps to preserve PyTorch CUDA)...
+python_embeded\python.exe -m pip install chatterbox-tts --no-deps
+
+echo.
+echo Installing chatterbox-tts dependencies (except torch/torchaudio)...
+python_embeded\python.exe -m pip install conformer diffusers gradio librosa numpy omegaconf pykakasi pyloudnorm resemble-perth s3tokenizer safetensors spacy-pkuseg transformers
+
+if errorlevel 1 (
+    echo [WARNING] Some chatterbox-tts dependencies may be missing
+    echo TTS functionality might be limited
+)
+
+REM Note: Model Manager uses Ollama for LLM inference
+REM No additional LLM libraries needed - download Ollama separately:
+REM https://ollama.com/download
 
 REM Install chatterbox-tts without dependency checks
 REM (Works with PyTorch 2.9 despite requiring 2.6 in metadata)

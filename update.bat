@@ -103,8 +103,21 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/4] Updating dependencies from requirements.txt...
-%PIP_CMD% install --upgrade -r requirements.txt
+echo [3/4] Updating PyTorch with CUDA 13.0 support...
+%PIP_CMD% install --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/cu130
+if errorlevel 1 (
+    echo [WARNING] PyTorch CUDA update failed, keeping existing version
+)
+
+REM Verify PyTorch still has CUDA after update
+%PYTHON_CMD% -c "import torch; exit(0 if torch.cuda.is_available() or 'cpu' in torch.__version__ else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [WARNING] PyTorch CUDA not available after update
+)
+echo.
+
+echo [4/5] Updating core dependencies...
+%PIP_CMD% install --upgrade fastapi uvicorn[standard] pydantic pydantic-settings httpx pyyaml python-multipart sqlalchemy alembic chromadb sentence-transformers transformers huggingface_hub
 if errorlevel 1 (
     echo [ERROR] Failed to update dependencies
     pause
@@ -119,6 +132,7 @@ echo.
 echo Summary:
 echo - Dependencies updated from requirements.txt
 echo - Database migrations will run automatically on next start
+echo - Model Manager requires Ollama (download from https://ollama.com/download)
 echo.
 echo You can now run start.bat to launch Chorus Engine
 echo.

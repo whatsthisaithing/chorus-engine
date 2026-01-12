@@ -18,6 +18,7 @@ from chorus_engine.db.database import Base, engine as chorus_engine
 import chorus_engine.models.conversation
 import chorus_engine.models.workflow
 import chorus_engine.models.document
+import chorus_engine.models.custom_model
 import chorus_engine.repositories.conversation_repository
 import chorus_engine.repositories.message_repository
 import chorus_engine.repositories.memory_repository

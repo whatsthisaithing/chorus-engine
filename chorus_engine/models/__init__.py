@@ -6,6 +6,7 @@ from .conversation import (
 )
 from .workflow import Workflow
 from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
+from .custom_model import DownloadedModel
 
 __all__ = [
     "Conversation",
@@ -22,4 +23,5 @@ __all__ = [
     "DocumentChunk",
     "DocumentAccessLog",
     "CodeExecutionLog",
+    "DownloadedModel",
 ]

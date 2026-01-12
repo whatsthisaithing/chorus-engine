@@ -7,14 +7,15 @@ This guide covers how to use Chorus Engine's features as an end user.
 ## Table of Contents
 
 1. [Getting Started](#getting-started)
-2. [Text Conversations](#text-conversations)
-3. [Image Generation](#image-generation)
-4. [Scene Capture & Image Gallery](#scene-capture--image-gallery)
-5. [Voice Generation (TTS)](#voice-generation-tts)
-6. [Memory Management](#memory-management)
-7. [Ambient Activities](#ambient-activities)
-8. [Workflows](#workflows)
-9. [Troubleshooting](#troubleshooting)
+2. [Model Management](#model-management)
+3. [Text Conversations](#text-conversations)
+4. [Image Generation](#image-generation)
+5. [Scene Capture & Image Gallery](#scene-capture--image-gallery)
+6. [Voice Generation (TTS)](#voice-generation-tts)
+7. [Memory Management](#memory-management)
+8. [Ambient Activities](#ambient-activities)
+9. [Workflows](#workflows)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -28,9 +29,46 @@ See [GETTING_STARTED.md](../GETTING_STARTED.md) for initial setup, including:
 
 Once setup is complete, access the web interface at `http://localhost:8000`.
 
+---
+
+## Model Management
+
+### Overview
+
+When using **Ollama** as your LLM provider, Chorus Engine includes an integrated **Model Manager** for easy model discovery, download, and management directly from the web interface.
+
+**Features**:
+- **Curated Model Library**: Pre-vetted models tested with Chorus Engine, with performance ratings
+- **HuggingFace Import**: Import any GGUF model from HuggingFace with automatic chat template extraction
+- **VRAM Estimation**: Automatic GPU memory requirement calculations with fit indicators
+- **Database Tracking**: Persistent model inventory that survives restarts
+- **Character Integration**: Easy model selection per character in the character editor
+
+### Quick Start
+
+1. **Access Model Manager**: Click gear icon (⚙️) → **Model Management**
+2. **Browse Models**: View curated models with ratings and VRAM requirements
+3. **Download**: Select quantization and click Download (progress tracked in real-time)
+4. **Use in Characters**: Select downloaded models in character editor's LLM settings
+
+### Model Types
+
+**Curated Models**:
+- Pre-tested with Chorus Engine
+- Performance ratings (conversation, memory, creativity, etc.)
+- Multiple quantization options with VRAM estimates
+- Categorized: Balanced, Creative, Technical, Advanced
+
+**Custom HuggingFace Models**:
+- Import any GGUF model from HuggingFace
+- Automatic chat template extraction (no manual Modelfile needed)
+- Direct Ollama integration via `hf.co/` format
+
+**See [MODEL_MANAGER.md](MODEL_MANAGER.md) for complete documentation**.
+
 ### Model Compatibility Note
 
-Chorus Engine supports language models from **Ollama** and **LM Studio**, but **performance varies significantly** across different models:
+Performance varies significantly across different models:
 
 - **Conversation Quality**: Some models are more conversational and character-consistent
 - **Memory Extraction**: Accuracy of automatic fact extraction varies by model

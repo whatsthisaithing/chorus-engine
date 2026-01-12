@@ -136,6 +136,10 @@
                                 <i class="bi bi-file-earmark-arrow-up me-2"></i>Import System Config
                             </a></li>
                             <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" id="modelManagementMenuItem">
+                                <i class="bi bi-cpu me-2"></i>Model Manager
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="#" id="viewServerLogsMenuItem">
                                 <i class="bi bi-terminal me-2"></i>View Server Logs
                             </a></li>
@@ -150,6 +154,21 @@
             
             <!-- Main Chat Area -->
             <div class="col-md-9 col-lg-10 d-flex flex-column p-0">
+                <!-- Model Missing Warning Banner -->
+                <div id="modelMissingBanner" class="alert alert-warning m-3 mb-0" role="alert" style="display: none;">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                            <div>
+                                <strong>No Model Loaded</strong>
+                                <p class="mb-0 small">Download a model to start chatting with your characters.</p>
+                            </div>
+                        </div>
+                        <button id="openModelManagerBtn" class="btn btn-sm btn-warning">
+                            <i class="bi bi-cpu me-1"></i>Download Model
+                        </button>
+                    </div>
+                </div>
                 <!-- Header -->
                 <div class="chat-header p-3 pb-0">
                     <div class="d-flex justify-content-between align-items-center">
@@ -475,26 +494,29 @@
                                             <option value="lmstudio">LM Studio (Multi-model, JIT loading)</option>
                                             <option value="koboldcpp">KoboldCpp (Single-model, manual loading)</option>
                                         </select>
-                                        <div class="form-text text-secondary">Choose your LLM backend. Ollama and LM Studio support multiple models, KoboldCpp requires manual model loading.</div>
+                                        <div class="form-text text-secondary">Ollama: Recommended (use Model Manager to download). LM Studio: External server. KoboldCpp: Manual model loading.</div>
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Base URL</label>
-                                        <input type="url" class="form-control bg-dark text-light border-secondary" id="llm_base_url" required placeholder="http://localhost:11434">
-                                        <div class="form-text text-secondary">API endpoint for your LLM provider. Defaults: Ollama (11434), LM Studio (1234), KoboldCpp (5001).</div>
+                                        <input type="url" class="form-control bg-dark text-light border-secondary" id="llm_base_url" placeholder="http://localhost:11434">
+                                        <div class="form-text text-secondary">API endpoint for the LLM provider (Ollama default: http://localhost:11434).</div>
                                     </div>
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Model</label>
                                         <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_model" required placeholder="qwen2.5:14b-instruct">
-                                        <div class="form-text text-secondary">Default model name. For KoboldCpp, this is just a label (actual model set at startup).</div>
+                                        <div class="form-text text-secondary">Model name or identifier (use Model Manager to download and import to Ollama).</div>
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Context Window</label>
                                         <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_context_window" required min="1024" max="200000" step="1" placeholder="32768">
-                                        <div class="form-text text-secondary">Maximum context size in tokens. MUST match model capabilities and provider settings.</div>
+                                        <div class="form-text text-secondary">Maximum context size in tokens. MUST match model capabilities.</div>
                                     </div>
                                 </div>
+                                
+                                <!-- Integrated Provider Specific Fields -->
+                                
                                 <div class="row">
                                     <div class="col-md-4 mb-3">
                                         <label class="form-label text-light">Max Response Tokens</label>
@@ -1185,22 +1207,52 @@
                                                 <div class="card card-body bg-dark">
                                                     <small class="text-theme-secondary mb-2">Override system defaults for this character. All use system LLM provider.</small>
                                                     <div class="row">
-                                                        <div class="col-md-6 mb-2">
+                                                        <div class="col-12 mb-3">
                                                             <label class="form-label">Model</label>
-                                                            <input type="text" class="form-control form-control-sm" id="charLlmModel" 
-                                                                   placeholder="e.g., qwen2.5:14b">
+                                                            
+                                                            <!-- Model Selection Toggle -->
+                                                            <div class="btn-group btn-group-sm mb-2 w-100" role="group">
+                                                                <input type="radio" class="btn-check" name="charLlmModelMode" id="charLlmModelModeSelect" value="select" checked>
+                                                                <label class="btn btn-outline-secondary" for="charLlmModelModeSelect">
+                                                                    <i class="bi bi-list-ul me-1"></i>Select from Downloaded
+                                                                </label>
+                                                                
+                                                                <input type="radio" class="btn-check" name="charLlmModelMode" id="charLlmModelModeCustom" value="custom">
+                                                                <label class="btn btn-outline-secondary" for="charLlmModelModeCustom">
+                                                                    <i class="bi bi-pencil me-1"></i>Custom Model Name
+                                                                </label>
+                                                            </div>
+                                                            
+                                                            <!-- Select from Downloaded Models -->
+                                                            <div id="charLlmModelSelectContainer">
+                                                                <select class="form-select form-select-sm" id="charLlmModelSelect">
+                                                                    <option value="">System Default</option>
+                                                                </select>
+                                                                <small class="text-theme-secondary">Choose from models downloaded via Model Manager</small>
+                                                            </div>
+                                                            
+                                                            <!-- Custom Model Input -->
+                                                            <div id="charLlmModelCustomContainer" style="display: none;">
+                                                                <input type="text" class="form-control form-control-sm" id="charLlmModel" 
+                                                                       placeholder="e.g., qwen2.5:14b">
+                                                                <small class="text-warning">
+                                                                    <i class="bi bi-exclamation-triangle me-1"></i>
+                                                                    Make sure this model is already pulled in Ollama
+                                                                </small>
+                                                            </div>
                                                         </div>
-                                                        <div class="col-md-6 mb-2">
+                                                        
+                                                        <div class="col-md-4 mb-2">
                                                             <label class="form-label">Temperature</label>
                                                             <input type="number" class="form-control form-control-sm" id="charLlmTemperature" 
                                                                    min="0" max="2" step="0.1" placeholder="0.7">
                                                         </div>
-                                                        <div class="col-md-6 mb-2">
+                                                        <div class="col-md-4 mb-2">
                                                             <label class="form-label">Max Tokens</label>
                                                             <input type="number" class="form-control form-control-sm" id="charLlmMaxTokens" 
                                                                    placeholder="2048">
                                                         </div>
-                                                        <div class="col-md-6 mb-2">
+                                                        <div class="col-md-4 mb-2">
                                                             <label class="form-label">Context Window</label>
                                                             <input type="number" class="form-control form-control-sm" id="charLlmContextWindow" 
                                                                    placeholder="8192">
@@ -2346,6 +2398,192 @@
             </div>
         </div>
     </div>
+
+    <!-- Model Selection Modal (Phase 10) -->
+    <div class="modal fade" id="modelSelectionModal" tabindex="-1" aria-labelledby="modelSelectionLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="modelSelectionLabel">
+                        <i class="bi bi-cpu-fill me-2"></i>Model Management
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- GPU Info -->
+                    <div id="gpuInfo" class="mb-3"></div>
+
+                    <!-- Tabs -->
+                    <ul class="nav nav-tabs mb-3" id="modelTabsList" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="curated-tab" data-bs-toggle="tab" data-bs-target="#curatedTab" 
+                                    type="button" role="tab" aria-controls="curatedTab" aria-selected="true">
+                                <i class="bi bi-star-fill me-1"></i>Pre-tested Models
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="downloaded-tab" data-bs-toggle="tab" data-bs-target="#downloadedTab" 
+                                    type="button" role="tab" aria-controls="downloadedTab" aria-selected="false">
+                                <i class="bi bi-download me-1"></i>Downloaded Models
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="custom-tab" data-bs-toggle="tab" data-bs-target="#customTab" 
+                                    type="button" role="tab" aria-controls="customTab" aria-selected="false">
+                                <i class="bi bi-github me-1"></i>Custom (HuggingFace)
+                            </button>
+                        </li>
+                    </ul>
+
+                    <!-- Tab Content -->
+                    <div class="tab-content" id="modelTabsContent">
+                        <!-- Curated Models Tab -->
+                        <div class="tab-pane fade show active" id="curatedTab" role="tabpanel" aria-labelledby="curated-tab">
+                            <!-- Filters -->
+                            <div class="row mb-3">
+                                <div class="col-md-4">
+                                    <input type="text" class="form-control bg-dark text-light border-secondary" 
+                                           id="modelSearchInput" placeholder="Search models...">
+                                </div>
+                                <div class="col-md-4">
+                                    <select class="form-select bg-dark text-light border-secondary" id="modelCategoryFilter">
+                                        <option value="all">All Categories</option>
+                                        <option value="balanced">⚖️ Balanced</option>
+                                        <option value="creative">🎨 Creative</option>
+                                        <option value="technical">🔧 Technical</option>
+                                        <option value="advanced">🚀 Advanced</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <select class="form-select bg-dark text-light border-secondary" id="modelVramFilter">
+                                        <option value="all">All VRAM Tiers</option>
+                                        <option value="6gb">6GB VRAM or less</option>
+                                        <option value="8gb">8GB VRAM or less</option>
+                                        <option value="12gb">12GB VRAM or less</option>
+                                        <option value="16gb">16GB VRAM or less</option>
+                                        <option value="24gb">24GB VRAM or less</option>
+                                        <option value="32gb">32GB VRAM or less</option>
+                                        <option value="48gb">48GB VRAM or less</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Models Container -->
+                            <div id="curatedModelsContainer">
+                                <div class="text-center text-muted py-5">
+                                    <div class="spinner-border" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="mt-3">Loading models...</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Downloaded Models Tab -->
+                        <div class="tab-pane fade" id="downloadedTab" role="tabpanel" aria-labelledby="downloaded-tab">
+                            <div id="downloadedModelsContainer">
+                                <div class="text-center text-light py-5">
+                                    <div class="spinner-border text-light" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="mt-3">Loading models...</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Custom Model Tab -->
+                        <div class="tab-pane fade" id="customTab" role="tabpanel" aria-labelledby="custom-tab">
+                            <div class="alert alert-info border-info">
+                                <i class="bi bi-info-circle me-2"></i>
+                                <strong>Add models from HuggingFace</strong>
+                                <p class="mb-0 mt-2">Enter a HuggingFace GGUF repository URL. Ollama will download and manage the model for you.</p>
+                            </div>
+
+                            <div class="card bg-dark border-secondary text-light">
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label text-light">HuggingFace Repository URL</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" 
+                                               id="hfRepoUrl" placeholder="e.g., https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF"
+                                               onchange="modelManager.loadHFQuantizations()">
+                                        <div class="form-text text-muted">Paste the full HuggingFace URL or just username/reponame</div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-light">Quantization</label>
+                                        <select class="form-select bg-dark text-light border-secondary" 
+                                                id="hfQuantSelect" disabled>
+                                            <option value="">Enter repository URL first...</option>
+                                        </select>
+                                        <div class="form-text text-muted">Available quantizations will load automatically</div>
+                                    </div>
+                                    <div id="hfModelPreview" class="mb-3" style="display: none;">
+                                        <div class="alert alert-secondary">
+                                            <strong>Ollama model name:</strong>
+                                            <code id="hfModelName" class="text-info"></code>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-primary" id="hfPullBtn" onclick="modelManager.pullHFModel()" disabled>
+                                        <i class="bi bi-download me-1"></i>Pull Model via Ollama
+                                    </button>
+                                    <div id="hfLoadingStatus" class="mt-2" style="display: none;">
+                                        <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                        <span class="text-muted">Loading quantizations...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Download Progress Modal (Phase 10) -->
+    <div class="modal fade" id="modelDownloadModal" tabindex="-1" aria-labelledby="modelDownloadLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="modelDownloadLabel">
+                        <i class="bi bi-download me-2"></i>Downloading Model
+                    </h5>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <strong id="downloadModelName">Model Name</strong>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="progress" style="height: 30px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" 
+                                 id="downloadProgress" 
+                                 style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-2">
+                        <small class="text-secondary">Size:</small>
+                        <span id="downloadSize" class="text-light">0 MB / 0 MB</span>
+                    </div>
+                    
+                    <div class="mb-2">
+                        <small class="text-secondary">Status:</small>
+                        <span id="downloadStatus" class="text-light">Initializing...</span>
+                    </div>
+                    
+                    <div class="alert alert-info mb-0 mt-3">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <small>This may take several minutes depending on model size and your internet connection.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
     
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -2363,6 +2601,7 @@
     <script src="js/memory-panel.js?v=2"></script>
     <script src="js/pending-memories-panel.js?v=1"></script>
     <script src="js/system_settings.js?v=1"></script>
+    <script src="js/model-management.js?v=1"></script>
     <script src="js/app.js?v=9"></script>
     <script src="js/document-library.js?v=1"></script>
     <script src="js/document-autocomplete.js?v=1"></script>

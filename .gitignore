@@ -44,10 +44,19 @@ python_embeded/
 # Configuration files - users customize these locally
 config/system.yaml
 
-# Data and runtime files - NO database or vector store data should ever be committed
-data/
+# User data directory (database, images, models, etc.) - NO user data should be committed
+/data/
 # Exception: Allow default character image
-!data/character_images/default.svg
+!/data/character_images/default.svg
+
+
+# Note: chorus_engine/data/ contains application data (curated_models.json, etc.)
+# and should NOT be ignored - it's part of the source code
+# Exception: User's custom model list (gitignored to avoid conflicts)
+data/user_models.json
+# Exception: Downloaded GGUF models (gitignored, users download their own)
+data/models/
+
 *.db
 *.db-*
 *.sqlite

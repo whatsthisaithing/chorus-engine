@@ -75,6 +75,31 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Install llama-cpp-python with CUDA support (Linux/Mac)
+echo ""
+echo "Installing llama-cpp-python with GPU support (integrated LLM provider)..."
+echo "(This requires compilation and may take several minutes)"
+echo ""
+
+# Detect OS and set appropriate flags
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use Metal
+    echo "[*] Detected macOS - using Metal GPU acceleration"
+    CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
+else
+    # Linux - try CUDA
+    echo "[*] Detected Linux - attempting CUDA GPU acceleration"
+    CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
+    
+    if [ $? -ne 0 ]; then
+        echo "[WARNING] CUDA compilation failed, trying CPU fallback..."
+        pip install llama-cpp-python
+        if [ $? -ne 0 ]; then
+            echo "[WARNING] llama-cpp-python installation failed (integrated LLM will not be available)"
+        fi
+    fi
+fi
+
 echo ""
 echo "============================================================"
 echo "Installation Complete!"

@@ -1,0 +1,270 @@
+{
+  "version": "1.0",
+  "updated": "2026-01-10",
+  "models": [
+    {
+      "id": "qwen2.5-14b-instruct",
+      "name": "Qwen 2.5 14B Instruct",
+      "description": "Current Chorus Engine default. Well-tested for all features. Excellent all-around performance with strong instruction following.",
+      "repo_id": "bartowski/Qwen2.5-14B-Instruct-GGUF",
+      "filename_template": "Qwen2.5-14B-Instruct-{quant}.gguf",
+      "parameters": 14.0,
+      "context_window": 32768,
+      "category": "balanced",
+      "tags": ["conversation", "technical", "tested", "default"],
+      "recommended_quant": {
+        "12GB": "Q4_K_M",
+        "16GB": "Q5_K_M",
+        "24GB+": "Q6_K"
+      },
+      "tested": true,
+      "default": true,
+      "performance": {
+        "conversation": "excellent",
+        "memory_extraction": "excellent",
+        "prompt_following": "excellent",
+        "creativity": "very_good"
+      },
+      "quantizations": [
+        {
+          "quant": "Q4_K_M",
+          "filename": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+          "file_size_mb": 8100,
+          "min_vram_mb": 9500
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "Qwen2.5-14B-Instruct-Q5_K_M.gguf",
+          "file_size_mb": 9800,
+          "min_vram_mb": 11500
+        },
+        {
+          "quant": "Q6_K",
+          "filename": "Qwen2.5-14B-Instruct-Q6_K.gguf",
+          "file_size_mb": 11200,
+          "min_vram_mb": 13000
+        },
+        {
+          "quant": "Q8_0",
+          "filename": "Qwen2.5-14B-Instruct-Q8_0.gguf",
+          "file_size_mb": 14800,
+          "min_vram_mb": 16500
+        }
+      ]
+    },
+    {
+      "id": "mistral-7b-instruct-v0.2",
+      "name": "Mistral 7B Instruct v0.2",
+      "description": "Excellent all-around model. Great for conversation and creative tasks. Fast and efficient on 8GB+ GPUs.",
+      "repo_id": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+      "filename_template": "mistral-7b-instruct-v0.2.{quant}.gguf",
+      "parameters": 7.0,
+      "context_window": 32768,
+      "category": "balanced",
+      "tags": ["conversation", "creative", "instruct", "efficient"],
+      "recommended_quant": {
+        "6GB": "Q3_K_M",
+        "8GB": "Q4_K_M",
+        "12GB+": "Q5_K_M"
+      },
+      "tested": true,
+      "default": false,
+      "performance": {
+        "conversation": "excellent",
+        "memory_extraction": "very_good",
+        "prompt_following": "excellent",
+        "creativity": "excellent"
+      },
+      "quantizations": [
+        {
+          "quant": "Q3_K_M",
+          "filename": "mistral-7b-instruct-v0.2.Q3_K_M.gguf",
+          "file_size_mb": 3500,
+          "min_vram_mb": 5000
+        },
+        {
+          "quant": "Q4_K_M",
+          "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+          "file_size_mb": 4400,
+          "min_vram_mb": 6000
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "mistral-7b-instruct-v0.2.Q5_K_M.gguf",
+          "file_size_mb": 5300,
+          "min_vram_mb": 7000
+        },
+        {
+          "quant": "Q6_K",
+          "filename": "mistral-7b-instruct-v0.2.Q6_K.gguf",
+          "file_size_mb": 6100,
+          "min_vram_mb": 8000
+        }
+      ]
+    },
+    {
+      "id": "llama-3.1-8b-instruct",
+      "name": "Llama 3.1 8B Instruct",
+      "description": "Meta's latest open model. Strong instruction following and reasoning. Good for technical tasks.",
+      "repo_id": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "filename_template": "Meta-Llama-3.1-8B-Instruct-{quant}.gguf",
+      "parameters": 8.0,
+      "context_window": 131072,
+      "category": "technical",
+      "tags": ["reasoning", "instruct", "meta", "technical"],
+      "recommended_quant": {
+        "8GB": "Q4_K_M",
+        "12GB": "Q5_K_M",
+        "16GB+": "Q6_K"
+      },
+      "tested": true,
+      "default": false,
+      "performance": {
+        "conversation": "very_good",
+        "memory_extraction": "excellent",
+        "prompt_following": "excellent",
+        "creativity": "good"
+      },
+      "quantizations": [
+        {
+          "quant": "Q4_K_M",
+          "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+          "file_size_mb": 4900,
+          "min_vram_mb": 6500
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf",
+          "file_size_mb": 5900,
+          "min_vram_mb": 7500
+        },
+        {
+          "quant": "Q6_K",
+          "filename": "Meta-Llama-3.1-8B-Instruct-Q6_K.gguf",
+          "file_size_mb": 6800,
+          "min_vram_mb": 8500
+        }
+      ]
+    },
+    {
+      "id": "gemma-2-9b-instruct",
+      "name": "Gemma 2 9B Instruct",
+      "description": "Google's Gemma 2 model. Efficient architecture with strong performance. Good for structured output.",
+      "repo_id": "lmstudio-community/gemma-2-9b-it-GGUF",
+      "filename_template": "gemma-2-9b-it-{quant}.gguf",
+      "parameters": 9.0,
+      "context_window": 8192,
+      "category": "technical",
+      "tags": ["reasoning", "instruct", "google", "structured"],
+      "recommended_quant": {
+        "8GB": "Q4_K_M",
+        "12GB": "Q5_K_M",
+        "16GB+": "Q6_K"
+      },
+      "tested": false,
+      "default": false,
+      "performance": {
+        "conversation": "very_good",
+        "memory_extraction": "excellent",
+        "prompt_following": "excellent",
+        "creativity": "good"
+      },
+      "quantizations": [
+        {
+          "quant": "Q4_K_M",
+          "filename": "gemma-2-9b-it-Q4_K_M.gguf",
+          "file_size_mb": 5400,
+          "min_vram_mb": 7000
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "gemma-2-9b-it-Q5_K_M.gguf",
+          "file_size_mb": 6500,
+          "min_vram_mb": 8000
+        },
+        {
+          "quant": "Q6_K",
+          "filename": "gemma-2-9b-it-Q6_K.gguf",
+          "file_size_mb": 7400,
+          "min_vram_mb": 9000
+        }
+      ]
+    },
+    {
+      "id": "phi-3-medium-instruct",
+      "name": "Phi-3 Medium 14B Instruct",
+      "description": "Microsoft's efficient model. Strong reasoning despite smaller size. Good for technical and coding tasks.",
+      "repo_id": "microsoft/Phi-3-medium-4k-instruct-gguf",
+      "filename_template": "Phi-3-medium-4k-instruct-{quant}.gguf",
+      "parameters": 14.0,
+      "context_window": 4096,
+      "category": "technical",
+      "tags": ["reasoning", "coding", "microsoft", "efficient"],
+      "recommended_quant": {
+        "12GB": "Q4_K_M",
+        "16GB": "Q5_K_M",
+        "24GB+": "Q6_K"
+      },
+      "tested": false,
+      "default": false,
+      "performance": {
+        "conversation": "good",
+        "memory_extraction": "very_good",
+        "prompt_following": "very_good",
+        "creativity": "good"
+      },
+      "quantizations": [
+        {
+          "quant": "Q4_K_M",
+          "filename": "Phi-3-medium-4k-instruct-q4.gguf",
+          "file_size_mb": 8100,
+          "min_vram_mb": 9500
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "Phi-3-medium-4k-instruct-q5.gguf",
+          "file_size_mb": 9800,
+          "min_vram_mb": 11500
+        }
+      ]
+    },
+    {
+      "id": "llama-3.1-70b-instruct",
+      "name": "Llama 3.1 70B Instruct",
+      "description": "Top-tier performance from Meta. Requires 48GB+ VRAM (RTX 6000 Ada, A6000) but delivers excellent results.",
+      "repo_id": "lmstudio-community/Meta-Llama-3.1-70B-Instruct-GGUF",
+      "filename_template": "Meta-Llama-3.1-70B-Instruct-{quant}.gguf",
+      "parameters": 70.0,
+      "context_window": 131072,
+      "category": "advanced",
+      "tags": ["reasoning", "instruct", "meta", "large"],
+      "recommended_quant": {
+        "48GB": "Q4_K_M",
+        "80GB+": "Q5_K_M"
+      },
+      "tested": false,
+      "default": false,
+      "performance": {
+        "conversation": "excellent",
+        "memory_extraction": "excellent",
+        "prompt_following": "excellent",
+        "creativity": "excellent"
+      },
+      "quantizations": [
+        {
+          "quant": "Q4_K_M",
+          "filename": "Meta-Llama-3.1-70B-Instruct-Q4_K_M.gguf",
+          "file_size_mb": 40000,
+          "min_vram_mb": 45000
+        },
+        {
+          "quant": "Q5_K_M",
+          "filename": "Meta-Llama-3.1-70B-Instruct-Q5_K_M.gguf",
+          "file_size_mb": 48000,
+          "min_vram_mb": 55000
+        }
+      ],
+      "warning": "Requires high-end GPU (48GB+ VRAM)"
+    }
+  ]
+}

@@ -78,7 +78,7 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             context_window=config.context_window,
         )
     
-    elif provider in ["openai-compatible", "llamacpp"]:
+    elif provider in ["openai-compatible", "llamacpp", "integrated"]:
         raise NotImplementedError(
             f"Provider '{provider}' is not yet implemented. "
             f"Currently supported: ollama, lmstudio, koboldcpp"

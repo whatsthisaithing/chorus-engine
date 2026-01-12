@@ -38,6 +38,9 @@ window.App = {
                 UI.showToast('Warning: LLM is not available. Check Ollama server.', 'warning');
             }
             
+            // Check model status (Phase 10)
+            await this.checkModelStatus();
+            
             // Load characters
             await this.loadCharacters();
             
@@ -59,6 +62,46 @@ window.App = {
         const data = await API.listCharacters();
         this.state.characters = data.characters;
         UI.renderCharacters(this.state.characters);
+    },
+    
+    /**
+     * Check LLM model status and show warning if needed (Phase 10)
+     */
+    async checkModelStatus() {
+        try {
+            const response = await fetch('/system/config');
+            const config = await response.json();
+            
+            const banner = document.getElementById('modelMissingBanner');
+            const messageInput = document.getElementById('messageInput');
+            
+            // Show warning if no model configured in system.yaml
+            if (!config.llm.model || config.llm.model.trim() === '') {
+                if (banner) {
+                    banner.style.display = 'block';
+                }
+                // Disable chat input
+                if (messageInput) {
+                    messageInput.disabled = true;
+                    messageInput.placeholder = 'Download a model to start chatting...';
+                }
+                
+                console.warn('No model configured in system.yaml');
+            } else {
+                // Hide banner and enable input
+                if (banner) {
+                    banner.style.display = 'none';
+                }
+                if (messageInput && !this.state.currentConversation) {
+                    // Re-enable if we have a conversation
+                    messageInput.disabled = false;
+                    messageInput.placeholder = 'Type your message...';
+                }
+            }
+        } catch (error) {
+            console.error('Failed to check model status:', error);
+            // Don't show error to user - this is a non-critical check
+        }
     },
     
     /**

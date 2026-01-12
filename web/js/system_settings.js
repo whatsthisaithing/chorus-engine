@@ -84,6 +84,19 @@ class SystemSettingsManager {
         document.getElementById('llm_timeout_seconds').value = config.llm.timeout_seconds || 120;
         document.getElementById('llm_unload_during_image_generation').checked = config.llm.unload_during_image_generation || false;
 
+        // Add provider change listener
+        document.getElementById('llm_provider').addEventListener('change', (e) => {
+            // Update model manager menu visibility
+            if (typeof modelManager !== 'undefined') {
+                modelManager.updateMenuVisibility(e.target.value);
+            }
+        });
+
+        // Update model manager menu visibility on page load
+        if (typeof modelManager !== 'undefined') {
+            modelManager.updateMenuVisibility(config.llm.provider);
+        }
+
         // Memory Configuration
         document.getElementById('memory_embedding_model').value = config.memory.embedding_model || 'all-MiniLM-L6-v2';
         document.getElementById('memory_vector_store').value = config.memory.vector_store || 'chroma';
@@ -121,7 +134,7 @@ class SystemSettingsManager {
     }
 
     collectFormData() {
-        return {
+        const data = {
             llm: {
                 provider: document.getElementById('llm_provider').value,
                 base_url: document.getElementById('llm_base_url').value,
@@ -164,6 +177,8 @@ class SystemSettingsManager {
             api_port: parseInt(document.getElementById('api_port').value),
             debug: document.getElementById('debug').checked
         };
+        
+        return data;
     }
 
     async saveSettings() {
@@ -198,16 +213,16 @@ class SystemSettingsManager {
                 throw new Error(error.detail || 'Failed to save configuration');
             }
 
-            UI.showToast('Configuration saved. Server is restarting... (this may take 20-30 seconds)', 'success');
+            UI.showToast('Configuration saved. Server is restarting... (this may take 15-20 seconds)', 'success');
             this.modal.hide();
 
-            // Wait for server to restart (typically takes 15-20 seconds)
+            // Wait for server to restart (typically takes 10-15 seconds with lazy TTS loading)
             setTimeout(() => {
                 UI.showToast('Server should be ready. Reloading page...', 'info');
                 setTimeout(() => {
                     window.location.reload();
                 }, 2000);
-            }, 20000); // Wait 20 seconds before showing reload message, then 2 more seconds
+            }, 15000); // Wait 15 seconds before showing reload message, then 2 more seconds
 
         } catch (error) {
             console.error('Failed to save configuration:', error);

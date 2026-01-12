@@ -77,6 +77,9 @@ from chorus_engine.utils.debug_logger import log_llm_call
 # Phase 7 imports
 from chorus_engine.services.intent_detection_service import IntentDetectionService, IntentResult
 
+# Phase 10 imports (Integrated LLM)
+from chorus_engine.api.model_routes import router as model_router
+
 logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
 logger.setLevel(logging.DEBUG)
@@ -623,6 +626,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include API routers
+app.include_router(model_router)  # Phase 10: Model management routes
 
 
 # Request/Response models
@@ -7013,6 +7019,27 @@ async def update_system_config(config: dict):
     All active connections will be closed.
     """
     try:
+        # Validate model path for integrated provider (Phase 10)
+        if config.get('llm', {}).get('provider') == 'integrated':
+            model_path = config.get('llm', {}).get('model')
+            if model_path:
+                model_file = Path(model_path)
+                if not model_file.exists():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Model file not found: {model_path}. Please download a model or select an existing one."
+                    )
+                if model_file.suffix != '.gguf':
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid model file. Must be a GGUF file, got: {model_file.suffix}"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Model path is required for integrated provider. Please download a model first."
+                )
+        
         config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
         
         # Backup existing config with timestamp

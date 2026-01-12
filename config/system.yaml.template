@@ -5,29 +5,30 @@
 # LLM Provider Configuration
 # ===========================
 
-# Option 1: Ollama (multi-model, auto-loading)
-# llm:
-#   provider: ollama
-#   base_url: http://localhost:11434
-#   model: qwen2.5:14b-instruct
-#   context_window: 32768  # Qwen2.5 supports much larger context
-#   max_response_tokens: 4096
-#   temperature: 0.7
-#   timeout_seconds: 120
-#   unload_during_image_generation: true
-
-# Option 2: LM Studio (multi-model, JIT loading)
+# Option 1: Ollama (recommended - multi-model, auto-loading, easy GGUF import)
+# Download models via Model Manager UI, they auto-import to Ollama
 llm:
-  provider: lmstudio
-  base_url: http://localhost:1234 #/v1
-  model: qwen/qwen2.5-coder-14b
-  context_window: 31500  # IMPORTANT: Must match the context length set in LM Studio when loading the model!
-                         # LM Studio default is often 4096 - change this when loading your model
-                         # Recommended: 31500 (for 32K context supporting model) for rich conversations with documents and memory
+  provider: ollama
+  base_url: http://localhost:11434
+  model: ""  # Empty on fresh install - download a model via Model Manager and click "Switch To"
+  context_window: 8192  # Safe default - adjust based on your model's capabilities
   max_response_tokens: 4096
   temperature: 0.7
   timeout_seconds: 120
   unload_during_image_generation: true
+
+# Option 2: LM Studio (multi-model, JIT loading)
+# llm:
+#   provider: lmstudio
+#   base_url: http://localhost:1234 #/v1
+#   model: qwen/qwen2.5-coder-14b
+#   context_window: 31500  # IMPORTANT: Must match the context length set in LM Studio when loading the model!
+#                          # LM Studio default is often 4096 - change this when loading your model
+#                          # Recommended: 31500 (for 32K context supporting model) for rich conversations with documents and memory
+#   max_response_tokens: 4096
+#   temperature: 0.7
+#   timeout_seconds: 120
+#   unload_during_image_generation: true
 
 # Option 3: KoboldCpp (single-model, manual loading)
 # User must start KoboldCpp separately with:

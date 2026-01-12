@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 class LLMConfig(BaseModel):
     """LLM backend configuration."""
     
-    provider: Literal["ollama", "lmstudio", "koboldcpp", "openai-compatible"] = "ollama"
+    provider: Literal["ollama", "lmstudio", "koboldcpp", "openai-compatible", "integrated"] = "integrated"
     base_url: str = "http://localhost:11434"
     model: str = "mistral:7b-instruct"
     context_window: int = Field(default=8192, gt=0, le=128000)
@@ -17,6 +17,10 @@ class LLMConfig(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     timeout_seconds: int = Field(default=120, gt=0)
     unload_during_image_generation: bool = Field(default=False, description="Unload model from VRAM during image generation to free memory")
+    
+    # Integrated provider specific fields
+    n_gpu_layers: Optional[int] = Field(default=-1, description="GPU layers for integrated provider (-1=all, 0=CPU only)")
+    n_threads: Optional[int] = Field(default=8, gt=0, description="CPU threads for integrated provider")
     
     @field_validator('base_url')
     @classmethod
