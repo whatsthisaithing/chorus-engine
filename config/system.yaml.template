@@ -67,21 +67,6 @@ tts:
   default_provider: chatterbox  # Options: chatterbox (embedded, fast) or comfyui (workflow-based)
                                 # Characters can override this in their voice config
 
-# Intent Detection System - Implemented but disabled as system caused VRAM management issues and was unnecessary
-# intent_detection:
-#   enabled: false  # Using keyword-based detection (no LLM overhead)
-#   model: gemma2:9b  # Better at structured output than small models
-#   temperature: 0.2  # Low for consistency, but not too low to avoid token corruption
-#   keep_loaded: true
-#   fallback_to_keywords: true
-
-#   # Intent-specific confidence thresholds
-#   thresholds:
-#     image: 0.7
-#     video: 0.7
-#     memory: 0.8
-#     ambient: 0.6
-
 # Document Analysis System
 document_analysis:
   enabled: true
@@ -95,13 +80,10 @@ paths:
   workflows: workflows
   data: data
 
-# ===========================
-# UI Configuration
-# ===========================
 ui:
   color_scheme: stage-night  # Options: stage-night, spotlight-bright, noir-absolute, cobalt-depths, 
                               #          forest-canopy, ember-glow, monochrome-studio, sunset-boulevard, arctic-twilight
 
-debug: true
 api_host: localhost
 api_port: 8080
+debug: true
