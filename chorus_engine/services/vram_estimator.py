@@ -10,26 +10,116 @@ logger = logging.getLogger(__name__)
 
 # Try to import pynvml for NVIDIA GPU detection
 HAS_PYNVML = False
+NVML_ERROR = None
+
 try:
     # Add common NVIDIA driver paths to DLL search path (Windows)
     if sys.platform == 'win32':
-        nvidia_paths = [
+        import ctypes
+        
+        # Try to find nvml.dll
+        possible_dll_names = ['nvml.dll', 'nvml64.dll']
+        possible_paths = [
             os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32'),
             os.path.join(os.environ.get('ProgramFiles', 'C:\\Program Files'), 'NVIDIA Corporation', 'NVSMI'),
+            os.path.join(os.environ.get('ProgramW6432', 'C:\\Program Files'), 'NVIDIA Corporation', 'NVSMI'),
+            'C:\\Windows\\System32',
+            'C:\\Program Files\\NVIDIA Corporation\\NVSMI',
         ]
-        for path in nvidia_paths:
+        
+        # CRITICAL: Modify PATH environment variable so pynvml can find the DLL
+        # This must happen BEFORE importing pynvml
+        existing_path = os.environ.get('PATH', '')
+        paths_to_add = []
+        
+        for path in possible_paths:
+            if os.path.exists(path) and path not in existing_path:
+                paths_to_add.append(path)
+        
+        if paths_to_add:
+            os.environ['PATH'] = ';'.join(paths_to_add) + ';' + existing_path
+            logger.info(f"Added {len(paths_to_add)} paths to PATH for NVIDIA DLL loading")
+        
+        # Try to add paths to DLL search (for Python 3.8+)
+        for path in possible_paths:
             if os.path.exists(path):
                 try:
-                    os.add_dll_directory(path)
-                except (OSError, AttributeError):
-                    # add_dll_directory not available on older Python or path already added
-                    pass
+                    if hasattr(os, 'add_dll_directory'):
+                        os.add_dll_directory(path)
+                        logger.debug(f"Added DLL directory: {path}")
+                except Exception as e:
+                    logger.debug(f"Could not add DLL directory {path}: {e}")
+        
+        # Try to pre-load the DLL directly with ctypes (backup method)
+        dll_loaded = False
+        for path in possible_paths:
+            for dll_name in possible_dll_names:
+                dll_path = os.path.join(path, dll_name)
+                if os.path.exists(dll_path):
+                    try:
+                        ctypes.CDLL(dll_path)
+                        logger.info(f"Successfully pre-loaded NVIDIA DLL from: {dll_path}")
+                        dll_loaded = True
+                        break
+                    except Exception as e:
+                        logger.debug(f"Could not load {dll_path}: {e}")
+            if dll_loaded:
+                break
+        
+        if not dll_loaded:
+            logger.warning("Could not find or load NVIDIA DLL. Searched paths: " + ", ".join(possible_paths))
     
     import pynvml
-    HAS_PYNVML = True
-except ImportError:
-    logger.warning("pynvml not installed. GPU detection will not be available.")
+    
+    # CRITICAL FIX: Manually set the NVML library handle for embedded Python
+    # pynvml's auto-detection fails in embedded Python environments
+    if sys.platform == 'win32':
+        import ctypes
+        
+        # Find and load nvml.dll manually
+        dll_path = None
+        for path in possible_paths:
+            for dll_name in ['nvml.dll', 'nvml64.dll']:
+                test_path = os.path.join(path, dll_name)
+                if os.path.exists(test_path):
+                    dll_path = test_path
+                    break
+            if dll_path:
+                break
+        
+        if dll_path:
+            try:
+                # Load the DLL with ctypes
+                nvml_lib = ctypes.CDLL(dll_path)
+                
+                # Monkey-patch pynvml's library handle BEFORE nvmlInit is called
+                # This bypasses pynvml's broken DLL discovery in embedded Python
+                if hasattr(pynvml, '_nvmlLib_refcount'):
+                    # pynvml uses _nvmlLib as the library handle
+                    pynvml._nvmlLib = nvml_lib
+                    logger.info(f"Manually injected NVML library handle from: {dll_path}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to manually load NVML library: {e}")
+    
+    # Test if pynvml actually works by trying to initialize
+    try:
+        pynvml.nvmlInit()
+        pynvml.nvmlShutdown()
+        HAS_PYNVML = True
+        logger.info("pynvml imported and initialized successfully")
+    except Exception as init_error:
+        HAS_PYNVML = False
+        NVML_ERROR = f"pynvml imported but nvmlInit() failed: {init_error}"
+        logger.error(NVML_ERROR)
+        logger.error("This usually means NVIDIA drivers are not properly installed or the embedded Python cannot access them.")
+        logger.error("Workaround: Try running the application with system Python instead of embedded Python.")
+    
+except ImportError as e:
+    NVML_ERROR = f"pynvml not installed: {e}"
+    logger.warning(NVML_ERROR)
 except Exception as e:
+    NVML_ERROR = str(e)
     logger.warning(f"pynvml import failed: {e}. GPU detection will not be available.")
 
 
@@ -134,7 +224,10 @@ class VRAMEstimator:
             List of GPUInfo objects, empty list if no GPUs or detection fails
         """
         if not HAS_PYNVML:
-            logger.warning("pynvml not available, cannot detect GPU VRAM")
+            if NVML_ERROR:
+                logger.warning(f"pynvml not available: {NVML_ERROR}")
+            else:
+                logger.warning("pynvml not available, cannot detect GPU VRAM")
             return []
         
         try:

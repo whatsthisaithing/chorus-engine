@@ -136,7 +136,7 @@ echo Installing remaining dependencies...
 echo (PyTorch already installed, ensuring no downgrade...)
 echo.
 REM Use --no-deps for chatterbox-tts to prevent torch downgrade, install others normally
-python_embeded\python.exe -m pip install fastapi==0.115.5 uvicorn[standard]==0.32.1 pydantic==2.10.3 pydantic-settings==2.6.1 httpx==0.28.1 pyyaml==6.0.2 python-multipart==0.0.21 sqlalchemy==2.0.36 alembic==1.13.1 chromadb==0.5.23 sentence-transformers==3.3.1 transformers==4.46.3 huggingface_hub pynvml
+python_embeded\python.exe -m pip install fastapi==0.115.5 uvicorn[standard]==0.32.1 pydantic==2.10.3 pydantic-settings==2.6.1 httpx==0.28.1 pyyaml==6.0.2 python-multipart==0.0.21 sqlalchemy==2.0.36 alembic==1.13.1 chromadb==0.5.23 sentence-transformers==3.3.1 transformers==4.46.3 huggingface_hub nvidia-ml-py
 
 if errorlevel 1 (
     echo [ERROR] Failed to install core dependencies

@@ -117,7 +117,7 @@ if errorlevel 1 (
 echo.
 
 echo [4/5] Updating core dependencies...
-%PIP_CMD% install --upgrade fastapi uvicorn[standard] pydantic pydantic-settings httpx pyyaml python-multipart sqlalchemy alembic chromadb sentence-transformers transformers huggingface_hub
+%PIP_CMD% install --upgrade fastapi uvicorn[standard] pydantic pydantic-settings httpx pyyaml python-multipart sqlalchemy alembic chromadb sentence-transformers transformers huggingface_hub nvidia-ml-py
 if errorlevel 1 (
     echo [ERROR] Failed to update dependencies
     pause

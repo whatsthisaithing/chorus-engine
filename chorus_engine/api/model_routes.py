@@ -416,6 +416,45 @@ async def get_gpu_info():
         )
 
 
+@router.get("/system/gpu/diagnostics")
+async def get_gpu_diagnostics():
+    """Get detailed GPU detection diagnostics for troubleshooting."""
+    from chorus_engine.services.vram_estimator import HAS_PYNVML, NVML_ERROR
+    import sys
+    
+    diagnostics = {
+        "pynvml_imported": HAS_PYNVML,
+        "import_error": NVML_ERROR,
+        "python_version": sys.version,
+        "python_executable": sys.executable,
+        "platform": sys.platform,
+    }
+    
+    # Check for DLL files
+    if sys.platform == 'win32':
+        import os
+        search_paths = [
+            os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32'),
+            os.path.join(os.environ.get('ProgramFiles', 'C:\\Program Files'), 'NVIDIA Corporation', 'NVSMI'),
+            'C:\\Windows\\System32',
+            'C:\\Program Files\\NVIDIA Corporation\\NVSMI',
+        ]
+        
+        dll_files_found = []
+        for path in search_paths:
+            if os.path.exists(path):
+                for dll_name in ['nvml.dll', 'nvml64.dll']:
+                    dll_path = os.path.join(path, dll_name)
+                    if os.path.exists(dll_path):
+                        dll_files_found.append(dll_path)
+        
+        diagnostics["dll_search_paths"] = search_paths
+        diagnostics["dll_files_found"] = dll_files_found
+        diagnostics["system_path"] = os.environ.get('PATH', '').split(';')[:10]  # First 10 PATH entries
+    
+    return diagnostics
+
+
 @router.post("/models/estimate", response_model=VRAMEstimateResponse)
 async def estimate_vram(request: VRAMEstimateRequest):
     """Estimate VRAM requirements for a model."""

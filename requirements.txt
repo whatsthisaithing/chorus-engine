@@ -39,7 +39,7 @@ transformers==4.46.3
 huggingface_hub
 
 # GPU Detection
-nvidia-ml-py3
+nvidia-ml-py
 
 # TTS (Text-to-Speech)
 chatterbox-tts
