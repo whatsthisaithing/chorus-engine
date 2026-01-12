@@ -1,18 +1,36 @@
 """VRAM estimation and GPU detection for model loading recommendations."""
 
 import logging
+import os
+import sys
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 # Try to import pynvml for NVIDIA GPU detection
+HAS_PYNVML = False
 try:
+    # Add common NVIDIA driver paths to DLL search path (Windows)
+    if sys.platform == 'win32':
+        nvidia_paths = [
+            os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32'),
+            os.path.join(os.environ.get('ProgramFiles', 'C:\\Program Files'), 'NVIDIA Corporation', 'NVSMI'),
+        ]
+        for path in nvidia_paths:
+            if os.path.exists(path):
+                try:
+                    os.add_dll_directory(path)
+                except (OSError, AttributeError):
+                    # add_dll_directory not available on older Python or path already added
+                    pass
+    
     import pynvml
     HAS_PYNVML = True
 except ImportError:
-    HAS_PYNVML = False
     logger.warning("pynvml not installed. GPU detection will not be available.")
+except Exception as e:
+    logger.warning(f"pynvml import failed: {e}. GPU detection will not be available.")
 
 
 @dataclass
@@ -166,7 +184,15 @@ class VRAMEstimator:
             return gpus
             
         except Exception as e:
-            logger.error(f"Failed to detect GPU VRAM: {e}")
+            error_msg = str(e)
+            if "Shared Library" in error_msg or "NVML" in error_msg:
+                logger.error(
+                    f"Failed to detect GPU: NVIDIA driver libraries not accessible. "
+                    f"Error: {error_msg}. "
+                    f"If you have an NVIDIA GPU, try restarting the application or check NVIDIA driver installation."
+                )
+            else:
+                logger.error(f"Failed to detect GPU VRAM: {e}")
             return []
     
     @staticmethod
