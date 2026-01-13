@@ -69,6 +69,13 @@ const UI = {
         const avatar = document.getElementById('profileAvatar');
         avatar.src = character.profile_image_url || '/character_images/default.svg';
         avatar.alt = `${character.name} Avatar`;
+        
+        // Apply focal point if set
+        if (character.profile_image_focus && character.profile_image_focus.x !== undefined && character.profile_image_focus.y !== undefined) {
+            avatar.style.objectPosition = `${character.profile_image_focus.x}% ${character.profile_image_focus.y}%`;
+        } else {
+            avatar.style.objectPosition = '50% 50%'; // Default center
+        }
 
         // Update name and role
         document.getElementById('profileName').textContent = character.name;

@@ -134,8 +134,8 @@ html, body {
 }
 
 .profile-avatar {
-    width: 80px;
-    height: 80px;
+    width: 120px;
+    height: 120px;
     border-radius: 50%;
     border: 2px solid var(--accent-primary);
     box-shadow: 0 0 10px rgba(212, 175, 55, 0.3);

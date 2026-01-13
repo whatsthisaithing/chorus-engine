@@ -129,6 +129,9 @@
                             <li><a class="dropdown-item" href="#" id="importCharacterMenuItem">
                                 <i class="bi bi-upload me-2"></i>Import Character
                             </a></li>
+                            <li><a class="dropdown-item" href="#" id="importCharacterCardMenuItem">
+                                <i class="bi bi-card-image me-2"></i>Import Character Card
+                            </a></li>
                             <li><a class="dropdown-item" href="#" id="exportSystemConfigMenuItem">
                                 <i class="bi bi-file-earmark-arrow-down me-2"></i>Export System Config
                             </a></li>
@@ -1176,9 +1179,20 @@
                                         
                                         <div class="mb-3">
                                             <label class="form-label">Profile Image</label>
-                                            <input type="text" class="form-control" id="charProfileImage" 
-                                                   placeholder="e.g., character_name_profile.png">
-                                            <small class="text-theme-secondary">Filename in data/character_images/ (set via "Set as Profile" on generated images)</small>
+                                            <div class="input-group">
+                                                <input type="text" class="form-control" id="charProfileImage" 
+                                                       placeholder="e.g., character_name_profile.png">
+                                                <button type="button" class="btn btn-outline-secondary" id="uploadProfileImageBtn" title="Upload Profile Picture">
+                                                    <i class="bi bi-upload"></i>
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary" id="setImageFocusBtn" title="Set Image Focus Point">
+                                                    <i class="bi bi-bullseye"></i>
+                                                </button>
+                                            </div>
+                                            <input type="file" id="profileImageFileInput" accept=".png,.jpg,.jpeg,.webp" style="display: none;">
+                                            <small class="text-theme-secondary">Filename in data/character_images/ or click upload button to add a new image</small>
+                                            <input type="hidden" id="charImageFocusX" value="50">
+                                            <input type="hidden" id="charImageFocusY" value="50">
                                         </div>
                                         
                                         <div class="mb-3">
@@ -1599,6 +1613,9 @@
                                     </button>
                                     <button type="button" class="btn btn-outline-secondary" id="cloneCharacterBtn">
                                         <i class="bi bi-files"></i> Clone
+                                    </button>
+                                    <button type="button" class="btn btn-outline-info" id="exportCharacterCardBtn">
+                                        <i class="bi bi-card-image"></i> Export Card
                                     </button>
                                     <button type="button" class="btn btn-outline-danger ms-auto" id="deleteCharacterBtn">
                                         <i class="bi bi-trash"></i> Delete
@@ -2055,6 +2072,40 @@
         </div>
     </div>
     
+    <!-- Image Focus Point Modal -->
+    <div class="modal fade" id="imageFocusModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">
+                        <i class="bi bi-bullseye me-2"></i> Set Image Focus Point
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        Click on the face or focal point of your character image. This determines which part of the image is centered in the circular avatar.
+                    </div>
+                    <div id="focusPointContainer" class="position-relative" style="cursor: crosshair; max-width: 100%; margin: 0 auto; display: inline-block;">
+                        <img id="focusPointImage" src="" alt="Character Image" 
+                             style="max-width: 100%; height: auto; display: block; border: 2px solid var(--accent-primary); border-radius: 8px;">
+                        <div id="focusPointMarker" style="position: absolute; width: 20px; height: 20px; border: 3px solid #d4af37; border-radius: 50%; background: rgba(212, 175, 55, 0.3); transform: translate(-50%, -50%); pointer-events: none; display: none; z-index: 10;">
+                            <div style="position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; background: #d4af37; border-radius: 50%; transform: translate(-50%, -50%);"></div>
+                        </div>
+                    </div>
+                    <div class="mt-3 text-center small text-muted">
+                        <span id="focusPointCoords">Click to set focus point</span>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveFocusPointBtn">Save Focus Point</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Character Profile Modal -->
     <div class="modal fade" id="characterProfileModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -2215,6 +2266,216 @@
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-primary" id="importCharacterBtn">
                         <i class="bi bi-upload me-1"></i>Import
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Import Character Card Modal -->
+    <div class="modal fade" id="importCharacterCardModal" tabindex="-1" aria-labelledby="importCharacterCardModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="importCharacterCardModalLabel">
+                        <i class="bi bi-card-image me-2"></i>Import Character Card
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="cardUploadSection">
+                        <div class="card border-secondary mb-3" id="cardDropZone" style="transition: all 0.2s;">
+                            <div class="card-body text-center" style="padding: 2rem;">
+                                <div class="mb-3">
+                                    <i class="bi bi-card-image" id="cardUploadIcon" style="font-size: 3rem; color: var(--bs-secondary); transition: all 0.2s;"></i>
+                                </div>
+                                <h6 class="card-title">Upload Character Card</h6>
+                                <p class="card-text text-muted small">
+                                    Drag & drop a PNG file here, or click to browse
+                                </p>
+                                <p class="card-text text-muted small mb-3">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    Supports Chorus Engine and SillyTavern V2/V3 character cards
+                                </p>
+                                <input type="file" id="cardFileInput" accept=".png" style="display: none;">
+                                <button type="button" class="btn btn-primary" id="selectCardFileBtn">
+                                    <i class="bi bi-upload me-1"></i>Select PNG File
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="cardPreviewSection" style="display: none;">
+                        <div class="alert alert-info mb-3">
+                            <i class="bi bi-info-circle me-2"></i>
+                            Review the character details below before importing.
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-4">
+                                <img id="cardPreviewImage" src="" alt="Character" class="img-fluid rounded">
+                            </div>
+                            <div class="col-md-8">
+                                <div class="mb-2">
+                                    <label class="form-label small text-secondary">Format</label>
+                                    <div id="cardPreviewFormat" class="fw-bold"></div>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small text-secondary">Character Name</label>
+                                    <div id="cardPreviewName" class="fw-bold"></div>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small text-secondary">Description</label>
+                                    <div id="cardPreviewDescription" class="small" style="max-height: 100px; overflow-y: auto;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="customCharacterName" class="form-label">Custom Name (Optional)</label>
+                            <input type="text" class="form-control" id="customCharacterName" placeholder="Leave empty to use default name">
+                            <small class="text-secondary form-text">Override the character name if needed</small>
+                        </div>
+                        
+                        <div class="accordion" id="cardDetailsAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#cardPersonalityCollapse">
+                                        Personality & Traits
+                                    </button>
+                                </h2>
+                                <div id="cardPersonalityCollapse" class="accordion-collapse collapse" data-bs-parent="#cardDetailsAccordion">
+                                    <div class="accordion-body">
+                                        <div id="cardPreviewPersonality" class="small"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#cardVoiceCollapse">
+                                        Voice Configuration
+                                    </button>
+                                </h2>
+                                <div id="cardVoiceCollapse" class="accordion-collapse collapse" data-bs-parent="#cardDetailsAccordion">
+                                    <div class="accordion-body">
+                                        <div id="cardPreviewVoice" class="small"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="backToUploadBtn">
+                                <i class="bi bi-arrow-left me-1"></i>Choose Different File
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="cardImportProgress" style="display: none;">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary mb-3" role="status">
+                                <span class="visually-hidden">Importing...</span>
+                            </div>
+                            <p>Importing character card...</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmImportCardBtn" style="display: none;">
+                        <i class="bi bi-check-circle me-1"></i>Import Character
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Export Character Card Modal -->
+    <div class="modal fade" id="exportCharacterCardModal" tabindex="-1" aria-labelledby="exportCharacterCardModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="exportCharacterCardModalLabel">
+                        <i class="bi bi-card-image me-2"></i>Export Character Card
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info mb-3">
+                        <i class="bi bi-info-circle me-2"></i>
+                        Export your character as a portable PNG card that can be imported into Chorus Engine or SillyTavern.
+                    </div>
+                    
+                    <!-- Profile Image Preview -->
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <img id="exportCardPreviewImage" src="" alt="Profile" class="rounded" style="width: 100px; height: 100px; object-fit: cover;">
+                                </div>
+                                <div class="col">
+                                    <h6 class="mb-1" id="exportCardCharacterName"></h6>
+                                    <small class="text-muted" id="exportCardImageStatus"></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Warning if no profile image -->
+                    <div class="alert alert-warning mb-3" id="exportNoImageWarning" style="display: none;">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div>
+                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                <strong>No Profile Image Set</strong>
+                                <p class="mb-0 small mt-1">Character cards require a profile image. Please upload one to continue.</p>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-warning" id="exportModalUploadBtn">
+                                <i class="bi bi-upload me-1"></i>Upload Image
+                            </button>
+                        </div>
+                    </div>
+                    <input type="file" id="exportModalImageInput" accept=".png,.jpg,.jpeg,.webp" style="display: none;">
+                    
+                    <div id="exportOptionsSection">
+                        <div class="mb-3">
+                            <label class="form-label">Export Options</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="exportIncludeVoice" checked>
+                                <label class="form-check-label" for="exportIncludeVoice">
+                                    Include Voice Configuration
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="exportIncludeWorkflows" checked>
+                                <label class="form-check-label" for="exportIncludeWorkflows">
+                                    Include Workflow Preferences
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="exportVoiceSampleUrl" class="form-label">Voice Sample URL (Optional)</label>
+                            <input type="url" class="form-control" id="exportVoiceSampleUrl" 
+                                   placeholder="https://example.com/voice-sample.wav">
+                            <small class="text-muted form-text">
+                                Optional URL to a voice sample file for voice cloning
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div id="exportCardProgress" style="display: none;">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary mb-2" role="status">
+                                <span class="visually-hidden">Exporting...</span>
+                            </div>
+                            <p class="small">Generating character card...</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmExportCardBtn">
+                        <i class="bi bi-download me-1"></i>Export Card
                     </button>
                 </div>
             </div>
@@ -2596,7 +2857,8 @@
     <script src="js/themes.js?v=2"></script>
     <script src="js/api.js?v=10"></script>
     <script src="js/ui.js?v=8"></script>
-    <script src="js/character-management.js?v=4"></script>
+    <script src="js/character-management.js?v=7"></script>
+    <script src="js/character-cards.js?v=12"></script>
     <script src="js/workflow-management.js?v=2"></script>
     <script src="js/memory-panel.js?v=2"></script>
     <script src="js/pending-memories-panel.js?v=1"></script>

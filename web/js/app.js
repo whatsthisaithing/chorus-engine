@@ -53,6 +53,11 @@ window.App = {
             console.error('Failed to initialize:', error);
             UI.showToast('Failed to connect to backend. Make sure the server is running.', 'error');
         }
+        
+        // Initialize character management
+        if (window.CharacterManagement) {
+            CharacterManagement.init();
+        }
     },
     
     /**
@@ -1102,7 +1107,15 @@ window.App = {
         }
         
         // Update avatar
-        document.getElementById('modalProfileAvatar').src = character.profile_image_url || '/character_images/default.svg';
+        const modalAvatar = document.getElementById('modalProfileAvatar');
+        modalAvatar.src = character.profile_image_url || '/character_images/default.svg';
+        
+        // Apply focal point if set
+        if (character.profile_image_focus && character.profile_image_focus.x !== undefined && character.profile_image_focus.y !== undefined) {
+            modalAvatar.style.objectPosition = `${character.profile_image_focus.x}% ${character.profile_image_focus.y}%`;
+        } else {
+            modalAvatar.style.objectPosition = '50% 50%';
+        }
         
         // Update basic info
         document.getElementById('modalProfileName').textContent = character.name;

@@ -46,8 +46,9 @@ config/system.yaml
 
 # User data directory (database, images, models, etc.) - NO user data should be committed
 /data/
-# Exception: Allow default character image
+# Exception: Allow default character images
 !/data/character_images/default.svg
+!/data/character_images/default.png
 
 
 # Note: chorus_engine/data/ contains application data (curated_models.json, etc.)

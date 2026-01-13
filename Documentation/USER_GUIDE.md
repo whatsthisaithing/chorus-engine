@@ -8,14 +8,15 @@ This guide covers how to use Chorus Engine's features as an end user.
 
 1. [Getting Started](#getting-started)
 2. [Model Management](#model-management)
-3. [Text Conversations](#text-conversations)
-4. [Image Generation](#image-generation)
-5. [Scene Capture & Image Gallery](#scene-capture--image-gallery)
-6. [Voice Generation (TTS)](#voice-generation-tts)
-7. [Memory Management](#memory-management)
-8. [Ambient Activities](#ambient-activities)
-9. [Workflows](#workflows)
-10. [Troubleshooting](#troubleshooting)
+3. [Character Cards](#character-cards)
+4. [Text Conversations](#text-conversations)
+5. [Image Generation](#image-generation)
+6. [Scene Capture & Image Gallery](#scene-capture--image-gallery)
+7. [Voice Generation (TTS)](#voice-generation-tts)
+8. [Memory Management](#memory-management)
+9. [Ambient Activities](#ambient-activities)
+10. [Workflows](#workflows)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -93,6 +94,152 @@ Performance varies significantly across different models:
 3. **If they don't match**: You'll get empty responses, context overflow errors, or underutilized context
 
 See [GETTING_STARTED.md](../GETTING_STARTED.md#critical-lm-studio-context-window-configuration) for detailed setup instructions.
+
+---
+
+## Character Cards
+
+### Overview
+
+**Character cards** are portable character configuration files embedded as base64-encoded metadata in PNG images. This feature enables easy sharing, distribution, and importing of characters across platforms.
+
+**Key Features**:
+- Import/export characters as PNG files with embedded metadata
+- SillyTavern V2 format compatibility for cross-platform character sharing
+- Profile image management with focal point selection
+- Automatic core memory loading on import
+
+### Exporting a Character Card
+
+Export any character as a shareable PNG card:
+
+1. **Open Character Editor**: Click gear icon (⚙️) → Select character → Click gear icon again
+2. **Click "Export as Card"** button in the character editor
+3. **Configure Export Options**:
+   - Character is pre-selected
+   - ✓ Include voice configuration (optional)
+   - ✓ Include workflow preferences (optional)
+   - Voice sample URL (optional - for referencing external voice samples)
+4. **Preview Metadata**: Expand the metadata preview to see what will be exported
+5. **Click "Export"**: Downloads a PNG file named `CharacterName.card.png`
+
+**What Gets Exported**:
+- Character identity (name, role, system prompt, traits)
+- Personality configuration and response style
+- Core memories
+- Profile image
+- Voice settings (if enabled)
+- Workflow preferences (if enabled)
+- Metadata (creator, version, tags)
+
+**What Doesn't Get Exported** (system-specific):
+- Conversation history
+- Memory store data (except core memories)
+- LLM model preferences
+- Absolute file paths
+
+### Importing a Character Card
+
+Import characters from PNG cards (Chorus Engine or SillyTavern format):
+
+1. **Click "Import Character Card"** button on the character selection page
+2. **Select PNG File**: 
+   - Use the file picker, or
+   - Drag and drop a PNG file onto the import area
+3. **Preview the Card**:
+   - Review character name, role, and description
+   - See profile image preview
+   - Check format (Chorus Engine or SillyTavern)
+   - View immersion level, role type, and capabilities
+   - See personality traits and core memories count
+4. **Click "Import"** to confirm, or "Cancel" to abort
+
+**Import Process**:
+- Character name collisions are handled automatically (appends suffix if needed)
+- Profile image is extracted and saved to `data/character_images/`
+- Core memories are automatically loaded into the vector store
+- Character becomes immediately available for use
+
+**SillyTavern Compatibility**:
+
+Chorus Engine can import SillyTavern V2 character cards with intelligent field mapping:
+
+| SillyTavern Field | Chorus Engine Mapping |
+|-------------------|-----------------------|
+| `name` | `name` |
+| `description` | `role` |
+| `personality` | Extracted into `personality_traits` |
+| `description` + `personality` | Combined into `system_prompt` |
+| `scenario` | Added to `system_prompt` context |
+| `first_mes` | Not used (Chorus generates greetings) |
+| `mes_example` | Not used (Chorus learns from conversation) |
+| `creator` | Preserved in metadata |
+| `tags` | Preserved in metadata |
+
+**Intelligent Defaults**:
+- `immersion_level` set to `"unbounded"` (SillyTavern characters typically have fewer boundaries)
+- `role_type` set to `"companion"` (most common use case)
+- Personality traits extracted via regex patterns (20+ common traits detected)
+- Description paragraphs converted to core memories
+
+### Profile Image Management
+
+#### Uploading a Profile Picture
+
+1. **Open Character Editor**: Select character and click gear icon
+2. **Profile Image Section**: Find the "Profile Image" field
+3. **Click Upload Button** (📤 icon next to the profile image field)
+4. **Select Image**: Choose PNG, JPG, JPEG, or WEBP file (max 10MB)
+5. **Image Processing**: 
+   - Image is automatically converted to PNG
+   - Saved as `{character_id}.png` in `data/character_images/`
+   - Filename is automatically updated in the character configuration
+
+#### Setting Image Focal Point
+
+For non-square images displayed in circular avatars, set a focal point to ensure important parts (like faces) are centered:
+
+1. **Upload or Select Profile Image** first
+2. **Click Focal Point Button** (🎯 bullseye icon next to the upload button)
+3. **Interactive Modal Opens**:
+   - Click anywhere on the character image
+   - A gold marker shows your selected focal point
+   - Coordinates update in real-time
+4. **Click "Save Focus Point"** to apply
+5. **Result**: 
+   - Focal point coordinates saved to character YAML
+   - Sidebar avatar and profile modal update immediately
+   - Non-destructive (original image unchanged, CSS handles display)
+
+**Focal Point Tips**:
+- Click on the character's face or most important feature
+- Default is center (50%, 50%) if not set
+- Can be changed anytime without re-uploading the image
+- Works with any image aspect ratio
+
+### Character Card Troubleshooting
+
+**Import Fails**:
+- Ensure file is a valid PNG image
+- Check file size is under 10MB
+- Verify card has embedded metadata (not all PNG files are character cards)
+
+**SillyTavern Card Looks Different**:
+- Expected - Chorus Engine uses different character structure
+- System prompt combines multiple SillyTavern fields
+- Core memories created from character description
+- Adjust character config after import if needed
+
+**Profile Image Not Showing**:
+- Check `data/character_images/` directory exists
+- Verify file permissions
+- Check browser console for 404 errors
+- Reload character list after upload
+
+**Focal Point Not Applied**:
+- Ensure you clicked "Save Focus Point" in the modal
+- Refresh the page to reload character data
+- Check character YAML contains `profile_image_focus` field
 
 ---
 

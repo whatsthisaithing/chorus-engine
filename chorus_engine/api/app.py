@@ -894,6 +894,7 @@ async def list_characters():
                 "immersion_level": char.immersion_level,
                 "profile_image": char.profile_image,
                 "profile_image_url": char.profile_image_url,
+                "profile_image_focus": char.profile_image_focus,
                 "system_prompt": char.system_prompt,
                 "visual_identity": {
                     "default_workflow": char.visual_identity.default_workflow if char.visual_identity else None,
@@ -1382,6 +1383,257 @@ async def import_character(file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to import character: {e}")
+
+
+# =============================================================================
+# Character Card Endpoints
+# =============================================================================
+
+@app.post("/characters/cards/export")
+async def export_character_card(
+    character_name: str = Form(...),
+    include_voice: bool = Form(True),
+    include_workflows: bool = Form(True),
+    voice_sample_url: Optional[str] = Form(None)
+):
+    """
+    Export a character as a PNG character card.
+    
+    Character cards are portable PNG images with embedded YAML metadata.
+    Compatible with SillyTavern import.
+    """
+    try:
+        from chorus_engine.services.character_cards import CharacterCardExporter
+        
+        # Get paths from system config
+        config_loader = ConfigLoader()
+        characters_dir = config_loader.config_dir / "characters"
+        images_dir = Path("data/character_images")
+        default_avatar = images_dir / "default.png"
+        
+        # Create exporter
+        exporter = CharacterCardExporter(
+            characters_dir=str(characters_dir),
+            images_dir=str(images_dir),
+            default_avatar_path=str(default_avatar)
+        )
+        
+        # Export card
+        card_png = exporter.export(
+            character_name=character_name,
+            include_voice=include_voice,
+            include_workflows=include_workflows,
+            voice_sample_url=voice_sample_url
+        )
+        
+        # Return PNG file
+        filename = f"{character_name}.card.png"
+        return Response(
+            content=card_png,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to export character card: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to export character card: {e}")
+
+
+@app.post("/characters/cards/import/preview")
+async def preview_character_card_import(file: UploadFile = File(...)):
+    """
+    Preview a character card import without saving.
+    
+    Supports Chorus Engine and SillyTavern formats.
+    Returns character data for review before confirming import.
+    """
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be a PNG image")
+    
+    try:
+        from chorus_engine.services.character_cards import CharacterCardImporter
+        
+        # Read PNG data
+        png_data = await file.read()
+        
+        # Get paths
+        config_loader = ConfigLoader()
+        characters_dir = config_loader.config_dir / "characters"
+        images_dir = Path("data/character_images")
+        
+        # Create importer
+        importer = CharacterCardImporter(
+            characters_dir=str(characters_dir),
+            images_dir=str(images_dir)
+        )
+        
+        # Import card (preview only)
+        result = importer.import_card(png_data)
+        
+        # Store preview data in app state for confirmation
+        import uuid
+        preview_id = str(uuid.uuid4())
+        app_state.setdefault("card_previews", {})[preview_id] = {
+            "character_data": result.character_data,
+            "profile_image": result.profile_image
+        }
+        
+        # Return preview with full character data for display
+        return {
+            "preview_id": preview_id,
+            "format": result.format,
+            "character_data": result.character_data,  # Full data for preview
+            "warnings": result.warnings
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to preview character card import: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to preview character card: {e}")
+
+
+@app.post("/characters/cards/import/confirm")
+async def confirm_character_card_import(request: dict, db: Session = Depends(get_db)):
+    """
+    Confirm and save a previewed character card import.
+    
+    Expects JSON body with:
+    - preview_id: str
+    - custom_name: Optional[str]
+    """
+    preview_id = request.get("preview_id")
+    custom_name = request.get("custom_name")
+    
+    if not preview_id:
+        raise HTTPException(status_code=400, detail="preview_id is required")
+    
+    try:
+        from chorus_engine.services.character_cards import CharacterCardImporter
+        
+        # Get preview data
+        preview_data = app_state.get("card_previews", {}).get(preview_id)
+        if not preview_data:
+            raise HTTPException(status_code=404, detail="Preview not found or expired")
+        
+        # Get paths
+        config_loader = ConfigLoader()
+        characters_dir = config_loader.config_dir / "characters"
+        images_dir = Path("data/character_images")
+        
+        # Create importer
+        importer = CharacterCardImporter(
+            characters_dir=str(characters_dir),
+            images_dir=str(images_dir)
+        )
+        
+        # Save character
+        character_filename = importer.save_character(
+            character_data=preview_data["character_data"],
+            profile_image=preview_data["profile_image"],
+            custom_name=custom_name
+        )
+        
+        # Clean up preview
+        app_state["card_previews"].pop(preview_id, None)
+        
+        # Reload characters
+        app_state["characters"] = config_loader.load_all_characters()
+        
+        # Load core memories into database if character has any
+        if preview_data["character_data"].get("core_memories"):
+            logger.info(f"Loading core memories for imported character: {character_filename}")
+            core_loader = CoreMemoryLoader(db)
+            try:
+                loaded_count = core_loader.load_character_core_memories(character_filename)
+                logger.info(f"Loaded {loaded_count} core memories for {character_filename}")
+            except Exception as e:
+                logger.warning(f"Failed to load core memories: {e}")
+                # Don't fail the entire import if core memory loading fails
+        
+        # Build file path
+        char_path = characters_dir / f"{character_filename}.yaml"
+        
+        return {
+            "success": True,
+            "character_id": character_filename,
+            "character_name": character_filename,
+            "file_path": str(char_path)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to confirm character card import: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to import character: {e}")
+
+
+@app.post("/characters/{character_id}/upload-profile-image")
+async def upload_character_profile_image(
+    character_id: str,
+    file: UploadFile = File(...)
+):
+    """
+    Upload a custom profile image for a character.
+    
+    Supports PNG, JPG, JPEG, WEBP formats.
+    """
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        # Read image data
+        image_data = await file.read()
+        
+        # Save image
+        images_dir = Path("data/character_images")
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        image_path = images_dir / f"{character_id}.png"
+        
+        # Convert to PNG if needed using PIL
+        from PIL import Image
+        from io import BytesIO
+        
+        img = Image.open(BytesIO(image_data))
+        img.save(str(image_path), format='PNG')
+        
+        logger.info(f"Uploaded profile image for character '{character_id}'")
+        
+        # Update character config in memory
+        characters = app_state["characters"]
+        character = characters.get(character_id)
+        
+        if character:
+            character.profile_image = f"{character_id}.png"
+        
+        # Update the YAML file
+        character_yaml_path = Path("characters") / f"{character_id}.yaml"
+        if character_yaml_path.exists():
+            import yaml
+            with open(character_yaml_path, 'r', encoding='utf-8') as f:
+                char_data = yaml.safe_load(f)
+            
+            char_data['profile_image'] = f"{character_id}.png"
+            
+            with open(character_yaml_path, 'w', encoding='utf-8') as f:
+                yaml.dump(char_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            
+            logger.info(f"Updated profile image in YAML for {character_id}")
+        
+        return {
+            "success": True,
+            "filename": f"{character_id}.png",
+            "image_path": str(image_path)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to upload profile image: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to upload profile image: {e}")
 
 
 @app.get("/config")

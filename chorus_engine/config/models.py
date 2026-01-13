@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -436,6 +436,7 @@ class CharacterConfig(BaseModel):
     
     # Profile customization
     profile_image: Optional[str] = Field(default=None, description="Filename of profile image in data/character_images/")
+    profile_image_focus: Optional[Dict[str, float]] = Field(default=None, description="Focal point for profile image cropping (x and y percentages)")
     
     # Metadata
     created_at: Optional[datetime] = None

@@ -183,10 +183,12 @@ async def list_curated_models(
 
 @router.get("/models/downloaded", response_model=List[DownloadedModelResponse])
 async def list_downloaded_models(db: Session = Depends(get_db)):
-    """List all downloaded models from database."""
+    """List all downloaded models from database (excluding custom HF models)."""
     try:
-        # Query from database
-        models = db.query(DownloadedModel).order_by(DownloadedModel.downloaded_at.desc()).all()
+        # Query from database, excluding custom_hf which are listed separately
+        models = db.query(DownloadedModel).filter(
+            DownloadedModel.source != 'custom_hf'
+        ).order_by(DownloadedModel.downloaded_at.desc()).all()
         
         # Convert to response models
         response = []

@@ -9,11 +9,16 @@ window.CharacterManagement = {
     currentCharacter: null,
     isEditMode: false,
     llmProvider: 'ollama', // Default, will be updated when config loads
+    initialized: false, // Track if already initialized
     
     /**
      * Initialize character management
      */
     init() {
+        if (this.initialized) {
+            return; // Already initialized, skip
+        }
+        this.initialized = true;
         this.setupEventListeners();
         this.loadDownloadedModels();
     },
@@ -53,6 +58,21 @@ window.CharacterManagement = {
         // Add core memory button
         document.getElementById('addCoreMemoryBtn').addEventListener('click', () => {
             this.addCoreMemoryRow();
+        });
+        
+        // Image focus point
+        document.getElementById('setImageFocusBtn')?.addEventListener('click', () => {
+            this.openImageFocusModal();
+        });
+        
+        document.getElementById('focusPointContainer')?.addEventListener('click', (e) => {
+            if (e.target.id === 'focusPointImage') {
+                this.handleFocusPointClick(e);
+            }
+        });
+        
+        document.getElementById('saveFocusPointBtn')?.addEventListener('click', () => {
+            this.saveFocusPoint();
         });
         
         // Custom system prompt checkbox - toggle immersion warning
@@ -330,6 +350,12 @@ window.CharacterManagement = {
         document.getElementById('charTraits').value = character.personality_traits ? character.personality_traits.join(', ') : '';
         document.getElementById('charProfileImage').value = character.profile_image || '';
         document.getElementById('charColorScheme').value = character.ui_preferences?.color_scheme || '';
+        
+        // Image focus point
+        const focusX = character.profile_image_focus?.x ?? 50;
+        const focusY = character.profile_image_focus?.y ?? 50;
+        document.getElementById('charImageFocusX').value = focusX;
+        document.getElementById('charImageFocusY').value = focusY;
         
         // Preferred LLM
         const preferredModel = character.preferred_llm?.model || '';
@@ -663,6 +689,13 @@ window.CharacterManagement = {
             characterData.profile_image = profileImage;
         }
         
+        // Image focus point
+        const focusX = parseFloat(document.getElementById('charImageFocusX').value);
+        const focusY = parseFloat(document.getElementById('charImageFocusY').value);
+        if (!isNaN(focusX) && !isNaN(focusY)) {
+            characterData.profile_image_focus = { x: focusX, y: focusY };
+        }
+        
         // Document analysis advanced options
         const docMaxDocs = document.getElementById('charDocMaxDocuments').value.trim();
         if (docMaxDocs) {
@@ -909,12 +942,98 @@ window.CharacterManagement = {
     hideFormStatus() {
         const statusEl = document.getElementById('characterFormStatus');
         statusEl.classList.add('d-none');
+    },
+    
+    /**
+     * Open image focus point modal
+     */
+    openImageFocusModal() {
+        const profileImage = document.getElementById('charProfileImage').value.trim();
+        if (!profileImage) {
+            UI.showToast('Please set a profile image first', 'warning');
+            return;
+        }
+        
+        const imagePath = `/character_images/${profileImage}`;
+        const img = document.getElementById('focusPointImage');
+        const marker = document.getElementById('focusPointMarker');
+        
+        // Load image
+        img.src = imagePath;
+        img.onload = () => {
+            // Get current focus point values
+            const focusX = parseFloat(document.getElementById('charImageFocusX').value) || 50;
+            const focusY = parseFloat(document.getElementById('charImageFocusY').value) || 50;
+            
+            // Show marker at current position
+            marker.style.left = `${focusX}%`;
+            marker.style.top = `${focusY}%`;
+            marker.style.display = 'block';
+            document.getElementById('focusPointCoords').textContent = `Focus Point: ${focusX.toFixed(1)}%, ${focusY.toFixed(1)}%`;
+        };
+        
+        img.onerror = () => {
+            UI.showToast('Failed to load image', 'error');
+        };
+        
+        // Open modal
+        const modal = new bootstrap.Modal(document.getElementById('imageFocusModal'));
+        modal.show();
+    },
+    
+    /**
+     * Handle click on focus point image
+     */
+    handleFocusPointClick(event) {
+        const container = document.getElementById('focusPointContainer');
+        const img = document.getElementById('focusPointImage');
+        const rect = img.getBoundingClientRect();
+        
+        // Calculate click position as percentage relative to the image
+        const x = ((event.clientX - rect.left) / rect.width) * 100;
+        const y = ((event.clientY - rect.top) / rect.height) * 100;
+        
+        // Clamp values to 0-100
+        const clampedX = Math.max(0, Math.min(100, x));
+        const clampedY = Math.max(0, Math.min(100, y));
+        
+        // Update marker position
+        const marker = document.getElementById('focusPointMarker');
+        marker.style.left = `${clampedX}%`;
+        marker.style.top = `${clampedY}%`;
+        marker.style.display = 'block';
+        
+        // Update display
+        document.getElementById('focusPointCoords').textContent = `Focus Point: ${clampedX.toFixed(1)}%, ${clampedY.toFixed(1)}%`;
+        
+        // Store values temporarily
+        img.dataset.focusX = clampedX;
+        img.dataset.focusY = clampedY;
+    },
+    
+    /**
+     * Save focal point selection
+     */
+    saveFocusPoint() {
+        const img = document.getElementById('focusPointImage');
+        const focusX = parseFloat(img.dataset.focusX) || 50;
+        const focusY = parseFloat(img.dataset.focusY) || 50;
+        
+        // Update hidden fields
+        document.getElementById('charImageFocusX').value = focusX.toFixed(1);
+        document.getElementById('charImageFocusY').value = focusY.toFixed(1);
+        
+        // Close modal
+        const modalEl = document.getElementById('imageFocusModal');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) {
+            modal.hide();
+        } else {
+            // If modal instance doesn't exist, create and hide it
+            const newModal = new bootstrap.Modal(modalEl);
+            newModal.hide();
+        }
+        
+        UI.showToast('Image focus point set', 'success');
     }
 };
-
-// Initialize when DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => CharacterManagement.init());
-} else {
-    CharacterManagement.init();
-}
