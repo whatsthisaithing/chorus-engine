@@ -295,6 +295,7 @@ window.CharacterCards = {
         // Show SillyTavern import indicator if present
         if (charData.extensions?.sillytavern_import) {
             personalityHtml += `<div class="mt-3 alert alert-info small"><i class="bi bi-info-circle me-2"></i><strong>SillyTavern Import:</strong> Character data has been automatically adapted to Chorus Engine format. Original fields preserved in extensions.</div>`;
+            personalityHtml += `<div class="mt-2 alert alert-secondary small"><i class="bi bi-code-square me-2"></i><strong>Macro Processing:</strong> Any SillyTavern macros ({{char}}, {{user}}, etc.) will be processed when the character is loaded, allowing names and other details to stay up-to-date with changes.</div>`;
         }
         
         // Legacy traits support (if present)

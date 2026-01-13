@@ -389,8 +389,8 @@ class CharacterConfig(BaseModel):
     
     # Required fields
     id: str = Field(min_length=1, max_length=50, pattern=r'^[a-z0-9_-]+$')
-    name: str = Field(min_length=1, max_length=100)
-    role: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1)
+    role: str = Field(min_length=1)
     system_prompt: str = Field(min_length=10)
     
     # Character type/role classification (Phase 1-7: Document Analysis)

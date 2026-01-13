@@ -102,6 +102,12 @@ class CharacterCardImporter:
         # Use custom name if provided, otherwise use card name
         character_name = custom_name or character_data.get("name", "Unnamed")
         
+        # Note: Macros are NOT processed here - they're stored in YAML as-is
+        # and processed at character load time. This allows:
+        # - Name changes to automatically update {{char}} references
+        # - Users to edit/add macros in YAML files
+        # - Flexibility in macro handling as system evolves
+        
         # Sanitize filename
         safe_name = self._sanitize_filename(character_name)
         

@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from pydantic import ValidationError
 
 from .models import SystemConfig, CharacterConfig
+from ..services.character_cards.macro_processor import process_character_card_macros
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,12 @@ class ConfigLoader:
                     f"config has id '{data['id']}'"
                 )
             
-            config = CharacterConfig(**data)
+            # Process macros in character data at load time
+            # This allows name changes and manual YAML edits to work correctly
+            character_name = data.get('name', character_id)
+            processed_data = process_character_card_macros(data, character_name)
+            
+            config = CharacterConfig(**processed_data)
             logger.info(f"Loaded character '{config.name}' from {file_path}")
             return config
             
