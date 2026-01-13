@@ -259,4 +259,16 @@ def process_character_card_macros(character_data: dict, character_name: str) -> 
                     for item in processed_data[field]
                 ]
     
+    # Process core_memories (list of dicts with 'content' field)
+    if 'core_memories' in processed_data and processed_data['core_memories']:
+        processed_memories = []
+        for memory in processed_data['core_memories']:
+            if isinstance(memory, dict) and 'content' in memory:
+                processed_memory = memory.copy()
+                processed_memory['content'] = processor.process(memory['content'])
+                processed_memories.append(processed_memory)
+            else:
+                processed_memories.append(memory)
+        processed_data['core_memories'] = processed_memories
+    
     return processed_data
