@@ -668,6 +668,20 @@ class PromptAssemblyService:
         if not result and messages:
             result = [messages[-1]]
         
+        # CRITICAL: Ensure history ends with a user message for proper LLM response
+        # If last message is assistant, the model will immediately output a stop token
+        if result and result[-1]["role"] != "user":
+            logger.warning(
+                f"History truncation resulted in assistant as last message. "
+                f"Removing trailing assistant messages to fix. "
+                f"History length: {len(result)} -> ",
+                extra={"end": ""}
+            )
+            # Remove trailing assistant messages until we find a user message or run out
+            while result and result[-1]["role"] != "user":
+                result.pop()
+            logger.warning(f"{len(result)}", extra={"end": "\n"})
+        
         return result
     
     def get_token_budget_summary(self) -> Dict[str, Any]:

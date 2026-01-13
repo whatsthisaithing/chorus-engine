@@ -134,12 +134,8 @@ class OllamaLLMClient(BaseLLMClient):
             else:
                 payload["options"]["num_predict"] = self.max_tokens
             
-            # Debug logging to match LM Studio logging
-            logger.info(f"Ollama generation request:")
-            logger.info(f"  Model: {payload['model']}")
-            logger.info(f"  Temperature: {payload['options']['temperature']}")
-            logger.info(f"  Max tokens (num_predict): {payload['options']['num_predict']}")
-            logger.info(f"  Message count: {len(messages)}")
+            # Log basic request info
+            logger.debug(f"Ollama request: model={payload['model']}, temp={payload['options']['temperature']}, max_tokens={payload['options']['num_predict']}, messages={len(messages)}")
             
             response = await self.client.post(
                 f"{self.base_url}/api/chat",
@@ -153,7 +149,7 @@ class OllamaLLMClient(BaseLLMClient):
             # Use the model from response to confirm what Ollama actually used
             used_model = data.get("model", model if model is not None else self.model)
             
-            logger.info(f"Ollama response: {len(content)} chars, finish_reason={data.get('done_reason')}")
+            logger.debug(f"Ollama response: {len(content)} chars, reason={data.get('done_reason')}")
             
             return LLMResponse(
                 content=content,
@@ -275,6 +271,8 @@ class OllamaLLMClient(BaseLLMClient):
                 else:
                     payload["options"]["num_predict"] = self.max_tokens
             
+            logger.debug(f"Ollama stream: model={payload['model']}, temp={payload.get('options', {}).get('temperature', self.temperature)}, messages={len(messages)}")
+            
             async with self.client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
@@ -282,16 +280,30 @@ class OllamaLLMClient(BaseLLMClient):
             ) as response:
                 response.raise_for_status()
                 
+                chunk_count = 0
                 async for line in response.aiter_lines():
                     if line.strip():
                         try:
                             data = json.loads(line)
+                            
+                            # Log any errors from Ollama
+                            if "error" in data:
+                                logger.error(f"Ollama error: {data['error']}")
+                            
                             if "message" in data:
                                 content = data["message"].get("content", "")
                                 if content:
+                                    chunk_count += 1
                                     yield content
+                            
+                            # Warn if stream ended with no content
+                            if data.get("done") and chunk_count == 0:
+                                logger.warning(f"Ollama returned zero content, reason: {data.get('done_reason', 'unknown')}")
+                                        
                         except json.JSONDecodeError:
                             continue
+                
+                logger.debug(f"Ollama stream completed: {chunk_count} chunks")
                             
         except httpx.HTTPError as e:
             raise LLMError(f"HTTP error during LLM streaming: {e}")

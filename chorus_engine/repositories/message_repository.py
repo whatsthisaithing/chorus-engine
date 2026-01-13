@@ -67,19 +67,23 @@ class MessageRepository:
         Args:
             thread_id: Thread ID
             skip: Number to skip (pagination)
-            limit: Maximum number to return
+            limit: Maximum number to return (gets most recent N messages)
         
         Returns:
-            List of messages, ordered by creation time
+            List of messages, ordered by creation time (oldest first)
         """
-        return (
+        # Get the most recent N messages by ordering DESC, limiting, then reversing
+        messages = (
             self.db.query(Message)
             .filter(Message.thread_id == thread_id)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
         )
+        
+        # Reverse to return in chronological order (oldest first)
+        return list(reversed(messages))
     
     def get_thread_history(self, thread_id: str, limit: int = None) -> List[Dict[str, str]]:
         """

@@ -3529,6 +3529,10 @@ async def send_message_stream(
     
     # Use PromptAssemblyService for memory-aware prompt building
     try:
+        # CRITICAL: Expire session cache to ensure we see the just-created user message
+        # Without this, the assembler's query may use stale cached data
+        db.expire_all()
+        
         # Get document budget ratio (character override or system default)
         doc_config = app_state["system_config"].document_analysis
         doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)

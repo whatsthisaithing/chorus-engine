@@ -154,11 +154,11 @@ class BackgroundMemoryExtractor:
                 f"for character {task.character_name}"
             )
             
-            # Log input messages
+            # Log input message metadata (not content for privacy)
             for msg in task.messages:
                 extraction_log["input_messages"].append({
                     "role": str(msg.role),
-                    "content": msg.content,
+                    "content_length": len(msg.content),
                     "id": msg.id if hasattr(msg, 'id') else None
                 })
             
@@ -168,7 +168,11 @@ class BackgroundMemoryExtractor:
                 task.character_name,
                 task.character
             )
-            extraction_log["prompt"] = f"SYSTEM: {system_prompt}\n\n{user_content}"
+            # Log prompt metadata only (not content for privacy)
+            extraction_log["prompt_length"] = {
+                "system": len(system_prompt) if system_prompt else 0,
+                "user": len(user_content) if user_content else 0
+            }
             
             if not system_prompt or not user_content:
                 logger.info("[BACKGROUND MEMORY] Empty prompt after filtering - skipping LLM call")
@@ -195,7 +199,8 @@ class BackgroundMemoryExtractor:
             
             # Extract text from LLMResponse object
             response_text = response.content if hasattr(response, 'content') else str(response)
-            extraction_log["llm_response"] = response_text
+            # Log response length only (not content for privacy)
+            extraction_log["llm_response_length"] = len(response_text)
             
             logger.info(f"[BACKGROUND MEMORY] LLM response ({len(response_text)} chars)")
             
