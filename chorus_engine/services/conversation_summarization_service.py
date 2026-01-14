@@ -30,19 +30,25 @@ class ConversationSummarizationService:
     4. Preserve user messages with extracted memories
     5. Discard pure filler (ok, yeah, thanks, etc.)
     6. Summarize everything else in groups
+    
+    Thresholds are dynamically calculated based on model context window:
+    - TOKEN_THRESHOLD: 75% of context window
+    - TARGET_TOKENS: 75% of threshold (to allow room for compression)
+    - RECENT_MESSAGE_WINDOW: ~20% of threshold in tokens (~50 tokens/msg avg)
     """
     
-    # Token thresholds
-    TOKEN_THRESHOLD = 20000  # Start summarizing at 20K tokens
-    TARGET_TOKENS = 15000    # Target after summarization
-    
     # Preservation strategy
-    RECENT_MESSAGE_WINDOW = 30  # Always preserve last 30 messages
     PRESERVE_EMOTIONAL_THRESHOLD = 0.7  # Preserve if emotional_weight >= 0.7
+    
+    # Recent window bounds
+    MIN_RECENT_MESSAGES = 10   # Minimum recent messages to preserve (even tiny models)
+    MAX_RECENT_MESSAGES = 100  # Maximum recent messages (practical limit)
+    AVG_TOKENS_PER_MESSAGE = 50  # Average message length for window calculation
     
     def __init__(
         self,
         memory_repository: MemoryRepository,
+        context_window: int,
         token_counter: Optional[TokenCounter] = None
     ):
         """
@@ -50,10 +56,43 @@ class ConversationSummarizationService:
         
         Args:
             memory_repository: For checking if messages have extracted memories
+            context_window: Model's context window size in tokens
             token_counter: For calculating conversation tokens (optional, will create if None)
         """
         self.memory_repository = memory_repository
         self.token_counter = token_counter or TokenCounter()
+        
+        # Calculate dynamic thresholds based on context window
+        # Start summarizing at 75% of context window
+        self.token_threshold = int(context_window * 0.75)
+        # Target 75% of threshold after compression (56.25% of context window)
+        self.target_tokens = int(self.token_threshold * 0.75)
+        
+        # Calculate recent message window: ~20% of threshold in tokens
+        # This scales naturally with model capability
+        recent_token_budget = int(self.token_threshold * 0.20)
+        self.recent_message_window = int(recent_token_budget / self.AVG_TOKENS_PER_MESSAGE)
+        
+        # Apply bounds
+        self.recent_message_window = max(
+            self.MIN_RECENT_MESSAGES,
+            min(self.recent_message_window, self.MAX_RECENT_MESSAGES)
+        )
+    
+    @property
+    def TOKEN_THRESHOLD(self) -> int:
+        """Get the current token threshold (for backwards compatibility)."""
+        return self.token_threshold
+    
+    @property
+    def TARGET_TOKENS(self) -> int:
+        """Get the current target tokens (for backwards compatibility)."""
+        return self.target_tokens
+    
+    @property
+    def RECENT_MESSAGE_WINDOW(self) -> int:
+        """Get the current recent message window (for backwards compatibility)."""
+        return self.recent_message_window
     
     def should_summarize(self, conversation: Conversation) -> bool:
         """
@@ -111,7 +150,7 @@ class ConversationSummarizationService:
         discard = []
         
         # Get recent message window (always preserve)
-        recent_count = self.RECENT_MESSAGE_WINDOW
+        recent_count = self.recent_message_window
         recent_messages = set(msg.id for msg in messages[-recent_count:])
         
         logger.info(

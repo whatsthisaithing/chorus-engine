@@ -344,12 +344,23 @@ def _build_analysis_prompt(conversation, character):
 
 ### 4. Smart Summarization Service
 
-**Purpose**: Handle long conversations (>20K tokens) gracefully without losing important context.
+**Purpose**: Handle long conversations (>threshold) gracefully without losing important context.
+
+**Dynamic Thresholds** (Phase 8.1 - January 13, 2026):
+- **TOKEN_THRESHOLD**: 75% of model's context window (scales naturally with model capability)
+- **TARGET_TOKENS**: 56.25% of context window (75% of threshold)
+- **RECENT_MESSAGE_WINDOW**: 20% of threshold in tokens (~10-100 messages, bounded)
+
+**Scaling Examples**:
+- 8K model: 6,144 token threshold, 24 recent messages preserved
+- 32K model: 24,576 token threshold, 98 recent messages preserved  
+- 128K model: 96,000 token threshold, 100 recent messages preserved (capped)
+- 200K model: 150,000 token threshold, 100 recent messages preserved (capped)
 
 **Strategy - Selective Preservation**:
 ```python
 Preserve Full:
-- Last 30 messages (recent context)
+- Recent messages (dynamic: 10-100 messages based on model size)
 - First message (establishes context)
 - High emotional_weight messages (≥0.7)
 - Messages with extracted memories
@@ -362,18 +373,24 @@ Discard:
 - Pure filler ("ok", "yeah", "thanks")
 ```
 
-**Why This Works**:
-- Recent messages always available (natural conversation flow)
-- Emotional moments preserved (significant events matter)
-- Memories ensure user info retained (facts not lost)
-- Filler removal reduces noise
-- Token budget stays under limit
+**Why Dynamic Thresholds Work**:
+- Small models (4-8K): Summarize at 3-6K tokens, preserve 10-24 recent messages
+- Medium models (32K): Summarize at 24K tokens, preserve ~98 recent messages
+- Large models (128K+): Summarize at 96K tokens, preserve 100 recent messages (capped)
+- No artificial ceiling - scales with model capability
+- Fair to all model sizes and user hardware
 
-**Token Thresholds**:
-- Start summarizing: 20K tokens
-- Target after summarization: 15K tokens
-- Context window: 32K (typical)
-- Reserve: 30% for generation
+**Token Budget Management**:
+- Threshold: 75% of context window (when to start summarization)
+- Target: 56.25% of context window (goal after compression)
+- Reserve: 25% of context for new messages and generation
+- Recent window: 20% of threshold (scaled to model size)
+
+**Context Window Resolution**:
+1. Character's `preferred_llm.context_window` (if set)
+2. Otherwise, system `llm.context_window` (fallback)
+
+This allows per-character model selection with automatic threshold adjustment.
 
 ### 5. Greeting Context Service
 
@@ -481,33 +498,36 @@ boost = calculate_recency_boost(position)  # 1.0-1.2x
 - Automatically adapts to user rhythm
 - No configuration needed
 
-### 3. Summarization: Why 20K Threshold?
+### 3. Summarization: Why 75% Threshold?
 
-**Reasoning**:
-- Typical conversation: 50-100 messages × 50-100 tokens = 2.5-10K tokens
-- Active long conversation: 500+ messages = 20K+ tokens
-- Most models: 32K-128K context window
-- Reserve 30% for generation: ~10-40K available
-- System prompt + memories: ~5-10K
-- History budget: ~15K tokens
+**Reasoning** (Updated January 13, 2026 - Dynamic Thresholds):
+- Original design: Hardcoded 20K threshold for 32K context models
+- **New approach**: 75% of model's context window (dynamic)
+- Works for all model sizes: 4K to 200K contexts
+- Leaves 25% headroom for new messages before next summarization
 
-**At 20K tokens**:
-- User approaching practical limits
-- Conversation feels "long" 
-- Likely has natural compression opportunities (filler, repetition)
-- Still enough headroom to not be urgent
+**Scaling Benefits**:
+- 4K model → 3K threshold (appropriate for small model)
+- 8K model → 6K threshold (typical small model)
+- 32K model → 24K threshold (typical medium model)
+- 128K model → 96K threshold (large model gets full benefit)
+- 200K model → 150K threshold (no artificial ceiling)
 
-**Why Not Lower (e.g., 10K)?**
-- Most conversations don't need summarization
-- Adds latency to prompt assembly
-- Full history is better when it fits
-- 10K = ~200 messages, very manageable
+**Recent Message Window Scaling**:
+- Original design: Static 30 messages
+- **New approach**: ~20% of threshold in tokens (10-100 message range)
+- 8K model: ~24 recent messages preserved
+- 32K model: ~98 recent messages preserved
+- 128K+ model: 100 recent messages preserved (capped at practical limit)
 
-**Why Not Higher (e.g., 50K)?**
-- Many models don't support >32K context
-- Token costs increase
-- Prompt assembly latency increases
-- Better to compress earlier than wait for crisis
+**Why 75% (not 50% or 90%)?**
+**Why 75% (not 50% or 90%)?**
+- **Too low (50%)**: Summarizes unnecessarily early, adds latency
+- **Too high (90%)**: Not enough headroom, risks hitting context limit
+- **75% is optimal**: Good balance of utilization and safety margin
+- Typical conversation: Full history fits naturally
+- Long conversation: Compresses before becoming critical
+- Post-compression: 56.25% used, 43.75% free (plenty of room)
 
 ### 4. Analysis Triggers: Why Three Modes?
 
@@ -637,9 +657,15 @@ Summarized: "[Earlier: User discussed microservices architecture ideas]"
 - Summarization might trigger slightly early/late
 
 **Mitigations**:
-- Conservative thresholds (20K with 32K context = 37% buffer)
+- Conservative thresholds (75% with 25% buffer = safety margin)
+- Dynamic scaling: Each model gets appropriate threshold
 - Fallback: if prompt assembly fails, truncate and retry
 - Monitoring: log actual token counts vs. estimates
+
+**Why This Still Works**:
+- 25% buffer absorbs most estimation errors
+- Smaller models get proportionally smaller thresholds
+- Larger models have more absolute headroom (e.g., 32K tokens at 128K context)
 
 **Future Improvements**:
 - Use model-specific tokenizers
@@ -869,9 +895,13 @@ reserve_budget = available_tokens * 0.15
 - 500-message conversation: ~15000 prompt + ~2000 response = 17000 tokens
 - Scales linearly with conversation length
 
-**Summarization Savings**:
-- 20K token conversation → 15K with summarization = 25% savings
-- 50K token conversation → 15K with summarization = 70% savings
+**Summarization Savings** (varies by model):
+- 4K model: 3K conversation → 2.3K with summarization = 23% savings
+- 8K model: 6K conversation → 4.6K with summarization = 23% savings
+- 32K model: 24K conversation → 18K with summarization = 25% savings
+- 128K model: 96K conversation → 72K with summarization = 25% savings
+
+Consistent ~25% compression ratio across all model sizes.
 
 ### Storage
 
@@ -938,6 +968,139 @@ reserve_budget = available_tokens * 0.15
 
 ---
 
+## Phase 8.1: Dynamic Summarization Thresholds (January 13, 2026)
+
+### Motivation
+
+The original Phase 8 design used hardcoded thresholds:
+- `TOKEN_THRESHOLD = 20000` (start summarization)
+- `TARGET_TOKENS = 15000` (goal after compression)
+- `RECENT_MESSAGE_WINDOW = 30` (always preserve last 30 messages)
+
+**Problem**: These values were optimized for 32K context models but don't scale well:
+- **4K models**: 20K threshold exceeds context window!
+- **128K models**: 20K threshold is only 15.6% utilization (underutilized)
+- **200K models**: Fixed 30 message window is tiny (1.5% of context)
+
+### Solution: Context-Relative Thresholds
+
+All thresholds now scale dynamically based on the model's configured context window:
+
+**Token Threshold**: 75% of context window
+```python
+token_threshold = int(context_window * 0.75)
+```
+- 4K model → 3,072 tokens
+- 8K model → 6,144 tokens
+- 32K model → 24,576 tokens
+- 128K model → 96,000 tokens
+- 200K model → 150,000 tokens
+
+**Target Tokens**: 75% of threshold (56.25% of context)
+```python
+target_tokens = int(token_threshold * 0.75)
+```
+- Leaves ~43.75% free space after compression
+- Room for substantial conversation growth
+
+**Recent Message Window**: 20% of threshold in tokens (~50 tokens/msg avg)
+```python
+recent_token_budget = int(token_threshold * 0.20)
+recent_message_window = int(recent_token_budget / 50)
+recent_message_window = max(10, min(recent_message_window, 100))
+```
+- 4K model → 10 messages (minimum bound)
+- 8K model → 24 messages
+- 32K model → 98 messages
+- 128K model → 100 messages (maximum bound)
+- 200K model → 100 messages (maximum bound)
+
+### Benefits
+
+1. **Universal Scaling**: Works seamlessly from 4K to 200K contexts
+2. **Model-Appropriate**: Each model gets thresholds suited to its capability
+3. **Future-Proof**: Automatically adapts to new models
+4. **No Artificial Ceiling**: Local models = no API costs = no reason to limit
+5. **Fair Resource Usage**: Larger models naturally support longer conversations
+
+### Context Window Resolution
+
+The system correctly resolves context window using:
+1. Character's `preferred_llm.context_window` (if set)
+2. System's `llm.context_window` (fallback)
+
+Already implemented in `api/app.py`:
+```python
+context_window = character.preferred_llm.context_window or system_config.llm.context_window
+```
+
+### Implementation Details
+
+**Modified Files**:
+- `chorus_engine/services/conversation_summarization_service.py`
+  - Added `context_window` parameter to `__init__()`
+  - Calculate `token_threshold`, `target_tokens`, `recent_message_window` dynamically
+  - Added properties for backwards compatibility (`TOKEN_THRESHOLD`, etc.)
+
+- `chorus_engine/services/prompt_assembly.py`
+  - Pass `context_window` to `ConversationSummarizationService`
+
+**Backwards Compatibility**:
+- ✅ Properties maintain access pattern (`service.TOKEN_THRESHOLD`)
+- ✅ All existing code continues to work
+- ✅ No database changes required
+- ✅ No API changes required
+
+**Testing**:
+- ✅ Unit tests pass for 4K, 8K, 32K, 128K, 200K contexts
+- ✅ Recent window scales correctly (10-100 message range)
+- ✅ All thresholds calculate as expected
+- ✅ No compilation errors
+
+### Design Rationale
+
+**Why 75% threshold?**
+- Not too early (50% wastes context capacity)
+- Not too late (90% risks hitting limit)
+- Optimal balance: good utilization + safety margin
+
+**Why 20% recent window?**
+- Enough for immediate conversational context
+- Scales naturally with model size
+- Bounded to practical limits (10-100 messages)
+
+**Why cap at 100 messages?**
+- Practical UI limit (overwhelming to display more)
+- Still represents ~5K tokens (substantial context)
+- Prevents pathological cases with huge models
+
+**Why floor at 10 messages?**
+- Even tiny models need some recent context
+- Minimum for coherent conversation flow
+- Prevents degenerate cases
+
+### Alignment with Original Design
+
+The implementation **preserves all original Phase 8 design principles**:
+- ✅ Selective preservation (emotional, memories, first message)
+- ✅ Filler detection and removal
+- ✅ Temporal weighting (conversation-relative recency)
+- ✅ Memory profiles (immersion-level filtering)
+- ✅ Greeting context (time gap awareness)
+
+**Only change**: Thresholds now scale instead of being hardcoded.
+
+### Migration
+
+**No migration needed!** Changes are:
+- Runtime calculation (no stored state)
+- Backwards compatible (properties maintained)
+- Automatic adoption (next prompt assembly uses new logic)
+
+Existing conversations automatically benefit from appropriate thresholds based on their model.
+
+---
+
 ## Conclusion
 
 The Memory Intelligence System represents a paradigm shift in how Chorus Engine handles conversations and memory. By making memory the single source of truth, implementing temporal awareness, and providing intelligent extraction and summarization, we've created a system that:
@@ -947,20 +1110,22 @@ The Memory Intelligence System represents a paradigm shift in how Chorus Engine 
 - **Preserves significance** - Important moments never get lost
 - **Maintains continuity** - Cross-conversation context feels natural
 - **Handles length gracefully** - Long conversations compress without losing meaning
+- **Adapts to model capability** - (Phase 8.1) Thresholds scale from 4K to 200K contexts
 
 This isn't just a feature—it's a fundamental architectural improvement that touches every part of the system. The philosophy of memory-as-truth eliminates entire classes of complexity while providing better UX.
 
-**Key Metrics** (as of January 2, 2026):
+**Key Metrics** (as of January 13, 2026):
 - ✅ 9/10 days implemented and tested
 - ✅ 100% test coverage on core components
 - ✅ Backward compatible with all existing conversations
 - ✅ Successfully re-analyzed 4,823-token conversation
 - ✅ All performance targets met or exceeded
+- ✅ Phase 8.1: Dynamic thresholds implemented and tested
 
 **What's Next**: Frontend integration (Day 10), then this system is production-ready.
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: January 2, 2026  
-**Status**: Phase 8 Days 1-9 Complete, Day 10 In Progress
+**Document Version**: 1.1  
+**Last Updated**: January 13, 2026  
+**Status**: Phase 8 Complete + Phase 8.1 Dynamic Thresholds

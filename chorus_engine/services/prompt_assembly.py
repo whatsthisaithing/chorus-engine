@@ -120,6 +120,7 @@ class PromptAssemblyService:
             memory_repo = MemRepo(self.db)
             self._summarization_service = ConversationSummarizationService(
                 memory_repository=memory_repo,
+                context_window=self.context_window,
                 token_counter=self.token_counter
             )
         return self._summarization_service
@@ -157,7 +158,7 @@ class PromptAssemblyService:
         thread_id: int,
         include_memories: bool = True,
         memory_query: Optional[str] = None,
-        max_history_messages: int = 50,
+        max_history_messages: int = 10000,
         image_prompt_context: Optional[str] = None,
         video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
@@ -170,7 +171,8 @@ class PromptAssemblyService:
             include_memories: Whether to retrieve and include memories
             memory_query: Optional query for memory retrieval 
                          (defaults to last user message)
-            max_history_messages: Maximum number of history messages to consider
+            max_history_messages: Safety limit for message query (default 10000)
+                                 Actual truncation is handled by token budget
             image_prompt_context: Optional image prompt being generated (so character can reference it)
             video_prompt_context: Optional video prompt being generated (so character can reference it)
             document_context: Optional DocumentContext with retrieved document chunks
