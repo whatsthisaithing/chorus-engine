@@ -1,0 +1,10 @@
+# Discord Bridge Dependencies
+discord.py>=2.3.2
+requests>=2.31.0
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+aiosqlite>=0.19.0
+
+# Development Dependencies
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

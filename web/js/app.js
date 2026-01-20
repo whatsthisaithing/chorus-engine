@@ -9,6 +9,7 @@ window.App = {
         characters: [],
         selectedCharacterId: null,
         conversations: [],
+        conversationSource: 'web',  // Filter: 'web', 'discord', 'test', 'all'
         selectedConversationId: null,
         threads: [],
         selectedThreadId: null,
@@ -121,6 +122,12 @@ window.App = {
         // Character selection
         document.getElementById('characterSelect').addEventListener('change', (e) => {
             this.selectCharacter(e.target.value);
+        });
+        
+        // Conversation source filter
+        document.getElementById('conversationSourceFilter').addEventListener('change', async (e) => {
+            this.state.conversationSource = e.target.value;
+            await this.loadConversations();
         });
         
         // View Full Profile button
@@ -512,7 +519,12 @@ window.App = {
         if (!this.state.selectedCharacterId) return;
         
         try {
-            const conversations = await API.listConversations(this.state.selectedCharacterId);
+            const conversations = await API.listConversations(
+                this.state.selectedCharacterId,
+                0,
+                100,
+                this.state.conversationSource
+            );
             this.state.conversations = conversations;
             UI.renderConversations(conversations, this.state.selectedConversationId);
         } catch (error) {

@@ -88,6 +88,9 @@ class Conversation(Base):
     # Auto-generated title tracking (1 = auto-generated, 0 = user-set, NULL = old data)
     title_auto_generated = Column(Integer, nullable=True, default=1)
     
+    # Source platform (web, discord, etc.)
+    source = Column(String(20), nullable=False, default="web")
+    
     # Relationships
     threads = relationship("Thread", back_populates="conversation", cascade="all, delete-orphan")
     memories = relationship("Memory", back_populates="conversation", cascade="all, delete-orphan")

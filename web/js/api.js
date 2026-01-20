@@ -97,11 +97,12 @@ class API {
         });
     }
     
-    static async listConversations(characterId = null, skip = 0, limit = 100) {
+    static async listConversations(characterId = null, skip = 0, limit = 100, source = 'web') {
         const params = new URLSearchParams();
         if (characterId) params.append('character_id', characterId);
         if (skip) params.append('skip', skip);
         if (limit) params.append('limit', limit);
+        if (source) params.append('source', source);  // Filter by source (web, discord, all)
         
         return this.request(`/conversations?${params}`);
     }

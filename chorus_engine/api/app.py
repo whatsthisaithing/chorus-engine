@@ -656,6 +656,7 @@ class ConversationCreate(BaseModel):
     """Create conversation request."""
     character_id: str
     title: Optional[str] = None
+    source: Optional[str] = "web"  # "web", "discord", etc.
 
 
 class ConversationResponse(BaseModel):
@@ -760,6 +761,7 @@ class MessageResponse(BaseModel):
 class ChatInThreadRequest(BaseModel):
     """Send message in a thread."""
     message: str
+    metadata: Optional[dict] = None
 
 
 class ChatInThreadResponse(BaseModel):
@@ -2130,7 +2132,8 @@ async def create_conversation(
     repo = ConversationRepository(db)
     conversation = repo.create(
         character_id=request.character_id,
-        title=request.title
+        title=request.title,
+        source=request.source or "web"
     )
     
     # Create default thread
@@ -2145,6 +2148,7 @@ async def list_conversations(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     character_id: Optional[str] = None,
+    source: Optional[str] = Query("web", description="Filter by source (web, discord, all)"),
     db: Session = Depends(get_db)
 ):
     """List all conversations."""
@@ -2154,6 +2158,10 @@ async def list_conversations(
         conversations = repo.list_by_character(character_id, skip=skip, limit=limit)
     else:
         conversations = repo.list_all(skip=skip, limit=limit)
+    
+    # Filter by source (default to 'web' to exclude Discord conversations)
+    if source and source != "all":
+        conversations = [c for c in conversations if c.source == source]
     
     return conversations
 
@@ -2710,6 +2718,7 @@ async def send_message(
         thread_id=thread_id,
         role=MessageRole.USER,
         content=processed_message,  # Use processed message with resolved references
+        metadata=request.metadata,
         is_private=(conversation.is_private == "true")
     )
     
@@ -2831,12 +2840,13 @@ async def send_message(
             logger.error(f"Intent detection failed: {e}", exc_info=True)
             # Continue with message processing even if intent detection fails
     
-    # Phase 5: Check if user is requesting an image
+    # Phase 5: Check if user is requesting an image (based on SEMANTIC intent detection)
     image_request_detected = False
     image_prompt_preview = None
     orchestrator = app_state.get("image_orchestrator")
     
-    if orchestrator and character.image_generation.enabled:
+    # Use semantic intent detection instead of keyword detection
+    if orchestrator and character.image_generation.enabled and semantic_has_image:
         # Load fresh workflow config from database
         # Note: Workflow config is now fetched by orchestrator from database as needed
         # (Phase 5 cleanup: workflow fields no longer stored on character.image_generation)
@@ -2932,7 +2942,7 @@ async def send_message(
             recent_messages = msg_repo.get_thread_history(thread_id, limit=10)
             
             # Convert to Message objects for prompt service
-            from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+            # MessageRole already imported at module level
             messages = []
             for msg_dict in recent_messages:
                 msg = MessageModel(
@@ -2980,13 +2990,17 @@ async def send_message(
         doc_config = app_state["system_config"].document_analysis
         doc_budget_ratio = getattr(character.document_analysis, 'document_budget_ratio', doc_config.document_budget_ratio)
         
-        prompt_assembler = PromptAssemblyService(
-            db=db,
-            character_id=character_id,
-            model_name=app_state["system_config"].llm.model,
-            context_window=character.preferred_llm.context_window or app_state["system_config"].llm.context_window,
-            document_budget_ratio=doc_budget_ratio
-        )
+        # Build assembler kwargs, only pass document_budget_ratio if it's not None
+        assembler_kwargs = {
+            'db': db,
+            'character_id': character_id,
+            'model_name': app_state["system_config"].llm.model,
+            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window
+        }
+        if doc_budget_ratio is not None:
+            assembler_kwargs['document_budget_ratio'] = doc_budget_ratio
+        
+        prompt_assembler = PromptAssemblyService(**assembler_kwargs)
         
         # If an image is being generated, pass the prompt to the character so they can reference it
         image_context = image_prompt_preview["prompt"] if (image_request_detected and image_prompt_preview) else None

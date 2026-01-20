@@ -13,13 +13,14 @@ class ConversationRepository:
     def __init__(self, db: Session):
         self.db = db
     
-    def create(self, character_id: str, title: Optional[str] = None) -> Conversation:
+    def create(self, character_id: str, title: Optional[str] = None, source: str = "web") -> Conversation:
         """
         Create a new conversation.
         
         Args:
             character_id: The character this conversation is with
             title: Optional title (auto-generated if not provided)
+            source: Source platform ("web", "discord", etc.)
         
         Returns:
             Created conversation
@@ -29,7 +30,8 @@ class ConversationRepository:
         
         conversation = Conversation(
             character_id=character_id,
-            title=title
+            title=title,
+            source=source
         )
         self.db.add(conversation)
         self.db.commit()

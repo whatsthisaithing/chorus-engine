@@ -1,0 +1,46 @@
+# Chorus Discord Bridge Configuration
+
+# Discord Bot Settings
+discord:
+  # Bot token loaded from .env file (DISCORD_BOT_TOKEN)
+  # Command prefix for bot commands (e.g., !status, !character)
+  command_prefix: "!"
+  
+  # Rate limiting settings
+  rate_limit:
+    per_user_cooldown: 2  # Seconds between messages from same user
+    global_limit: 10      # Max messages per minute globally
+    
+  # Message settings
+  max_history_fetch: 10   # Number of messages to fetch for context
+  typing_timeout: 10      # Max seconds to show typing indicator
+
+# Chorus Engine Settings
+chorus:
+  # API URL loaded from .env file (CHORUS_API_URL)
+  # API key loaded from .env file (CHORUS_API_KEY, optional)
+  
+  # Character configuration
+  character_id: "nova"    # Default character (character name from Chorus)
+  
+  # Request settings
+  timeout: 30             # API request timeout in seconds
+  retry_attempts: 3       # Number of retry attempts on failure
+  retry_delay: 2          # Seconds to wait between retries
+
+# Bridge Settings
+bridge:
+  # State database location
+  state_db_path: "storage/state.db"
+  
+  # Logging configuration
+  log_level: "INFO"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "storage/bridge.log"
+  log_rotation: true      # Enable log rotation
+  log_max_bytes: 10485760 # 10 MB
+  log_backup_count: 5     # Keep 5 old log files
+  
+  # Feature flags
+  enable_typing_indicator: true
+  enable_rate_limiting: true
+  enable_dm_support: true

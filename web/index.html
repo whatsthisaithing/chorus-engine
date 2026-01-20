@@ -108,7 +108,14 @@
                     
                     <!-- Conversation List -->
                     <div class="mb-3">
-                        <h6 class="small text-theme-secondary">Recent</h6>
+                        <div class="d-flex align-items-center justify-content-between mb-2">
+                            <h6 class="small text-theme-secondary mb-0">Recent</h6>
+                            <select id="conversationSourceFilter" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
+                                <option value="web">Web</option>
+                                <option value="discord">Discord</option>
+                                <option value="all">All</option>
+                            </select>
+                        </div>
                         <div id="conversationList" class="conversation-list">
                             <!-- Populated by JS -->
                         </div>
