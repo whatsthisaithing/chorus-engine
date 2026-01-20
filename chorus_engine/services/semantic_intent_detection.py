@@ -27,7 +27,12 @@ INTENT_PROTOTYPES = {
         "generate a picture",
         "create an image of something",
         "take a photo and send it",
-        "can you make me a picture"
+        "can you make me a picture",
+        # Detailed/contextual prototypes (help match requests with descriptive details)
+        "send me a photo of you doing something specific",
+        "could you take a selfie of yourself with a particular expression",
+        "show me an image of you holding something",
+        "generate a picture of you making a gesture"
     ],
     "send_video": [
         "send me a video",
@@ -62,15 +67,19 @@ INTENT_PROTOTYPES = {
 }
 
 # Confidence Thresholds: Higher for critical actions, lower for safe/reversible ones
+# Adjusted for hybrid sentence-level detection (slightly more permissive since
+# sentence-level analysis provides better specificity but may score lower)
 THRESHOLDS = {
     "set_reminder": 0.50,  # Confirmable action with user review
-    "send_image": 0.50,    # Lower bar for confirmable actions
-    "send_video": 0.50,
-    "default": 0.55
+    "send_image": 0.45,    # Lowered to accommodate sentence-level detection
+    "send_video": 0.45,    # Lowered to accommodate sentence-level detection
+    "default": 0.50
 }
 
 # Global minimum threshold - reject anything below this regardless of intent
-GLOBAL_MIN_THRESHOLD = 0.45
+# Lowered from 0.45 to 0.42 to accommodate sentence-level detection in hybrid mode
+# (sentence-level reduces dilution but may score slightly lower than full message for short inputs)
+GLOBAL_MIN_THRESHOLD = 0.42
 
 # Ambiguity margin - if two intents are this close, consider it ambiguous
 AMBIGUITY_MARGIN = 0.08
@@ -145,6 +154,62 @@ class SemanticIntentDetector:
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
     
     @staticmethod
+    def _split_sentences(message: str) -> List[str]:
+        """
+        Split message into sentences for per-sentence analysis.
+        
+        Args:
+            message: Full message text
+            
+        Returns:
+            List of sentence strings (stripped, non-empty)
+        """
+        import re
+        
+        # Split on sentence-ending punctuation (., !, ?)
+        # Keep the punctuation with the sentence
+        sentences = re.split(r'(?<=[.!?])\s+', message)
+        
+        # Clean and filter
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        # Filter out very short fragments (< 4 words)
+        sentences = [s for s in sentences if len(s.split()) >= 4]
+        
+        return sentences
+    
+    @staticmethod
+    def _merge_intents(intents: List[Intent]) -> List[Intent]:
+        """
+        Merge duplicate intents, keeping the highest confidence for each type.
+        
+        Args:
+            intents: List of Intent objects (may contain duplicates)
+            
+        Returns:
+            Deduplicated list with max confidence per intent type
+        """
+        if not intents:
+            return []
+        
+        # Group by intent name, keep max confidence
+        intent_map = {}
+        
+        for intent in intents:
+            if intent.name not in intent_map:
+                intent_map[intent.name] = intent
+            else:
+                # Keep the one with higher confidence
+                if intent.confidence > intent_map[intent.name].confidence:
+                    intent_map[intent.name] = intent
+        
+        # Return as sorted list (by confidence)
+        merged = list(intent_map.values())
+        merged.sort(key=lambda i: i.confidence, reverse=True)
+        
+        return merged
+    
+    @staticmethod
     def _anchor_bonus(message: str, intent_name: str) -> float:
         """
         Apply lexical anchor bonus for specific intents.
@@ -174,7 +239,16 @@ class SemanticIntentDetector:
         debug: bool = False
     ) -> List[Intent]:
         """
-        Detect intents in a user message.
+        Detect intents in a user message using hybrid approach.
+        
+        Strategy:
+        1. Run detection on full message (captures short messages + overall context)
+        2. For longer messages (>20 words), also run on individual sentences
+        3. Merge results, taking max confidence for each intent type
+        
+        This handles both:
+        - Short, focused messages: "send me a photo" (full message works)
+        - Long messages with embedded intents: "I'm planning... Could you send me a selfie..." (sentence-level catches it)
         
         Args:
             message: User's message text
@@ -187,6 +261,118 @@ class SemanticIntentDetector:
             Empty list if no intent detected or ambiguous
         """
         self.stats["total_detections"] += 1
+        
+        # Always detect on full message
+        full_message_intents = self._detect_single(
+            message,
+            enable_multi_intent=enable_multi_intent,
+            debug=debug,
+            context="full message"
+        )
+        
+        # For longer messages, also analyze individual sentences
+        word_count = len(message.split())
+        
+        if word_count > 20:  # Threshold for sentence-level analysis
+            sentences = self._split_sentences(message)
+            
+            if debug and sentences:
+                print(f"\n[HYBRID] Message has {word_count} words, analyzing {len(sentences)} sentences separately")
+            
+            sentence_intents = []
+            
+            for i, sentence in enumerate(sentences):
+                if debug:
+                    print(f"\n[HYBRID] Sentence {i+1}: '{sentence[:60]}...'")
+                
+                intents = self._detect_single(
+                    sentence,
+                    enable_multi_intent=enable_multi_intent,
+                    debug=debug,
+                    context=f"sentence {i+1}"
+                )
+                sentence_intents.extend(intents)
+            
+            # Merge full message + sentence-level detections
+            all_intents = full_message_intents + sentence_intents
+            
+            if debug and all_intents:
+                print(f"\n[HYBRID] Before merge: {len(all_intents)} intents")
+                print(f"[HYBRID] Full message: {[i.name for i in full_message_intents]}")
+                print(f"[HYBRID] Sentences: {[i.name for i in sentence_intents]}")
+            
+            merged_intents = self._merge_intents(all_intents)
+            
+            if debug and merged_intents:
+                print(f"[HYBRID] After merge: {[(i.name, f'{i.confidence:.3f}') for i in merged_intents]}")
+            
+            # Update statistics
+            self._update_stats(merged_intents)
+            
+            return merged_intents
+        else:
+            # Short message - use full message detection only
+            # Update statistics
+            self._update_stats(full_message_intents)
+            
+            return full_message_intents
+    
+    def _update_stats(self, intents: List[Intent]) -> None:
+        """Update detection statistics based on results."""
+        if len(intents) == 0:
+            self.stats["no_intent_detected"] += 1
+        elif len(intents) == 1:
+            self.stats["successful_detections"] += 1
+        else:
+            self.stats["multi_intent_detections"] += 1
+            self.stats["successful_detections"] += 1
+    
+    def _detect_single(
+        self,
+        message: str,
+        enable_multi_intent: bool = True,
+        debug: bool = False,
+        context: str = ""
+    ) -> List[Intent]:
+        """
+        Detect intents in a single text fragment (sentence or full message).
+        
+        This is the core detection logic, called by detect() for both
+        full messages and individual sentences.
+        
+        Args:
+            message: Text to analyze
+            enable_multi_intent: If True, can detect multiple intents
+            debug: If True, print detailed scoring information
+            context: Description for debug output (e.g., "sentence 1")
+            
+        Returns:
+            List of detected Intent objects
+        """
+    def _detect_single(
+        self,
+        message: str,
+        enable_multi_intent: bool = True,
+        debug: bool = False,
+        context: str = ""
+    ) -> List[Intent]:
+        """
+        Detect intents in a single text fragment (sentence or full message).
+        
+        This is the core detection logic, called by detect() for both
+        full messages and individual sentences.
+        
+        Args:
+            message: Text to analyze
+            enable_multi_intent: If True, can detect multiple intents
+            debug: If True, print detailed scoring information
+            context: Description for debug output (e.g., "sentence 1")
+            
+        Returns:
+            List of detected Intent objects
+        """
+        if debug and context:
+            print(f"\n[DETECT {context.upper()}]")
         
         # Embed the incoming message
         message_embedding = self.model.encode(message, convert_to_numpy=True)
@@ -212,7 +398,7 @@ class SemanticIntentDetector:
             
             if debug:
                 bonus_str = f" (+{bonus:.2f} bonus)" if bonus > 0 else ""
-                print(f"{intent_name}: {max_similarity:.3f}{bonus_str}")
+                print(f"  {intent_name}: {max_similarity:.3f}{bonus_str}")
         
         # Sort by confidence (highest first)
         sorted_intents = sorted(
@@ -222,13 +408,12 @@ class SemanticIntentDetector:
         )
         
         if debug:
-            print(f"\nSorted: {sorted_intents}")
+            print(f"  Sorted: {[(name, f'{score:.3f}') for name, score in sorted_intents[:3]]}")
         
         # Check global minimum threshold
         if sorted_intents[0][1] < GLOBAL_MIN_THRESHOLD:
             if debug:
-                print(f"Below global minimum ({GLOBAL_MIN_THRESHOLD})")
-            self.stats["no_intent_detected"] += 1
+                print(f"  Below global minimum ({GLOBAL_MIN_THRESHOLD})")
             return []
         
         # Check for ambiguity between top two candidates
@@ -238,8 +423,7 @@ class SemanticIntentDetector:
             
             if (best_score - second_score) < AMBIGUITY_MARGIN:
                 if debug:
-                    print(f"Ambiguous: {best_score:.3f} vs {second_score:.3f} (margin < {AMBIGUITY_MARGIN})")
-                self.stats["ambiguous_detections"] += 1
+                    print(f"  Ambiguous: {best_score:.3f} vs {second_score:.3f} (margin < {AMBIGUITY_MARGIN})")
                 return []
         
         # Collect intents above their thresholds
@@ -263,17 +447,8 @@ class SemanticIntentDetector:
         if len(detected_intents) > 1 and enable_multi_intent:
             detected_intents = self._apply_exclusion_groups(detected_intents)
         
-        # Update statistics
-        if len(detected_intents) == 0:
-            self.stats["no_intent_detected"] += 1
-        elif len(detected_intents) == 1:
-            self.stats["successful_detections"] += 1
-        else:
-            self.stats["multi_intent_detections"] += 1
-            self.stats["successful_detections"] += 1
-        
         if debug and detected_intents:
-            print(f"\nDetected: {[(i.name, f'{i.confidence:.3f}') for i in detected_intents]}")
+            print(f"  → Detected: {[(i.name, f'{i.confidence:.3f}') for i in detected_intents]}")
         
         return detected_intents
     
