@@ -7,7 +7,7 @@ from typing import Optional
 from discord.ext import commands
 
 from .config import BridgeConfig
-from .chorus_client import ChorusClient, ChorusAPIError
+from .chorus_client import ChorusClient, ChorusAPIError, ConversationNotFoundError
 from .conversation_mapper import ConversationMapper
 from .user_tracker import UserTracker
 from .database import init_database
@@ -209,6 +209,24 @@ class ChorusBot(commands.Bot):
                 await self._send_reply(message.channel, reply_content)
                 
                 logger.info(f"Sent reply ({len(reply_content)} chars)")
+            
+            except ConversationNotFoundError as e:
+                # Conversation was deleted in Chorus - rebuild silently and process message
+                logger.warning(f"Conversation not found (deleted?): {e}")
+                logger.info("Rebuilding conversation and processing message...")
+                
+                discord_channel_id = str(message.channel.id) if not is_dm else str(message.author.id)
+                self.conversation_mapper.delete_conversation_mapping(discord_channel_id)
+                
+                # Recursively call on_message to create new conversation and process message
+                # This gives seamless UX - user doesn't need to resend
+                try:
+                    await self.on_message(message)
+                except Exception as rebuild_error:
+                    logger.error(f"Failed to rebuild conversation: {rebuild_error}")
+                    await message.channel.send(
+                        "Sorry, I encountered an error rebuilding my memory. Please try again."
+                    )
                 
             except ChorusAPIError as e:
                 logger.error(f"Chorus API error: {e}")
@@ -255,10 +273,12 @@ class ChorusBot(commands.Bot):
             is_dm = False
         
         # Check if conversation mapping exists (Phase 2)
+        logger.info(f"[MAPPING CHECK] Looking up Discord channel: {discord_channel_id}")
         mapping = self.conversation_mapper.get_conversation_mapping(discord_channel_id)
+        logger.info(f"[MAPPING RESULT] Found mapping: {mapping is not None}")
         
         if mapping:
-            logger.debug(
+            logger.info(
                 f"Using existing conversation: "
                 f"Discord {discord_channel_id} -> Chorus {mapping['chorus_conversation_id']}"
             )
@@ -393,12 +413,8 @@ class ChorusBot(commands.Bot):
                 limit=history_limit,
                 before=current_message
             ):
-                # Skip bot messages (they're already in Chorus as assistant messages)
-                if msg.author == self.user:
-                    continue
-                
-                # Skip other bot messages
-                if msg.author.bot:
+                # Skip other bots (but include this bot's messages for sync)
+                if msg.author.bot and msg.author != self.user:
                     continue
                 
                 discord_messages.append(msg)
@@ -495,6 +511,7 @@ class ChorusBot(commands.Bot):
         Send a single Discord history message to Chorus (catch-up).
         
         This is used for syncing history, not for generating responses.
+        Handles both user messages and bot's own assistant messages.
         
         Args:
             message: Discord message object
@@ -508,6 +525,9 @@ class ChorusBot(commands.Bot):
             if not clean_content.strip():
                 return  # Skip empty messages
             
+            # Determine if this is a bot message (assistant) or user message
+            is_bot_message = message.author == self.user
+            
             # Prepare metadata
             is_dm = isinstance(message.channel, discord.DMChannel)
             metadata = {
@@ -520,20 +540,33 @@ class ChorusBot(commands.Bot):
                 'is_history_sync': True  # Mark as history (not live message)
             }
             
-            # Send to Chorus (without expecting response - this is catch-up)
-            self.chorus_client.add_user_message(
-                conversation_id=conversation_id,
-                thread_id=thread_id,
-                message=clean_content,
-                user_name=message.author.name,
-                metadata=metadata
-            )
-            
-            logger.debug(f"Synced message {message.id[:8]}... from {message.author.name}")
+            # Send to Chorus based on message type
+            if is_bot_message:
+                # This is the bot's own response - add as assistant message
+                self.chorus_client.add_assistant_message(
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    message=clean_content,
+                    metadata=metadata
+                )
+                logger.debug(f"Synced ASSISTANT message {str(message.id)[:8]}...")
+            else:
+                # This is a user message
+                self.chorus_client.add_user_message(
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    message=clean_content,
+                    user_name=message.author.name,
+                    metadata=metadata
+                )
+                logger.debug(f"Synced USER message {str(message.id)[:8]}... from {message.author.name}")
             
         except ChorusAPIError as e:
             logger.warning(f"Failed to sync message {message.id}: {e}")
         except Exception as e:
             logger.error(f"Error syncing message {message.id}: {e}")
+    
+    async def close(self):
+        """Clean shutdown."""
         self.chorus_client.close()
         await super().close()

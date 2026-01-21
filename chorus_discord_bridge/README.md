@@ -8,9 +8,11 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
 - **Direct Messages**: Characters can handle DMs
 - **Conversation Context**: Maintains full context within each channel
 - **User Tracking**: Remembers users across messages
+- **Multi-User Memory Attribution**: Remembers which user said what (Phase 3)
 - **Hot-Swappable Characters**: Change active character without restarting
 - **Rate Limiting**: Prevents spam and abuse
 - **Graceful Error Handling**: Survives API failures and recovers automatically
+- **🆕 Fully Portable**: Run multiple bots simultaneously with different characters - [See Multi-Bot Setup](MULTI_BOT_SETUP.md)
 
 ## Quick Start
 
@@ -20,9 +22,15 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
 - Running Chorus Engine instance
 - Discord Bot Token (see [Creating a Discord Bot](#creating-a-discord-bot))
 
+### Single Bot Setup
+
+Follow these steps to run one Discord bot:
+
+> **Want to run multiple bots?** See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for running multiple characters simultaneously!
+
 ### Installation
 
-**IMPORTANT**: The Discord Bridge uses the same Python environment as Chorus Engine to avoid dependency conflicts!
+The Discord Bridge creates a **self-contained virtual environment** with lightweight dependencies (~15MB).
 
 #### Windows
 
@@ -30,12 +38,15 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
    ```bash
    install_bridge.bat
    ```
-   This will install Discord dependencies into the embedded Python used by Chorus Engine.
+   This creates a `.venv` folder with all dependencies.
 
 2. **Edit configuration**:
    ```bash
    notepad .env
-   # Add your Discord bot token
+   # Add your Discord bot token: DISCORD_BOT_TOKEN=your_token_here
+   
+   notepad config.yaml
+   # Set your character: character_id: "nova"
    ```
 
 3. **Run the bridge**:
@@ -50,18 +61,30 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
    chmod +x install_bridge.sh start_bridge.sh
    ./install_bridge.sh
    ```
-   This will install Discord dependencies into the venv used by Chorus Engine.
+   This creates a `.venv` folder with all dependencies.
 
 2. **Edit configuration**:
    ```bash
    nano .env
-   # Add your Discord bot token
+   # Add your Discord bot token: DISCORD_BOT_TOKEN=your_token_here
+   
+   nano config.yaml
+   # Set your character: character_id: "nova"
    ```
 
 3. **Run the bridge**:
    ```bash
    ./start_bridge.sh
    ```
+
+### Portability
+
+The bridge is **fully portable**! You can:
+- Copy the entire folder anywhere on your system
+- Run multiple instances with different characters
+- No shared resources or port conflicts
+
+See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for running multiple bots.
 
 ## Creating a Discord Bot
 

@@ -157,6 +157,36 @@ class ConversationMapper:
             )
             return False
     
+    def delete_conversation_mapping(self, discord_channel_id: str) -> bool:
+        """Delete a conversation mapping (for stale/deleted conversations).
+        
+        Args:
+            discord_channel_id: Discord channel or DM user ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            cursor = self.db.execute(
+                """
+                DELETE FROM conversation_mappings
+                WHERE discord_channel_id = ?
+                """,
+                (discord_channel_id,)
+            )
+            self.db.commit()
+            
+            if cursor.rowcount > 0:
+                logger.info(f"Deleted stale mapping for Discord channel {discord_channel_id}")
+                return True
+            else:
+                logger.warning(f"No mapping found to delete for channel {discord_channel_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to delete conversation mapping: {e}", exc_info=True)
+            return False
+    
     def list_active_conversations(
         self, limit: int = 50, include_dms: bool = True
     ) -> List[Dict[str, Any]]:

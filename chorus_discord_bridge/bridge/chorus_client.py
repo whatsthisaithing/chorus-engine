@@ -15,6 +15,11 @@ class ChorusAPIError(Exception):
     pass
 
 
+class ConversationNotFoundError(ChorusAPIError):
+    """Raised when conversation/thread is not found (404)."""
+    pass
+
+
 class ChorusClient:
     """Client for communicating with Chorus Engine API."""
     
@@ -119,6 +124,11 @@ class ChorusClient:
                 error_detail = e.response.json().get('detail', str(e))
             except:
                 error_detail = str(e)
+            
+            # Special handling for 404 on conversation/thread endpoints
+            if e.response.status_code == 404 and ('/threads/' in url or '/conversations/' in url):
+                raise ConversationNotFoundError(f"Conversation or thread not found: {error_detail}")
+            
             raise ChorusAPIError(f"HTTP {e.response.status_code}: {error_detail}")
         
         except Exception as e:
@@ -286,7 +296,8 @@ class ChorusClient:
             params['limit'] = limit
         
         response = self._request('GET', endpoint, params=params)
-        return response.get('messages', [])
+        # API returns list directly, not wrapped in dict
+        return response if isinstance(response, list) else response.get('messages', [])
     
     def add_user_message(
         self,
@@ -323,6 +334,39 @@ class ChorusClient:
         # Add username to metadata if not already present
         if 'username' not in payload['metadata']:
             payload['metadata']['username'] = user_name
+        
+        endpoint = f'/threads/{thread_id}/messages/add'
+        return self._request('POST', endpoint, json=payload)
+    
+    def add_assistant_message(
+        self,
+        conversation_id: str,
+        thread_id: int,
+        message: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Add an assistant message to a thread without generating a response.
+        
+        Phase 3: Used for syncing bot's own message history when rebuilding conversations.
+        This ensures assistant responses from Discord are preserved in Chorus.
+        
+        Args:
+            conversation_id: Conversation identifier
+            thread_id: Thread identifier
+            message: Message content from the bot
+            metadata: Optional metadata (should include discord_message_id)
+            
+        Returns:
+            Response from API
+        """
+        logger.debug(f"Adding assistant history message to thread {thread_id}")
+        
+        payload = {
+            'content': message,
+            'role': 'assistant',
+            'metadata': metadata or {}
+        }
         
         endpoint = f'/threads/{thread_id}/messages/add'
         return self._request('POST', endpoint, json=payload)
