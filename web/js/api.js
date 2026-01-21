@@ -227,9 +227,18 @@ class API {
     }
     
     static async sendMessage(threadId, message) {
+        // Get user metadata if UserManager is available
+        const payload = { message };
+        
+        if (typeof userManager !== 'undefined') {
+            payload.metadata = userManager.getUserMetadata();
+            payload.primary_user = userManager.getUsername();
+            payload.conversation_source = 'web';
+        }
+        
         return this.request(`/threads/${threadId}/messages`, {
             method: 'POST',
-            body: JSON.stringify({ message }),
+            body: JSON.stringify(payload),
         });
     }
     
@@ -244,13 +253,22 @@ class API {
     static async sendMessageStream(threadId, message, onChunk, onComplete, onError) {
         const url = `${API_BASE_URL}/threads/${threadId}/messages/stream`;
         
+        // Build payload with user metadata
+        const payload = { message };
+        
+        if (typeof userManager !== 'undefined') {
+            payload.metadata = userManager.getUserMetadata();
+            payload.primary_user = userManager.getUsername();
+            payload.conversation_source = 'web';
+        }
+        
         try {
             const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ message }),
+                body: JSON.stringify(payload),
             });
             
             if (!response.ok) {
@@ -337,9 +355,12 @@ class API {
         });
     }
     
-    static async getCharacterMemories(characterId, memoryType = null) {
-        const params = memoryType ? `?memory_type=${memoryType}` : '';
-        return this.request(`/characters/${characterId}/memories${params}`);
+    static async getCharacterMemories(characterId, memoryType = null, source = null) {
+        const params = new URLSearchParams();
+        if (memoryType) params.append('memory_type', memoryType);
+        if (source) params.append('source', source);
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+        return this.request(`/characters/${characterId}/memories${queryString}`);
     }
     
     static async createCoreMemory(characterId, memoryData) {

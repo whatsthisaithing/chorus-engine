@@ -194,7 +194,9 @@ class ChorusClient:
         thread_id: int,
         message: str,
         user_name: str = "Discord User",
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        primary_user: Optional[str] = None,
+        conversation_source: str = 'discord'
     ) -> Dict[str, Any]:
         """
         Send a message to an existing conversation.
@@ -205,6 +207,8 @@ class ChorusClient:
             message: Message content
             user_name: Name of the user sending the message
             metadata: Optional metadata to attach to the message
+            primary_user: Name of the user who invoked the bot (for multi-user contexts)
+            conversation_source: Platform source (default: 'discord')
             
         Returns:
             Response including assistant's reply
@@ -214,11 +218,15 @@ class ChorusClient:
         
         payload = {
             'message': message,
-            'user_name': user_name
+            'user_name': user_name,
+            'conversation_source': conversation_source
         }
         
         if metadata:
             payload['metadata'] = metadata
+        
+        if primary_user:
+            payload['primary_user'] = primary_user
         
         endpoint = f'/threads/{thread_id}/messages'
         return self._request('POST', endpoint, json=payload)
@@ -249,6 +257,75 @@ class ChorusClient:
         
         response = self._request('GET', endpoint, params=params)
         return response.get('messages', [])
+    
+    def get_thread_messages(
+        self,
+        conversation_id: str,
+        thread_id: int,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all messages from a thread.
+        
+        Phase 3, Task 3.1: Used for deduplication - fetches existing messages
+        to check which Discord messages are already in Chorus.
+        
+        Args:
+            conversation_id: Conversation identifier
+            thread_id: Thread identifier
+            limit: Optional limit on number of messages
+            
+        Returns:
+            List of message dictionaries with metadata
+        """
+        logger.debug(f"Fetching messages for thread {thread_id}")
+        
+        endpoint = f'/threads/{thread_id}/messages'
+        params = {}
+        if limit:
+            params['limit'] = limit
+        
+        response = self._request('GET', endpoint, params=params)
+        return response.get('messages', [])
+    
+    def add_user_message(
+        self,
+        conversation_id: str,
+        thread_id: int,
+        message: str,
+        user_name: str,
+        metadata: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a user message to a thread without generating a response.
+        
+        Phase 3, Task 3.1: Used for syncing message history (catch-up).
+        Unlike send_message(), this doesn't trigger LLM generation.
+        
+        Args:
+            conversation_id: Conversation identifier
+            thread_id: Thread identifier
+            message: Message content
+            user_name: Name of the user
+            metadata: Optional metadata (should include discord_message_id)
+            
+        Returns:
+            Response from API
+        """
+        logger.debug(f"Adding history message to thread {thread_id}")
+        
+        payload = {
+            'content': message,
+            'role': 'user',
+            'metadata': metadata or {}
+        }
+        
+        # Add username to metadata if not already present
+        if 'username' not in payload['metadata']:
+            payload['metadata']['username'] = user_name
+        
+        endpoint = f'/threads/{thread_id}/messages/add'
+        return self._request('POST', endpoint, json=payload)
     
     def health_check(self) -> bool:
         """

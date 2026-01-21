@@ -256,6 +256,9 @@ class Memory(Base):
     key_moments = Column(JSON, nullable=True)  # List of key moment references/timestamps
     summary = Column(String(500), nullable=True)  # Brief summary for quick context
     
+    # Phase 3: Platform source field (Discord Bridge Phase 3)
+    source = Column(String(20), nullable=False, default='web', server_default='web')  # web, discord, slack, etc.
+    
     # Existing metadata field (for backwards compatibility)
     meta_data = Column("metadata", JSON, nullable=True)  # Additional flexible storage
     

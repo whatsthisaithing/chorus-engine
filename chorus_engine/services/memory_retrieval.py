@@ -94,7 +94,8 @@ class MemoryRetrievalService:
         thread_id: Optional[str] = None,
         token_budget: int = 1000,
         max_memories: int = 20,
-        include_types: Optional[List[MemoryType]] = None
+        include_types: Optional[List[MemoryType]] = None,
+        conversation_source: Optional[str] = None  # Phase 3: Filter by source (web, discord, etc.)
     ) -> List[RetrievedMemory]:
         """
         Retrieve relevant memories for a query.
@@ -164,6 +165,12 @@ class MemoryRetrievalService:
             # Phase 4.1: Skip pending implicit memories (only include approved/auto_approved)
             if memory.memory_type == MemoryType.IMPLICIT:
                 if memory.status not in ["approved", "auto_approved"]:
+                    continue
+            
+            # Phase 3: Filter by conversation source (segregate Discord/web memories)
+            if conversation_source and hasattr(memory, 'source'):
+                # Only include memories from the same source (discord memories for discord, web for web)
+                if memory.source != conversation_source:
                     continue
             
             # Skip if wrong conversation/thread (for non-core memories)

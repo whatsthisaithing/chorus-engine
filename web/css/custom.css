@@ -1550,3 +1550,25 @@ audio::-webkit-media-controls-time-remaining-display {
     border-bottom: none;
     font-weight: 500;
 }
+
+/* Toast Notification */
+.toast-notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    padding: 12px 24px;
+    border-radius: 8px;
+    border: 1px solid var(--border-accent);
+    box-shadow: 0 4px 12px var(--shadow);
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s ease;
+}
+
+.toast-notification.show {
+    opacity: 1;
+    transform: translateY(0);
+}

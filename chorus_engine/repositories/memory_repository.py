@@ -30,7 +30,8 @@ class MemoryRepository:
         metadata: Optional[Dict[str, Any]] = None,
         emotional_weight: Optional[float] = None,  # Phase 8: Emotional significance
         participants: Optional[List[str]] = None,  # Phase 8: People involved
-        key_moments: Optional[List[str]] = None  # Phase 8: Significant moments
+        key_moments: Optional[List[str]] = None,  # Phase 8: Significant moments
+        source: str = 'web'  # Phase 3: Platform source (web, discord, slack, etc.)
     ) -> Memory:
         """
         Create a new memory.
@@ -82,7 +83,8 @@ class MemoryRepository:
             meta_data=metadata or {},
             emotional_weight=emotional_weight,
             participants=participants,
-            key_moments=key_moments
+            key_moments=key_moments,
+            source=source
         )
         self.db.add(memory)
         self.db.commit()

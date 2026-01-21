@@ -202,6 +202,11 @@ class BridgeConfig:
         """Check if DM support is enabled."""
         return self._config['bridge'].get('enable_dm_support', True)
     
+    @property
+    def bridge_history_limit(self) -> int:
+        """Get number of messages to fetch for history sync (Phase 3)."""
+        return self._config['bridge'].get('history_limit', 10)
+    
     def reload(self):
         """Reload configuration from file."""
         self._load_config()

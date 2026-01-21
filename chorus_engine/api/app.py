@@ -33,8 +33,6 @@ from chorus_engine.services.prompt_assembly import PromptAssemblyService
 from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.services.system_prompt_generator import SystemPromptGenerator
 from chorus_engine.services.memory_extraction import MemoryExtractionService
-# Phase 7: Background extraction worker removed - replaced by intent detection system
-# from chorus_engine.services.background_extraction import BackgroundExtractionManager
 from chorus_engine.db.vector_store import VectorStore
 from pathlib import Path
 
@@ -762,6 +760,8 @@ class ChatInThreadRequest(BaseModel):
     """Send message in a thread."""
     message: str
     metadata: Optional[dict] = None
+    primary_user: Optional[str] = None  # Name of user who invoked the bot (for multi-user contexts)
+    conversation_source: Optional[str] = None  # Platform source: 'web', 'discord', 'slack', etc.
 
 
 class ChatInThreadResponse(BaseModel):
@@ -2604,6 +2604,37 @@ async def delete_thread(
     return {"status": "deleted", "id": thread_id}
 
 
+# === Helper Functions for Message Endpoints ===
+
+def extract_user_context_from_messages(messages: List, primary_user: Optional[str] = None):
+    """Extract primary_user and all_users from message list for multi-user memory attribution.
+    
+    Phase 3: Used by both streaming and non-streaming endpoints to extract user context
+    from message metadata for proper memory attribution in multi-user conversations.
+    
+    Args:
+        messages: List of Message objects with metadata
+        primary_user: Optional primary user (already provided in request)
+        
+    Returns:
+        Tuple of (primary_user, all_users list)
+    """
+    all_users = set()
+    
+    for msg in messages:
+        # Skip assistant messages
+        if hasattr(msg, 'role') and msg.role == MessageRole.ASSISTANT:
+            continue
+            
+        # Extract username from metadata
+        if hasattr(msg, 'meta_data') and msg.meta_data:
+            username = msg.meta_data.get('username')
+            if username and username != 'User':  # Skip generic "User"
+                all_users.add(username)
+    
+    return primary_user, sorted(list(all_users))
+
+
 # === Message Management Endpoints ===
 
 @app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
@@ -2626,6 +2657,7 @@ async def send_message(
     db: Session = Depends(get_db)
 ):
     """Send a message in a thread and get AI response."""
+    
     # Verify thread exists and get conversation
     thread_repo = ThreadRepository(db)
     thread = thread_repo.get_by_id(thread_id)
@@ -3013,7 +3045,9 @@ async def send_message(
             include_memories=True,  # Enable memory retrieval
             image_prompt_context=image_context,
             video_prompt_context=video_context,
-            document_context=doc_context if doc_context and doc_context.has_content() else None
+            document_context=doc_context if doc_context and doc_context.has_content() else None,
+            primary_user=request.primary_user,
+            conversation_source=request.conversation_source or 'web'
         )
         
         # Format for LLM API (includes memories in system prompt)
@@ -3070,6 +3104,33 @@ async def send_message(
                 "character": character.name
             }
         )
+        
+        # Queue background memory extraction if conversation is not private
+        conversation_is_private = conversation.is_private
+        if conversation_is_private != "true":
+            background_extractor = app_state.get("background_extractor")
+            if background_extractor:
+                # Phase 3: Extract user context from recent messages for multi-user attribution
+                recent_message_objects = msg_repo.get_thread_history_objects(thread_id)
+                primary_user_from_request = request.primary_user if hasattr(request, 'primary_user') else None
+                primary_user, all_users = extract_user_context_from_messages(
+                    recent_message_objects,
+                    primary_user=primary_user_from_request
+                )
+                
+                logger.info(f"[BACKGROUND MEMORY] Queuing extraction for conversation {conversation.id}")
+                logger.info(f"[BACKGROUND MEMORY] User context - Primary: {primary_user}, All: {all_users}")
+                await background_extractor.queue_extraction(
+                    conversation_id=conversation.id,
+                    character_id=character_id,
+                    messages=[user_message],
+                    model=model,
+                    character_name=character.name,
+                    character=character,
+                    conversation_source=conversation.source or 'web',
+                    primary_user=primary_user,
+                    all_users=all_users
+                )
         
         # Phase 7: Memory extraction now handled by intent detection (above)
         # Phase 4 background extraction worker removed
@@ -3228,6 +3289,60 @@ async def send_message(
         raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
 
 
+@app.post("/threads/{thread_id}/messages/add")
+async def add_message_without_response(
+    thread_id: str,
+    message: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Add a message to a thread without generating a response.
+    
+    Used by Discord bridge for syncing message history (catch-up).
+    Phase 3, Task 3.1: Sliding window message fetching.
+    
+    Request body:
+    {
+        "content": "message text",
+        "role": "user" or "assistant",
+        "metadata": {...}
+    }
+    """
+    # Verify thread exists
+    thread_repo = ThreadRepository(db)
+    thread = thread_repo.get_by_id(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    # Extract message data
+    content = message.get('content')
+    role = message.get('role', 'user')
+    metadata = message.get('metadata', {})
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content required")
+    
+    if role not in ['user', 'assistant']:
+        raise HTTPException(status_code=400, detail="Role must be 'user' or 'assistant'")
+    
+    # Create message
+    msg_repo = MessageRepository(db)
+    new_message = msg_repo.create(
+        thread_id=thread_id,
+        role=role,
+        content=content,
+        metadata=metadata or None
+    )
+    
+    return {
+        "id": new_message.id,
+        "thread_id": new_message.thread_id,
+        "role": new_message.role,
+        "content": new_message.content,
+        "created_at": new_message.created_at.isoformat()
+    }
+
+
 @app.post("/threads/{thread_id}/messages/stream")
 async def send_message_stream(
     thread_id: str,
@@ -3330,6 +3445,7 @@ async def send_message_stream(
         thread_id=thread_id,
         role=MessageRole.USER,
         content=processed_message,  # Use processed message with resolved references
+        metadata=request.metadata,
         is_private=(conversation.is_private == "true")
     )
     
@@ -3575,7 +3691,9 @@ async def send_message_stream(
             include_memories=True,
             image_prompt_context=image_context,
             video_prompt_context=video_context,
-            document_context=doc_context if doc_context and doc_context.has_content() else None
+            document_context=doc_context if doc_context and doc_context.has_content() else None,
+            primary_user=request.primary_user,
+            conversation_source=request.conversation_source or 'web'
         )
         
         # Format for LLM API
@@ -3602,6 +3720,7 @@ async def send_message_stream(
     
     # Capture all values needed in generator before session closes (to avoid detached instance errors)
     conversation_id_for_stream = conversation.id
+    conversation_source_for_stream = conversation.source  # Phase 3: Platform source for memory segregation
     last_extracted_count = conversation.last_extracted_message_count
     user_message_content = user_message.content
     user_message_id = user_message.id
@@ -3698,13 +3817,25 @@ async def send_message_stream(
                         # Get only the new user message for extraction
                         new_user_message = stream_msg_repo.get_by_id(user_message_id)
                         if new_user_message:
+                            # Phase 3: Extract user context from recent messages for multi-user attribution
+                            recent_message_objects = stream_msg_repo.get_thread_history_objects(thread_id)
+                            primary_user_from_request = request.primary_user if hasattr(request, 'primary_user') else None
+                            primary_user, all_users = extract_user_context_from_messages(
+                                recent_message_objects,
+                                primary_user=primary_user_from_request
+                            )
+                            
+                            logger.debug(f"[BACKGROUND MEMORY] User context - Primary: {primary_user}, All: {all_users}")
                             await background_extractor.queue_extraction(
                                 conversation_id=conversation_id_for_stream,
                                 character_id=character_id_for_stream,
                                 messages=[new_user_message],  # Extract from this message
                                 model=model_for_extraction,  # Use character's model (already loaded)
                                 character_name=character_name,
-                                character=character_config_for_stream  # Phase 8: Pass character config for memory profile
+                                character=character_config_for_stream,  # Phase 8: Pass character config for memory profile
+                                conversation_source=conversation_source_for_stream or 'web',
+                                primary_user=primary_user,
+                                all_users=all_users
                             )
                             logger.debug(
                                 f"[BACKGROUND MEMORY] Queued extraction for message {user_message_id} "
@@ -4412,9 +4543,10 @@ async def get_character_core_memories(
 async def get_character_memories(
     character_id: str,
     memory_type: Optional[str] = None,
+    source: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Get all memories for a character, optionally filtered by type."""
+    """Get all memories for a character, optionally filtered by type and source."""
     if character_id not in app_state["characters"]:
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
     
@@ -4428,6 +4560,10 @@ async def get_character_memories(
             raise HTTPException(status_code=400, detail=f"Invalid memory type: {memory_type}")
     else:
         memories = repo.list_by_character(character_id)
+    
+    # Filter by source if specified
+    if source:
+        memories = [m for m in memories if m.source == source]
     
     return memories
 
@@ -4727,69 +4863,6 @@ async def get_conversation_privacy(
     return {
         "conversation_id": conversation_id,
         "is_private": is_private
-    }
-
-
-class ManualExtractionRequest(BaseModel):
-    """Manual extraction trigger request."""
-    message_count: int = 10  # Number of recent messages to analyze
-
-
-@app.post("/conversations/{conversation_id}/extract-memories")
-async def manually_trigger_extraction(
-    conversation_id: str,
-    request: ManualExtractionRequest,
-    db: Session = Depends(get_db)
-):
-    """Manually trigger memory extraction for a conversation."""
-    extraction_manager = app_state.get("extraction_manager")
-    if not extraction_manager:
-        raise HTTPException(status_code=503, detail="Extraction manager not available")
-    
-    # Get conversation and verify it exists
-    conv_repo = ConversationRepository(db)
-    conversation = conv_repo.get_by_id(conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    
-    # Get recent messages from all threads in conversation
-    thread_repo = ThreadRepository(db)
-    msg_repo = MessageRepository(db)
-    threads = thread_repo.list_by_conversation(conversation_id)
-    
-    messages = []
-    for thread in threads:
-        thread_messages = msg_repo.get_thread_history_objects(thread.id)
-        messages.extend(thread_messages[-request.message_count:])
-    
-    if not messages:
-        return {"status": "no_messages", "extracted_count": 0}
-    
-    # Get character's preferred model
-    character_id = conversation.character_id
-    character_config = app_state["characters"].get(character_id)
-    model = None
-    character_name = None
-    if character_config and character_config.preferred_llm:
-        model = character_config.preferred_llm.model or app_state['system_config'].llm.model
-        character_name = character_config.name
-    else:
-        model = app_state['system_config'].llm.model
-    
-    # Queue extraction (Phase 8: Pass character config)
-    await extraction_manager.queue_extraction(
-        conversation_id=conversation_id,
-        character_id=conversation.character_id,
-        messages=messages,
-        model=model,  # Use character's preferred model
-        character_name=character_name,  # Pass character name for prompt context
-        character=character_config  # Phase 8: Pass character config for memory profile
-    )
-    
-    return {
-        "status": "queued",
-        "conversation_id": conversation_id,
-        "message_count": len(messages)
     }
 
 

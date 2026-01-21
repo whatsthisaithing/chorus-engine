@@ -877,7 +877,7 @@ window.App = {
             }
             
             // Get memory count
-            const memories = await API.getCharacterMemories(this.state.selectedCharacterId);
+            const memories = await API.getCharacterMemories(this.state.selectedCharacterId, null, 'web');
             const conversationMemories = memories.filter(
                 m => m.conversation_id === this.state.selectedConversationId
             );

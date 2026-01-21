@@ -162,6 +162,8 @@ class PromptAssemblyService:
         image_prompt_context: Optional[str] = None,
         video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
+        primary_user: Optional[str] = None,
+        conversation_source: Optional[str] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -176,6 +178,8 @@ class PromptAssemblyService:
             image_prompt_context: Optional image prompt being generated (so character can reference it)
             video_prompt_context: Optional video prompt being generated (so character can reference it)
             document_context: Optional DocumentContext with retrieved document chunks
+            primary_user: Name of the user who invoked the bot (for multi-user contexts)
+            conversation_source: Platform source ('web', 'discord', 'slack', etc.)
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -183,7 +187,11 @@ class PromptAssemblyService:
         # Load character config and generate system prompt with immersion guidance
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
-        system_prompt = self.system_prompt_generator.generate(character_config)
+        system_prompt = self.system_prompt_generator.generate(
+            character_config,
+            primary_user=primary_user,
+            conversation_source=conversation_source
+        )
         
         # CRITICAL: When interpreting a generated image/video prompt, skip conversation history
         # The character's ONLY job is to describe the pre-generated prompt, not respond to conversation
@@ -275,6 +283,7 @@ class PromptAssemblyService:
                 character_id=self.character_id,
                 token_budget=memory_budget,
                 thread_id=thread_id,
+                conversation_source=conversation_source
             )
             
             # Format memories for prompt
@@ -292,7 +301,10 @@ class PromptAssemblyService:
         )
         
         # Truncate history to fit budget
-        history_dicts = self._format_messages_for_llm(messages)
+        history_dicts = self._format_messages_for_llm(
+            messages,
+            conversation_source=conversation_source
+        )
         history_dicts = self._truncate_history(history_dicts, history_budget)
         
         # Count history tokens
@@ -327,6 +339,7 @@ class PromptAssemblyService:
         memory_query: Optional[str] = None,
         image_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
+        conversation_source: Optional[str] = None
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -434,6 +447,7 @@ class PromptAssemblyService:
                 character_id=self.character_id,
                 token_budget=memory_budget,
                 thread_id=thread_id,
+                conversation_source=conversation_source
             )
             
             if retrieved_memories:
@@ -592,30 +606,50 @@ class PromptAssemblyService:
     
     def _format_messages_for_llm(
         self,
-        messages: List[Message]
+        messages: List[Message],
+        conversation_source: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
         Format database messages for LLM API.
+        
+        For multi-user contexts (Discord, Slack, etc.), includes username
+        in message content to show who said what.
         
         Filters out SCENE_CAPTURE messages as they're just anchor points
         for images and not actual conversation content.
         
         Args:
             messages: Database message objects
+            conversation_source: Platform source ('web', 'discord', 'slack', etc.)
         
         Returns:
             List of message dicts with role and content
         """
         formatted = []
+        is_multi_user = conversation_source and conversation_source != 'web'
         
         for msg in messages:
             # Skip scene capture messages - they're not part of the conversation
             if msg.role == MessageRole.SCENE_CAPTURE:
                 continue
+            
+            content = msg.content
+            
+            # For multi-user contexts, prepend username to user messages
+            if is_multi_user and msg.role == MessageRole.USER:
+                # Extract username from metadata
+                username = None
+                if msg.meta_data:
+                    username = msg.meta_data.get('username') or msg.meta_data.get('user_name')
                 
+                # Format with username if available
+                if username:
+                    platform_display = conversation_source.capitalize() if conversation_source else 'Platform'
+                    content = f"{username} ({platform_display}): {content}"
+            
             formatted.append({
                 "role": msg.role.value,
-                "content": msg.content,
+                "content": content,
             })
         
         return formatted

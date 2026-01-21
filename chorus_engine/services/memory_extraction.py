@@ -1,4 +1,14 @@
-"""Service for extracting implicit memories from conversations (Phase 4.1)."""
+"""Service for memory storage and persistence (Phase 4.1).
+
+NOTE: Memory extraction logic (prompt building, LLM calls, parsing) is now handled by
+BackgroundMemoryExtractor (Phase 7.5) which includes Phase 3 multi-user support.
+
+This service provides:
+- Memory storage and persistence layer
+- Duplicate checking and deduplication
+- Vector store integration
+- Memory approval workflow
+"""
 
 import json
 import logging
@@ -33,91 +43,30 @@ class ExtractedMemory:
 
 class MemoryExtractionService:
     """
-    Service for extracting implicit memories from conversations.
+    Service for memory storage, persistence, and management.
     
-    Uses LLM to analyze conversation content and extract memorable facts
-    about the user, with confidence scoring and deduplication.
+    Provides the storage layer for memories extracted by BackgroundMemoryExtractor.
+    Handles:
+    - Saving extracted memories with confidence-based approval
+    - Duplicate detection via vector similarity
+    - Vector store integration
+    - Memory approval workflow
+    
+    NOTE: Extraction logic (LLM calls, prompt building, parsing) is now handled
+    by BackgroundMemoryExtractor (background_memory_extractor.py).
     """
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        llm_client: LLMClient,  # Kept for backward compatibility, but no longer used
         memory_repository: MemoryRepository,
         vector_store: VectorStore,
         embedding_service: EmbeddingService
     ):
-        self.llm = llm_client
+        self.llm = llm_client  # No longer used - extraction logic in BackgroundMemoryExtractor
         self.memory_repo = memory_repository
         self.vector_store = vector_store
         self.embedding_service = embedding_service
-    
-    async def extract_from_messages(
-        self,
-        messages: List[Message],
-        character_id: str,
-        conversation_id: str,
-        model: Optional[str] = None,
-        character_name: Optional[str] = None
-    ) -> List[ExtractedMemory]:
-        """
-        Analyze messages and extract memorable facts.
-        
-        Args:
-            messages: List of messages to analyze
-            character_id: Character ID for context
-            conversation_id: Conversation ID for tracking
-            model: Model to use for extraction (character's preferred model)
-            character_name: Name of the character (for prompt context)
-        
-        Returns:
-            List of extracted memories with confidence scores
-        """
-        if not messages:
-            return []
-        
-        # Debug: Show messages being extracted (use logger to avoid emoji encoding issues)
-        logger.info(f"Messages being sent for extraction: {len(messages)} messages")
-        for i, msg in enumerate(messages, 1):
-            role = msg.role
-            # Sanitize content for logging (replace problematic characters)
-            content = msg.content[:80].encode('ascii', errors='replace').decode('ascii')
-            if len(msg.content) > 80:
-                content += "..."
-            logger.debug(f"  {i}. {role}: {content}")
-        
-        try:
-            # Build extraction prompt
-            prompt = self._build_extraction_prompt(messages, character_name)
-            
-            # Call LLM with structured output request
-            response = await self.llm.generate(
-                prompt=prompt,
-                temperature=0.3,  # Lower temperature for more consistent extraction
-                model=model  # Use character's preferred model
-            )
-            
-            # Debug: Log LLM response
-            logger.debug(f"LLM extraction response: {len(response.content)} chars")
-            logger.debug(response.content[:500])
-            if len(response.content) > 500:
-                logger.debug(f"... (truncated, total {len(response.content)} chars)")
-            
-            # Parse JSON response
-            extracted = self._parse_extraction_response(response.content, messages)
-            
-            logger.info(f"Parsed {len(extracted)} memories from LLM response")
-            for mem in extracted:
-                content_preview = mem.content[:60].encode('ascii', errors='replace').decode('ascii')
-                if len(mem.content) > 60:
-                    content_preview += "..."
-                logger.debug(f"  - {content_preview} (confidence: {mem.confidence})")
-            
-            logger.info(f"Extracted {len(extracted)} potential memories from {len(messages)} messages")
-            return extracted
-            
-        except Exception as e:
-            logger.error(f"Memory extraction failed: {e}", exc_info=True)
-            return []
     
     async def check_for_duplicates(
         self,
@@ -173,7 +122,8 @@ class MemoryExtractionService:
         self,
         extracted: ExtractedMemory,
         character_id: str,
-        conversation_id: str
+        conversation_id: str,
+        source: str = 'web'
     ) -> Optional[Memory]:
         """
         Save extracted memory with auto-approval logic.
@@ -226,7 +176,8 @@ class MemoryExtractionService:
                 },
                 emotional_weight=extracted.emotional_weight,
                 participants=extracted.participants,
-                key_moments=extracted.key_moments
+                key_moments=extracted.key_moments,
+                source=source  # Platform source: web, discord, slack, etc.
             )
             
             # 5. Add to vector store if auto-approved
@@ -277,214 +228,29 @@ class MemoryExtractionService:
             logger.error(f"Failed to approve memory {memory_id}: {e}", exc_info=True)
             return False
     
-    def _build_extraction_prompt(self, messages: List[Message], character_name: Optional[str] = None) -> str:
-        """Build prompt for LLM extraction."""
-        # Format messages for prompt
-        formatted_messages = []
-        for msg in messages:
-            role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
-            formatted_messages.append(f"{role.upper()}: {msg.content}")
-        
-        conversation_text = "\n".join(formatted_messages)
-        
-        # Add character context if available
-        character_context = ""
-        if character_name:
-            character_context = f"\nIMPORTANT: The assistant in this conversation is named '{character_name}'. DO NOT confuse the assistant's name with the user's name.\n"
-        
-        return f"""You are a memory extraction system. Your job is to identify and extract factual information about the user from conversations.{character_context}
-
-CONVERSATION:
-{conversation_text}
-
-TASK: Extract memorable facts about the USER (not the assistant).
-
-What to extract:
-- Names, locations, jobs, relationships (of the USER)
-- Hobbies, interests, skills, preferences (of the USER)
-- Past experiences, goals, plans (of the USER)
-- Opinions and values (of the USER)
-- Any information that would personalize future conversations
-
-What NOT to extract:
-- Unknown information ("user's favorite X is unknown")
-- Vague impressions or speculation
-- Information about the assistant/character
-- Obvious conversational filler
-- Facts NOT mentioned in the conversation (DO NOT invent or assume)
-- The assistant's name as the user's name
-
-For each fact, provide a JSON object with:
-- "content": Clear factual statement (e.g., "User's name is John")
-- "category": One of [personal_info, preference, experience, relationship, goal, skill]
-- "confidence": Float 0.0-1.0 (0.95 for explicit, 0.8 for clear implication, 0.7 for reasonable inference)
-- "reasoning": One sentence explaining why you extracted this
-
-EXAMPLES OF GOOD EXTRACTIONS:
-- "My name is Sarah" → {{"content": "User's name is Sarah", "category": "personal_info", "confidence": 0.95, "reasoning": "User explicitly stated their name"}}
-- "I love hiking" → {{"content": "User enjoys hiking", "category": "preference", "confidence": 0.9, "reasoning": "Direct statement of interest"}}
-- "I work as a teacher" → {{"content": "User is a teacher", "category": "personal_info", "confidence": 0.95, "reasoning": "Occupation explicitly stated"}}
-
-EXAMPLES OF BAD EXTRACTIONS (DO NOT extract these):
-- {{"content": "User's favorite color is unknown", ...}} ← DO NOT extract unknowns
-- {{"content": "User seems interested in AI", ...}} ← DO NOT extract vague impressions
-- {{"content": "Assistant is helpful", ...}} ← DO NOT extract facts about assistant
-- {{"content": "User's name is {character_name or 'Nova'}", ...}} ← DO NOT confuse assistant name with user name
-- {{"content": "User likes photography", ...}} (when photography was NEVER mentioned) ← DO NOT invent facts
-- {{"content": "User enjoys outdoor activities", ...}} (when user only said "Hello") ← DO NOT make assumptions from greetings
-
-CRITICAL RULES:
-1. If the user hasn't explicitly mentioned something, DO NOT extract it
-2. DO NOT confuse greetings like "Hello, {character_name or 'Nova'}" with the user stating their own name
-3. DO NOT invent hobbies, interests, or facts that weren't discussed
-4. Only extract information that was ACTUALLY stated or clearly implied in THIS conversation
-
-RESPONSE FORMAT:
-Return ONLY a JSON array. No explanations, no markdown, just the array:
-[
-  {{"content": "User's name is John", "category": "personal_info", "confidence": 0.95, "reasoning": "User explicitly stated their name"}},
-  {{"content": "User enjoys photography", "category": "preference", "confidence": 0.9, "reasoning": "User mentioned interest in landscape photography"}}
-]
-
-If no memorable facts are present, return: []
-"""
-    
-    def _parse_extraction_response(
-        self,
-        response: str,
-        messages: List[Message]
-    ) -> List[ExtractedMemory]:
-        """
-        Parse LLM response into ExtractedMemory objects.
-        
-        Args:
-            response: LLM response (should be JSON)
-            messages: Original messages (for source tracking)
-        
-        Returns:
-            List of ExtractedMemory objects
-        """
-        try:
-            # Extract JSON from response (handle potential markdown wrapping)
-            response = response.strip()
-            if response.startswith("```json"):
-                response = response[7:]
-            if response.startswith("```"):
-                response = response[3:]
-            if response.endswith("```"):
-                response = response[:-3]
-            response = response.strip()
-            
-            # Parse JSON
-            data = json.loads(response)
-            
-            if not isinstance(data, list):
-                logger.warning("Extraction response is not a list")
-                return []
-            
-            # Convert to ExtractedMemory objects
-            extracted = []
-            message_ids = [msg.id for msg in messages]
-            
-            for item in data:
-                try:
-                    memory = ExtractedMemory(
-                        content=item.get("content", ""),
-                        category=item.get("category", "personal_info"),
-                        confidence=float(item.get("confidence", 0.0)),
-                        reasoning=item.get("reasoning", ""),
-                        source_message_ids=message_ids
-                    )
-                    
-                    # Validate basic structure
-                    if not memory.content or not memory.content.strip():
-                        logger.debug("Skipping empty memory content")
-                        continue
-                    
-                    if not (0.0 <= memory.confidence <= 1.0):
-                        logger.debug(f"Skipping memory with invalid confidence: {memory.confidence}")
-                        continue
-                    
-                    # Defensive validation: Filter out memories about the assistant
-                    content_lower = memory.content.lower()
-                    if any(phrase in content_lower for phrase in [
-                        "assistant is", "assistant's", "assistant has", "assistant can",
-                        "character is", "character's", "character has"
-                    ]):
-                        logger.warning(f"Filtered out memory about assistant: {memory.content}")
-                        continue
-                    
-                    # CRITICAL: Filter out system prompt instructions being extracted as user facts
-                    system_prompt_indicators = [
-                        "is uncensored", "is unrestricted", "is a helpful", "is truthful",
-                        "is unbiased", "is designed to", "follows instructions", "provides assistance",
-                        "can discuss", "without limitations", "no restrictions", "can help with",
-                        "answer questions", "provide information", "assist with", "roleplay as"
-                    ]
-                    if any(indicator in content_lower for indicator in system_prompt_indicators):
-                        logger.warning(f"Filtered out system prompt instruction extracted as memory: {memory.content}")
-                        continue
-                    
-                    # CRITICAL: Filter out demographic hallucinations (gender, age, race without explicit statement)
-                    # These are commonly hallucinated from names or greetings
-                    demographic_assumptions = [
-                        "is male", "is female", "is a man", "is a woman", "is a boy", "is a girl",
-                        "is masculine", "is feminine", "years old", "age is", "ethnicity is",
-                        "race is", "is caucasian", "is asian", "is african", "is hispanic"
-                    ]
-                    if any(assumption in content_lower for assumption in demographic_assumptions):
-                        logger.warning(f"Filtered out demographic hallucination: {memory.content}")
-                        continue
-                    
-                    # CRITICAL: Filter out conversation actions/events that aren't facts about the user
-                    # These describe what happened in the conversation, not who the user is
-                    conversation_actions = [
-                        "user greeted", "user said hello", "user initiated", "user responded",
-                        "user asked", "user requested", "user thanked", "user confirmed",
-                        "user agreed", "user disagreed", "user laughed", "user joked",
-                        "user started conversation", "user ended conversation"
-                    ]
-                    if any(action in content_lower for action in conversation_actions):
-                        logger.warning(f"Filtered out conversation action (not a user fact): {memory.content}")
-                        continue
-                    
-                    # Defensive validation: Filter out "unknown" memories
-                    if "unknown" in content_lower or "not mentioned" in content_lower:
-                        logger.warning(f"Filtered out 'unknown' memory: {memory.content}")
-                        continue
-                    
-                    # Defensive validation: Must start with "User" to ensure it's about the user
-                    if not content_lower.startswith("user"):
-                        logger.warning(f"Filtered out memory not about user: {memory.content}")
-                        continue
-                    
-                    extracted.append(memory)
-                    
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Failed to parse extraction item: {e}")
-                    continue
-            
-            return extracted
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse extraction response as JSON: {e}")
-            logger.debug(f"Response was: {response[:500]}")
-            return []
-    
     async def _add_to_vector_store(self, memory: Memory, character_id: str) -> None:
         """Add memory to vector store."""
         try:
+            logger.info(f"[VECTOR STORE] Starting add for memory {memory.id[:8]}... status={memory.status}")
+            
             # Generate vector_id if not present
             if not memory.vector_id:
-                memory.vector_id = str(uuid.uuid4())
+                vector_id = str(uuid.uuid4())
+                logger.info(f"[VECTOR STORE] Generated new vector_id: {vector_id[:8]}...")
+            else:
+                vector_id = memory.vector_id
+                logger.info(f"[VECTOR STORE] Using existing vector_id: {vector_id[:8]}...")
             
             # Generate embedding
+            logger.info(f"[VECTOR STORE] Generating embedding for: {memory.content[:50]}...")
             embedding = self.embedding_service.embed(memory.content)
+            logger.info(f"[VECTOR STORE] Embedding generated, size: {len(embedding)}")
             
             # Add to vector store
+            logger.info(f"[VECTOR STORE] Adding to ChromaDB for character {character_id}")
             success = self.vector_store.add_memories(
                 character_id=character_id,
-                memory_ids=[memory.vector_id],
+                memory_ids=[vector_id],
                 contents=[memory.content],
                 embeddings=[embedding],
                 metadatas=[{
@@ -495,15 +261,25 @@ If no memorable facts are present, return: []
                 }]
             )
             
+            logger.info(f"[VECTOR STORE] ChromaDB add result: {success}")
+            
             if success:
-                # Update memory in database with vector_id
-                self.memory_repo.db.commit()
-                logger.debug(f"Added memory {memory.id} to vector store")
+                # Re-query the memory to get a fresh attached instance, then update vector_id
+                logger.info(f"[VECTOR STORE] Re-querying memory {memory.id} to update vector_id in DB")
+                fresh_memory = self.memory_repo.get_by_id(memory.id)
+                if fresh_memory:
+                    logger.info(f"[VECTOR STORE] Fresh memory retrieved, current vector_id: {fresh_memory.vector_id}")
+                    fresh_memory.vector_id = vector_id
+                    logger.info(f"[VECTOR STORE] Set vector_id to {vector_id[:8]}..., committing...")
+                    self.memory_repo.db.commit()
+                    logger.info(f"[VECTOR STORE] ✓ Committed! Memory {memory.id[:8]}... now has vector_id {vector_id[:8]}...")
+                else:
+                    logger.error(f"[VECTOR STORE] ✗ Could not re-query memory {memory.id} to update vector_id!")
             else:
-                logger.warning(f"Failed to add memory {memory.id} to vector store")
+                logger.warning(f"[VECTOR STORE] ✗ Failed to add memory {memory.id[:8]}... to vector store")
             
         except Exception as e:
-            logger.error(f"Failed to add memory to vector store: {e}", exc_info=True)
+            logger.error(f"[VECTOR STORE] ✗ Exception adding memory to vector store: {e}", exc_info=True)
     
     async def _handle_duplicate(
         self,

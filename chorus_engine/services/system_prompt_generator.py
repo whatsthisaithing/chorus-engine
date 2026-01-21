@@ -17,16 +17,24 @@ class SystemPromptGenerator:
     roleplay boundaries based on immersion_level and immersion_settings.
     """
     
-    def generate(self, character: CharacterConfig, include_notice: bool = True) -> str:
+    def generate(
+        self, 
+        character: CharacterConfig, 
+        include_notice: bool = True,
+        primary_user: Optional[str] = None,
+        conversation_source: Optional[str] = None
+    ) -> str:
         """
         Generate the complete system prompt for a character.
         
         Args:
             character: The character configuration
             include_notice: Whether to include the immersion notice in the prompt
+            primary_user: Name of the user who invoked the bot (for multi-user contexts)
+            conversation_source: Platform source ('web', 'discord', 'slack', etc.)
             
         Returns:
-            Complete system prompt with immersion guidance
+            Complete system prompt with immersion guidance and optional multi-user context
         """
         # Power user mode: Use raw system prompt without modification
         if hasattr(character, 'custom_system_prompt') and character.custom_system_prompt:
@@ -37,7 +45,16 @@ class SystemPromptGenerator:
         # 1. Base system prompt (always included)
         parts.append(character.system_prompt.strip())
         
-        # 2. Add immersion-level-specific guidance
+        # 2. Add multi-user context if from a bridge platform
+        if conversation_source and conversation_source != 'web':
+            multi_user_context = self._generate_multi_user_context(
+                primary_user=primary_user,
+                platform=conversation_source
+            )
+            if multi_user_context:
+                parts.append(multi_user_context)
+        
+        # 3. Add immersion-level-specific guidance
         immersion_guidance = self._generate_immersion_guidance(
             character.immersion_level,
             character.immersion_settings
@@ -45,18 +62,53 @@ class SystemPromptGenerator:
         if immersion_guidance:
             parts.append(immersion_guidance)
         
-        # 3. Add disclaimer behavior guidance
+        # 4. Add disclaimer behavior guidance
         disclaimer_guidance = self._generate_disclaimer_guidance(
             character.immersion_settings.disclaimer_behavior
         )
         if disclaimer_guidance:
             parts.append(disclaimer_guidance)
         
-        # 4. Add image/media generation guidance if enabled
+        # 5. Add image/media generation guidance if enabled
         if character.image_generation and character.image_generation.enabled:
             parts.append(self._generate_media_guidance())
         
         return "\n\n".join(parts)
+    
+    def _generate_multi_user_context(
+        self,
+        primary_user: Optional[str],
+        platform: str
+    ) -> str:
+        """
+        Generate multi-user conversation context for bridge platforms.
+        
+        Args:
+            primary_user: Name of the user who directly addressed the bot
+            platform: Platform name (discord, slack, etc.)
+            
+        Returns:
+            Multi-user context guidance
+        """
+        platform_display = platform.capitalize()
+        
+        parts = ["**Multi-User Conversation Context:**"]
+        parts.append(f"You are participating in a group conversation on {platform_display} with multiple users.")
+        parts.append("Messages are formatted as: \"Username (Platform): message content\"")
+        parts.append("You can see the conversation history to understand the full context.")
+        parts.append("")
+        parts.append("**Addressing Users:**")
+        parts.append("- When responding to a specific user, you may naturally address them by name for clarity")
+        parts.append('- Example: "Alex, that\'s an interesting point..." or "Hey Sarah, I think..."')
+        parts.append("- You can respond to or acknowledge other participants if relevant to the conversation")
+        parts.append("- Use natural language - don't force formality, but be clear about who you're talking to when it matters")
+        
+        if primary_user:
+            parts.append("")
+            parts.append(f"**Current Message:** You are primarily responding to: {primary_user}")
+        
+        return "\n".join(parts)
+
     
     def _generate_immersion_guidance(
         self,

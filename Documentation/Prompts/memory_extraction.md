@@ -63,60 +63,89 @@ Memory extraction serves several critical functions:
 
 ### Template Location
 
-**Method**: `_build_extraction_prompt()` - Line ~238  
+**Method**: `_build_extraction_prompt()` - Line ~277  
 **File**: `chorus_engine/services/background_memory_extractor.py`
 
-**Note**: The background worker (`background_memory_extractor.py`) handles all extraction processing. It builds its own prompt and applies defensive filters before saving memories.
+**Phase 3 Enhancement**: Multi-user memory attribution with username-based content  
+**Phase 8 Enhancement**: Memory profile integration and new memory types (project, experience, story, relationship)
+
+**Note**: The background worker (`background_memory_extractor.py`) handles all extraction processing. It builds its own prompt with multi-user context, applies 6 defensive filters, and saves memories through the storage layer (`memory_extraction.py`).
+
+### Method Signature (Phase 3)
+
+```python
+def _build_extraction_prompt(
+    self, 
+    messages: List[Message], 
+    character_name: str,
+    character: CharacterConfig,
+    conversation_source: str = 'web',  # Phase 3: 'web', 'discord', 'slack'
+    primary_user: Optional[str] = None,  # Phase 3: Username who invoked bot
+    all_users: Optional[List[str]] = None  # Phase 3: All participant usernames
+) -> tuple[str, str]:
+```
 
 ### Prompt Components
 
 1. **System Context**: Defines role as memory extraction system
 2. **Character Context**: Names the assistant to prevent confusion
-3. **Conversation Text**: Formatted messages to analyze
-4. **Task Description**: What to extract and what NOT to extract
-5. **Examples**: Good and bad extraction examples
-6. **Critical Rules**: Reinforced extraction guidelines
-7. **Output Format**: Strict JSON schema requirement
+3. **Multi-User Context**: Platform and participant information (Phase 3)
+4. **Conversation Text**: Formatted messages to analyze
+5. **Task Description**: What to extract and what NOT to extract
+6. **Memory Type Instructions**: From character's memory profile (Phase 8)
+7. **Examples**: Good and bad extraction examples (including multi-user)
+8. **Critical Rules**: Reinforced extraction guidelines
+9. **Output Format**: Strict JSON schema requirement
 
 ---
 
-## Full Prompt Template
+## Full Prompt Template (Phase 3 + Phase 8)
+
+### System Prompt
 
 ```
-You are a memory extraction system. Your job is to identify and extract factual information about the user from their messages.
+You are a memory extraction system. Your job is to identify and extract information about the user from their messages.
 
 IMPORTANT: The assistant in this conversation is named {character_name!r}. DO NOT confuse the assistant name with the user name.
 
-TASK: Extract memorable facts about the USER (not the assistant).
+{multi_user_context}
 
-What to extract:
-- Names, locations, jobs, relationships (of the USER)
-- Hobbies, interests, skills, preferences (of the USER)
-- Past experiences, goals, plans (of the USER)
-- Opinions and values (of the USER)
-- Any information that would personalize future conversations
+TASK: Extract memories about the USER (not the assistant).
+
+{extraction_instructions}
+
+MEMORY TYPES (extract these types only):
+- FACT: Factual information (name, location, job, preferences, opinions)
+- PROJECT: Goals, plans, ongoing projects or objectives
+- EXPERIENCE: Shared experiences, activities, events (if allowed)
+- STORY: Narratives, anecdotes, past stories (if allowed)
+- RELATIONSHIP: Relationship dynamics, emotional bonds (if allowed)
 
 What NOT to extract:
-- Unknown information
-- Vague impressions or speculation
+- Unknown information or speculation
 - Information about the assistant/character
-- Obvious conversational filler (greetings like "Hello")
+- Conversational filler (greetings, small talk)
 - Facts NOT mentioned by the user
 - The assistant name as the user name
-- Requests or questions (questions ask for information, they don't provide facts about the user)
-- Physical descriptions UNLESS the user explicitly states them about themselves
-- Answers to the user's questions (you are extracting facts FROM the user, not answering their questions)
+- Requests or questions from the user
+- Physical descriptions unless explicitly stated by user
+- Demographic assumptions (age, gender, ethnicity) unless explicitly stated
 
-For each fact, provide a JSON object with:
-- "content": Clear factual statement (e.g., "User name is John")
-- "category": One of [personal_info, preference, experience, relationship, goal, skill]
-- "confidence": Float 0.0-1.0 (0.95 explicit, 0.8 clear implication, 0.7 reasonable inference)
-- "reasoning": One sentence explaining why you extracted this
+For each memory, provide a JSON object with:
+- "content": Clear statement (e.g., "User name is John" or "fitzycodesthings enjoys hiking")
+- "type": One of {allowed_type_names}
+- "confidence": Float 0.0-1.0 (0.95 explicit, 0.8 clear, 0.7 inference)
+- "reasoning": One sentence explaining extraction
+- "emotional_weight": Optional float 0.0-1.0 for emotionally significant moments
+- "participants": Optional list of people involved (including user)
+- "key_moments": Optional list of significant moments in the memory
 
 EXAMPLES OF GOOD EXTRACTIONS:
-- "My name is Sarah" results in {{"content": "User name is Sarah", "category": "personal_info", "confidence": 0.95, "reasoning": "User explicitly stated their name"}}
-- "I love hiking" results in {{"content": "User enjoys hiking", "category": "preference", "confidence": 0.9, "reasoning": "Direct statement of interest"}}
-- "I work as a teacher" results in {{"content": "User is a teacher", "category": "personal_info", "confidence": 0.95, "reasoning": "Occupation explicitly stated"}}
+- "My name is Sarah" → {{"content": "User name is Sarah", "type": "fact", "confidence": 0.95, "reasoning": "User explicitly stated their name"}}
+- "I love hiking" → {{"content": "User enjoys hiking", "type": "fact", "confidence": 0.9, "reasoning": "Direct statement of interest"}}
+- "I'm working on building a game" → {{"content": "User is developing a game", "type": "project", "confidence": 0.9, "reasoning": "Ongoing project stated"}}
+- "We went to the beach last summer" → {{"content": "User went to beach with companion", "type": "experience", "confidence": 0.85, "reasoning": "Shared experience mentioned", "participants": ["user", "companion"]}}
+- "When I was a kid, I broke my arm" → {{"content": "User broke arm as child", "type": "story", "confidence": 0.9, "reasoning": "Past narrative shared", "emotional_weight": 0.6}}
 
 EXAMPLES OF BAD EXTRACTIONS (DO NOT extract these):
 - DO NOT extract unknowns
@@ -155,6 +184,63 @@ INVALID responses (DO NOT use these):
 - Markdown code blocks
 - Empty responses
 ```
+
+### Multi-User Context (Phase 3)
+
+When `conversation_source != 'web'` and `all_users` is provided:
+
+```
+CONVERSATION CONTEXT:
+- Platform: discord
+- Multiple users are participating in this conversation
+- Participants include: fitzycodesthings, alex, sarah
+- The primary user who invoked you is: fitzycodesthings.
+- When extracting memories, attribute them to the SPECIFIC USER who stated the fact
+- Use their username in the memory content (e.g., "fitzycodesthings enjoys sci-fi" not "user enjoys sci-fi")
+- If a user talks about someone else, that's a fact about the SPEAKER, not the person mentioned
+
+EXAMPLES FOR MULTI-USER:
+- "fitzycodesthings: I love hiking" → {{"content": "fitzycodesthings enjoys hiking", ...}}
+- "alex: I prefer Python" → {{"content": "alex prefers Python programming language", ...}}
+- "sarah: I think alex is right" → {{"content": "sarah agrees with alex", ...}}
+```
+
+When `conversation_source == 'web'` (single-user):
+
+```
+CONVERSATION CONTEXT:
+- Platform: web
+- Single user conversation
+- Use "User" in memory content (e.g., "User enjoys sci-fi")
+```
+
+### Purpose of Multi-User Context
+
+1. **Username Attribution**: Memories tied to specific users in group chats
+2. **Platform Awareness**: System knows context (Discord group vs web 1-on-1)
+3. **Primary User**: Identifies who directly addressed the bot
+4. **Participant List**: All users in conversation for validation
+5. **Retrieval Accuracy**: Enables per-user memory filtering in multi-user contexts
+
+### Filter Integration
+
+**Filter 6** (User Content Validation) uses `all_users` parameter:
+
+```python
+# For Discord, check if content starts with any participant username
+is_user_content = content_lower.startswith("user")
+if not is_user_content and all_users:
+    is_user_content = any(
+        content_lower.startswith(username.lower()) 
+        for username in all_users
+    )
+
+if not is_user_content:
+    logger.warning(f"[FILTER] Blocked non-user content: {content}")
+    continue
+```
+
+This ensures Discord memories like "fitzycodesthings enjoys..." pass validation alongside web memories like "User enjoys...".
 
 ---
 
@@ -385,22 +471,41 @@ if "unknown" in content_lower or "not mentioned" in content_lower:
 **Catches**: Memories stating something is unknown  
 **Result**: `logger.warning(f"[FILTER] Blocked unknown information: {content}")`
 
-**Filter 6: User Content Validation**
+**Filter 6: User Content Validation** (Phase 3 Enhanced)
 ```python
-if not content_lower.startswith("user"):
+# Must start with "user" (web) or a known username (Discord)
+is_user_content = content_lower.startswith("user")
+if not is_user_content and all_users:
+    is_user_content = any(
+        content_lower.startswith(username.lower()) 
+        for username in all_users
+    )
+
+if not is_user_content:
+    logger.warning(f"[FILTER] Blocked non-user content: {content}")
+    continue
 ```
-**Catches**: Content not about the user  
+**Catches**: Content not about a user (web or Discord participants)  
+**Phase 3 Addition**: Validates Discord usernames against `all_users` list  
 **Result**: `logger.warning(f"[FILTER] Blocked non-user content: {content}")`
 
 ### Filter Effectiveness
 
-**Test Results** (2026-01-01):
+**Test Results** (Phase 3 - January 2026):
+
+**Web Conversation (single-user)**:
 - **"Hello."** → LLM extracted: `"User greeted"` → **Filter 1 blocked** ✅
 - **"What are you doing?"** → LLM extracted: `"User asked about current activity"` → **Filter 1 blocked** ✅
 - **"Send me a photo."** → LLM extracted: `"User requested to send a photo"` → **Filter 1 blocked** ✅
 - **"My name is John"** → LLM extracted: `"User name is John"` → **All filters passed** ✅
 - **"Beautiful photo."** → LLM extracted: `"User appreciates photography"` → **All filters passed** (valid opinion) ✅
 - **"My favorite is whisky (Irish kind)"** → LLM extracted: `"User prefers Irish whiskey"` → **All filters passed** ✅
+
+**Discord Conversation (multi-user)**:
+- **"fitzycodesthings: My favorite books are sci-fi"** → LLM extracted: `"fitzycodesthings enjoys science fiction books"` → **All filters passed** (Filter 6 validates username) ✅
+- **"alex: Hello Nova!"** → LLM extracted: `"alex greeted"` → **Filter 1 blocked** ✅
+- **"sarah: What are you doing?"** → LLM extracted: `"sarah asked about current activity"` → **Filter 1 blocked** ✅
+- **"fitzycodesthings: I work as a developer"** → LLM extracted: `"fitzycodesthings is a software developer"` → **All filters passed** ✅
 
 ### Why Filters Are Necessary
 
@@ -634,6 +739,301 @@ except json.JSONDecodeError:
     # Fall back to empty list if fails
     return []
 ```
+
+---
+
+## Complete Prompt Examples
+
+### Example 1: Single-User Web Extraction (Full Memory Profile)
+
+**Character**: Nova (Full immersion - all memory types enabled)  
+**Context**: Web conversation, single user  
+**User Message**: "I'm working on a sci-fi novel about time loops. My favorite author is Ted Chiang."
+
+**System Prompt**:
+```
+You are a memory extraction system. Your job is to identify and extract information about the user from their messages.
+
+IMPORTANT: The assistant in this conversation is named 'Nova'. DO NOT confuse the assistant name with the user name.
+
+CONVERSATION CONTEXT:
+- Platform: web
+- Single user conversation
+- Use "User" in memory content (e.g., "User enjoys sci-fi")
+
+TASK: Extract memories about the USER (not the assistant).
+
+MEMORY PROFILE - Extract ALL memory types (full immersion):
+You should extract comprehensive memories across all types:
+- FACT: Basic factual information
+- PROJECT: Goals, plans, ongoing work
+- EXPERIENCE: Shared experiences and activities
+- STORY: Personal narratives and anecdotes
+- RELATIONSHIP: Emotional bonds and dynamics
+
+Be thorough in capturing the richness of the user's experiences and relationships.
+
+MEMORY TYPES (extract these types only):
+- FACT: Factual information (name, location, job, preferences, opinions)
+- PROJECT: Goals, plans, ongoing projects or objectives
+- EXPERIENCE: Shared experiences, activities, events (if allowed)
+- STORY: Narratives, anecdotes, past stories (if allowed)
+- RELATIONSHIP: Relationship dynamics, emotional bonds (if allowed)
+
+What NOT to extract:
+- Unknown information or speculation
+- Information about the assistant/character
+- Conversational filler (greetings, small talk)
+- Facts NOT mentioned by the user
+- The assistant name as the user name
+- Requests or questions from the user
+- Physical descriptions unless explicitly stated by user
+- Demographic assumptions (age, gender, ethnicity) unless explicitly stated
+
+For each memory, provide a JSON object with:
+- "content": Clear statement (e.g., "User name is John" or "fitzycodesthings enjoys hiking")
+- "type": One of ['fact', 'project', 'experience', 'story', 'relationship']
+- "confidence": Float 0.0-1.0 (0.95 explicit, 0.8 clear, 0.7 inference)
+- "reasoning": One sentence explaining extraction
+- "emotional_weight": Optional float 0.0-1.0 for emotionally significant moments
+- "participants": Optional list of people involved (including user)
+- "key_moments": Optional list of significant moments in the memory
+
+EXAMPLES OF GOOD EXTRACTIONS:
+- "My name is Sarah" → {"content": "User name is Sarah", "type": "fact", "confidence": 0.95, "reasoning": "User explicitly stated their name"}
+- "I love hiking" → {"content": "User enjoys hiking", "type": "fact", "confidence": 0.9, "reasoning": "Direct statement of interest"}
+- "I'm working on building a game" → {"content": "User is developing a game", "type": "project", "confidence": 0.9, "reasoning": "Ongoing project stated"}
+- "We went to the beach last summer" → {"content": "User went to beach with companion", "type": "experience", "confidence": 0.85, "reasoning": "Shared experience mentioned", "participants": ["user", "companion"]}
+- "When I was a kid, I broke my arm" → {"content": "User broke arm as child", "type": "story", "confidence": 0.9, "reasoning": "Past narrative shared", "emotional_weight": 0.6}
+
+EXAMPLES OF BAD EXTRACTIONS (DO NOT extract these):
+- DO NOT extract unknowns
+- DO NOT extract vague impressions
+- DO NOT extract facts about assistant
+- DO NOT confuse assistant name with user name
+- DO NOT invent facts not mentioned
+- DO NOT make assumptions from greetings
+- DO NOT extract requests/actions
+- DO NOT extract descriptions from character responses
+
+CRITICAL RULES:
+1. If the user has not explicitly mentioned something, DO NOT extract it
+2. DO NOT confuse greetings with the user stating their own name
+3. DO NOT invent hobbies, interests, or facts that were not discussed
+4. DO NOT extract what the user is asking for or requesting - only extract facts about themselves
+5. DO NOT extract physical descriptions unless the user explicitly states them about themselves
+6. DO NOT infer gender, age, ethnicity, or other demographics from names or greetings
+7. DO NOT extract demographic information unless the user EXPLICITLY states it about themselves
+8. Only extract information that was ACTUALLY stated or clearly implied in the USER messages
+9. DO NOT extract conversation actions like "User greeted", "User asked", "User said hello"
+10. If the messages contain ONLY greetings or small talk with NO actual facts, return an empty array []
+11. Questions from the user contain NO facts about the user - questions always return []
+12. You are NOT answering the user's questions - you are extracting facts the user stated about THEMSELVES
+
+RESPONSE FORMAT:
+You MUST return ONLY a valid JSON array. NO explanations, NO apologies, NO markdown formatting, NO text before or after.
+
+VALID responses:
+- Facts found: [{"content": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}]
+- No facts: []
+
+INVALID responses (DO NOT use these):
+- "Sorry, I can't extract..."
+- Text explanations
+- Markdown code blocks
+- Empty responses
+
+If no memorable facts are present, return exactly: []
+
+CRITICAL: Returning an empty array [] is the CORRECT and EXPECTED response when messages contain no facts. Simple greetings like "Hello" MUST return []. Questions MUST return [].
+```
+
+**User Content** (passed separately):
+```
+I'm working on a sci-fi novel about time loops. My favorite author is Ted Chiang.
+```
+
+**Expected LLM Response**:
+```json
+[
+  {
+    "content": "User is writing a science fiction novel about time loops",
+    "type": "project",
+    "confidence": 0.95,
+    "reasoning": "User explicitly stated their ongoing creative project"
+  },
+  {
+    "content": "User's favorite author is Ted Chiang",
+    "type": "fact",
+    "confidence": 0.95,
+    "reasoning": "User directly stated their literary preference"
+  }
+]
+```
+
+---
+
+### Example 2: Multi-User Discord Extraction
+
+**Character**: Nova  
+**Context**: Discord group chat  
+**Participants**: fitzycodesthings, alex, sarah  
+**Primary User**: fitzycodesthings  
+**Messages**: 
+- "fitzycodesthings: I love sci-fi books, especially hard science fiction"
+- "alex: I prefer fantasy novels"
+
+**System Prompt**:
+```
+You are a memory extraction system. Your job is to identify and extract information about the user from their messages.
+
+IMPORTANT: The assistant in this conversation is named 'Nova'. DO NOT confuse the assistant name with the user name.
+
+CONVERSATION CONTEXT:
+- Platform: discord
+- Multiple users are participating in this conversation
+- Participants include: fitzycodesthings, alex, sarah
+- The primary user who invoked you is: fitzycodesthings.
+- When extracting memories, attribute them to the SPECIFIC USER who stated the fact
+- Use their username in the memory content (e.g., "fitzycodesthings enjoys sci-fi" not "user enjoys sci-fi")
+- If a user talks about someone else, that's a fact about the SPEAKER, not the person mentioned
+
+EXAMPLES FOR MULTI-USER:
+- "fitzycodesthings: I love hiking" → {"content": "fitzycodesthings enjoys hiking", ...}
+- "alex: I prefer Python" → {"content": "alex prefers Python programming language", ...}
+- "sarah: I think alex is right" → {"content": "sarah agrees with alex", ...}
+
+TASK: Extract memories about the USER (not the assistant).
+
+MEMORY PROFILE - Extract ALL memory types (full immersion):
+You should extract comprehensive memories across all types:
+- FACT: Basic factual information
+- PROJECT: Goals, plans, ongoing work
+- EXPERIENCE: Shared experiences and activities
+- STORY: Personal narratives and anecdotes
+- RELATIONSHIP: Emotional bonds and dynamics
+
+Be thorough in capturing the richness of the user's experiences and relationships.
+
+MEMORY TYPES (extract these types only):
+- FACT: Factual information (name, location, job, preferences, opinions)
+- PROJECT: Goals, plans, ongoing projects or objectives
+- EXPERIENCE: Shared experiences, activities, events (if allowed)
+- STORY: Narratives, anecdotes, past stories (if allowed)
+- RELATIONSHIP: Relationship dynamics, emotional bonds (if allowed)
+
+What NOT to extract:
+- Unknown information or speculation
+- Information about the assistant/character
+- Conversational filler (greetings, small talk)
+- Facts NOT mentioned by the user
+- The assistant name as the user name
+- Requests or questions from the user
+- Physical descriptions unless explicitly stated by user
+- Demographic assumptions (age, gender, ethnicity) unless explicitly stated
+
+For each memory, provide a JSON object with:
+- "content": Clear statement (e.g., "User name is John" or "fitzycodesthings enjoys hiking")
+- "type": One of ['fact', 'project', 'experience', 'story', 'relationship']
+- "confidence": Float 0.0-1.0 (0.95 explicit, 0.8 clear, 0.7 inference)
+- "reasoning": One sentence explaining extraction
+- "emotional_weight": Optional float 0.0-1.0 for emotionally significant moments
+- "participants": Optional list of people involved (including user)
+- "key_moments": Optional list of significant moments in the memory
+
+EXAMPLES OF GOOD EXTRACTIONS:
+- "My name is Sarah" → {"content": "User name is Sarah", "type": "fact", "confidence": 0.95, "reasoning": "User explicitly stated their name"}
+- "I love hiking" → {"content": "User enjoys hiking", "type": "fact", "confidence": 0.9, "reasoning": "Direct statement of interest"}
+- "I'm working on building a game" → {"content": "User is developing a game", "type": "project", "confidence": 0.9, "reasoning": "Ongoing project stated"}
+- "We went to the beach last summer" → {"content": "User went to beach with companion", "type": "experience", "confidence": 0.85, "reasoning": "Shared experience mentioned", "participants": ["user", "companion"]}
+- "When I was a kid, I broke my arm" → {"content": "User broke arm as child", "type": "story", "confidence": 0.9, "reasoning": "Past narrative shared", "emotional_weight": 0.6}
+
+EXAMPLES OF BAD EXTRACTIONS (DO NOT extract these):
+- DO NOT extract unknowns
+- DO NOT extract vague impressions
+- DO NOT extract facts about assistant
+- DO NOT confuse assistant name with user name
+- DO NOT invent facts not mentioned
+- DO NOT make assumptions from greetings
+- DO NOT extract requests/actions
+- DO NOT extract descriptions from character responses
+
+CRITICAL RULES:
+1. If the user has not explicitly mentioned something, DO NOT extract it
+2. DO NOT confuse greetings with the user stating their own name
+3. DO NOT invent hobbies, interests, or facts that were not discussed
+4. DO NOT extract what the user is asking for or requesting - only extract facts about themselves
+5. DO NOT extract physical descriptions unless the user explicitly states them about themselves
+6. DO NOT infer gender, age, ethnicity, or other demographics from names or greetings
+7. DO NOT extract demographic information unless the user EXPLICITLY states it about themselves
+8. Only extract information that was ACTUALLY stated or clearly implied in the USER messages
+9. DO NOT extract conversation actions like "User greeted", "User asked", "User said hello"
+10. If the messages contain ONLY greetings or small talk with NO actual facts, return an empty array []
+11. Questions from the user contain NO facts about the user - questions always return []
+12. You are NOT answering the user's questions - you are extracting facts the user stated about THEMSELVES
+
+RESPONSE FORMAT:
+You MUST return ONLY a valid JSON array. NO explanations, NO apologies, NO markdown formatting, NO text before or after.
+
+VALID responses:
+- Facts found: [{"content": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}]
+- No facts: []
+
+INVALID responses (DO NOT use these):
+- "Sorry, I can't extract..."
+- Text explanations
+- Markdown code blocks
+- Empty responses
+
+If no memorable facts are present, return exactly: []
+
+CRITICAL: Returning an empty array [] is the CORRECT and EXPECTED response when messages contain no facts. Simple greetings like "Hello" MUST return []. Questions MUST return [].
+```
+
+**User Content** (passed separately):
+```
+fitzycodesthings: I love sci-fi books, especially hard science fiction
+alex: I prefer fantasy novels
+```
+
+**Expected LLM Response**:
+```json
+[
+  {
+    "content": "fitzycodesthings loves science fiction books, particularly hard science fiction",
+    "type": "fact",
+    "confidence": 0.95,
+    "reasoning": "fitzycodesthings explicitly stated their literary preference with specificity"
+  },
+  {
+    "content": "alex prefers fantasy novels",
+    "type": "fact",
+    "confidence": 0.95,
+    "reasoning": "alex directly stated their reading preference"
+  }
+]
+```
+
+**Post-Filter Results**: Both memories pass all 6 defensive filters because:
+- ✅ Not conversation actions
+- ✅ Not about assistant
+- ✅ Not system prompt leaks
+- ✅ No demographic assumptions
+- ✅ No "unknown" statements
+- ✅ Start with participant usernames (fitzycodesthings, alex)
+
+---
+
+### Example 3: Empty Result (Greeting Only)
+
+**User Message**: "Hello Nova!"
+
+**Expected LLM Response**:
+```json
+[]
+```
+
+**Reasoning**: Simple greeting with no extractable facts. Even if LLM tries to extract "User greeted", Filter 1 blocks it.
 
 ---
 

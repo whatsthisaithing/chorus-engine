@@ -33,6 +33,9 @@ class ExtractionTask:
     model: str
     character_name: str
     character: CharacterConfig
+    conversation_source: Optional[str] = 'web'  # Platform source: web, discord, slack, etc.
+    primary_user: Optional[str] = None  # Phase 3: Primary user who invoked bot
+    all_users: Optional[List[str]] = None  # Phase 3: All participants in conversation
 
 
 class BackgroundMemoryExtractor:
@@ -89,7 +92,10 @@ class BackgroundMemoryExtractor:
         messages: List[Message],
         model: str,
         character_name: str,
-        character: CharacterConfig
+        character: CharacterConfig,
+        conversation_source: Optional[str] = 'web',
+        primary_user: Optional[str] = None,
+        all_users: Optional[List[str]] = None
     ):
         """Queue a memory extraction task.
         
@@ -100,6 +106,9 @@ class BackgroundMemoryExtractor:
             model: Model name to use for extraction (character's model)
             character_name: Name of character for context
             character: Character configuration (for memory profile)
+            conversation_source: Platform source (web, discord, slack, etc.)
+            primary_user: Username of user who invoked the bot
+            all_users: List of all participant usernames in conversation
         """
         task = ExtractionTask(
             conversation_id=conversation_id,
@@ -107,7 +116,10 @@ class BackgroundMemoryExtractor:
             messages=messages,
             model=model,
             character_name=character_name,
-            character=character
+            character=character,
+            conversation_source=conversation_source,
+            primary_user=primary_user,
+            all_users=all_users or []
         )
         await self._task_queue.put(task)
         logger.debug(f"Queued memory extraction for conversation {conversation_id}")
@@ -166,7 +178,10 @@ class BackgroundMemoryExtractor:
             system_prompt, user_content = self._build_extraction_prompt(
                 task.messages, 
                 task.character_name,
-                task.character
+                task.character,
+                conversation_source=task.conversation_source,
+                primary_user=task.primary_user,
+                all_users=task.all_users
             )
             # Log prompt metadata only (not content for privacy)
             extraction_log["prompt_length"] = {
@@ -205,7 +220,7 @@ class BackgroundMemoryExtractor:
             logger.info(f"[BACKGROUND MEMORY] LLM response ({len(response_text)} chars)")
             
             # Parse response and save memories
-            memories = self._parse_extraction_response(response_text)
+            memories = self._parse_extraction_response(response_text, task.all_users)
             extraction_log["extracted_memories"] = [
                 {
                     "content": m.content,
@@ -222,7 +237,8 @@ class BackgroundMemoryExtractor:
                     saved = await self.extraction_service.save_extracted_memory(
                         extracted=memory,
                         character_id=task.character_id,
-                        conversation_id=task.conversation_id
+                        conversation_id=task.conversation_id,
+                        source=task.conversation_source
                     )
                     if saved:
                         saved_count += 1
@@ -261,16 +277,23 @@ class BackgroundMemoryExtractor:
         self, 
         messages: List[Message], 
         character_name: str,
-        character: CharacterConfig
+        character: CharacterConfig,
+        conversation_source: str = 'web',
+        primary_user: Optional[str] = None,
+        all_users: Optional[List[str]] = None
     ) -> tuple[str, str]:
         """Build system prompt and user content for memory extraction.
         
         Phase 8: Includes memory profile filtering and new memory types/fields.
+        Phase 3: Multi-user memory attribution with usernames.
         
         Args:
             messages: Messages to extract from (should be USER messages only)
             character_name: Name of character for context
             character: Character configuration (for memory profile)
+            conversation_source: Platform source (web, discord, slack, etc.)
+            primary_user: Username of user who invoked the bot
+            all_users: List of all participant usernames in conversation
             
         Returns:
             Tuple of (system_prompt, user_content)
@@ -303,10 +326,41 @@ class BackgroundMemoryExtractor:
         allowed_types = self.memory_profile_service.get_allowed_types(character)
         allowed_type_names = [t.value for t in allowed_types]
         
-        # System prompt with Phase 8 extraction instructions
+        # Phase 3: Build multi-user context if applicable
+        multi_user_context = ""
+        if conversation_source != 'web' and all_users:
+            # Multi-user conversation (Discord, Slack, etc.)
+            participants_list = ", ".join(all_users) if all_users else "unknown"
+            primary_context = f" The primary user who invoked you is: {primary_user}." if primary_user else ""
+            multi_user_context = f"""
+CONVERSATION CONTEXT:
+- Platform: {conversation_source}
+- Multiple users are participating in this conversation
+- Participants include: {participants_list}{primary_context}
+- When extracting memories, attribute them to the SPECIFIC USER who stated the fact
+- Use their username in the memory content (e.g., "fitzycodesthings enjoys sci-fi" not "user enjoys sci-fi")
+- If a user talks about someone else, that's a fact about the SPEAKER, not the person mentioned
+
+EXAMPLES FOR MULTI-USER:
+- "fitzycodesthings: I love hiking" → {{"content": "fitzycodesthings enjoys hiking", ...}}
+- "alex: I prefer Python" → {{"content": "alex prefers Python programming language", ...}}
+- "sarah: I think alex is right" → {{"content": "sarah agrees with alex", ...}}
+"""
+        else:
+            # Single-user web conversation
+            multi_user_context = """
+CONVERSATION CONTEXT:
+- Platform: web
+- Single user conversation
+- Use "User" in memory content (e.g., "User enjoys sci-fi")
+"""
+        
+        # System prompt with Phase 8 extraction instructions + Phase 3 multi-user context
         system_prompt = f"""You are a memory extraction system. Your job is to identify and extract information about the user from their messages.
 
 IMPORTANT: The assistant in this conversation is named {character_name!r}. DO NOT confuse the assistant name with the user name.
+
+{multi_user_context}
 
 TASK: Extract memories about the USER (not the assistant).
 
@@ -418,11 +472,12 @@ CRITICAL: Returning an empty array [] is the CORRECT and EXPECTED response when 
         except Exception as e:
             logger.error(f"Failed to write extraction debug log: {e}")
     
-    def _parse_extraction_response(self, response: str) -> List[ExtractedMemory]:
+    def _parse_extraction_response(self, response: str, all_users: Optional[List[str]] = None) -> List[ExtractedMemory]:
         """Parse LLM response into ExtractedMemory objects.
         
         Args:
             response: Raw LLM response
+            all_users: List of usernames from the conversation (for Discord multi-user)
             
         Returns:
             List of ExtractedMemory objects
@@ -501,8 +556,17 @@ CRITICAL: Returning an empty array [] is the CORRECT and EXPECTED response when 
                         logger.warning(f"[FILTER] Blocked unknown information: {content}")
                         continue
                     
-                    # Filter 6: Must start with "User" (ensures it's about the user)
-                    if not content_lower.startswith("user"):
+                    # Filter 6: Must be about a user (web: "User...", discord: "username...")
+                    # For Discord, check if it starts with any of the participant usernames
+                    is_user_content = content_lower.startswith("user")
+                    if not is_user_content and all_users:
+                        # Check if content starts with any known username
+                        is_user_content = any(
+                            content_lower.startswith(username.lower()) 
+                            for username in all_users
+                        )
+                    
+                    if not is_user_content:
                         logger.warning(f"[FILTER] Blocked non-user content: {content}")
                         continue
                     

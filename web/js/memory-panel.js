@@ -117,7 +117,7 @@ window.MemoryPanel = {
         
         try {
             this.showStatus('Loading memories...', 'info');
-            const memories = await API.getCharacterMemories(this.currentCharacter);
+            const memories = await API.getCharacterMemories(this.currentCharacter, null, 'web');
             this.allMemories = memories;
             this.isSearchMode = false;
             this.renderMemories();

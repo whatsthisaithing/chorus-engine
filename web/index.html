@@ -129,6 +129,11 @@
                             <i class="bi bi-gear-fill me-2"></i>Settings
                         </button>
                         <ul class="dropdown-menu" aria-labelledby="settingsMenuBtn">
+                            <li><h6 class="dropdown-header">User Settings</h6></li>
+                            <li><a class="dropdown-item" href="#" id="setUsernameMenuItem">
+                                <i class="bi bi-person me-2"></i>Set Username
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
                             <li><h6 class="dropdown-header">Configuration</h6></li>
                             <li><a class="dropdown-item" href="#" id="exportCharacterMenuItem">
                                 <i class="bi bi-download me-2"></i>Export Character
@@ -349,6 +354,37 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                     <p class="mb-0">Generating response...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Username Modal -->
+    <div class="modal fade" id="usernameModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">Set Username</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-muted mb-3">
+                        Your username helps the assistant identify you in conversations. 
+                        It's stored locally in your browser.
+                    </p>
+                    <div class="mb-3">
+                        <label for="usernameInput" class="form-label">Username</label>
+                        <input type="text" class="form-control bg-dark text-white border-secondary" id="usernameInput" 
+                               placeholder="Enter your name" maxlength="50">
+                        <div class="form-text text-muted">Leave empty to use "User" as default</div>
+                    </div>
+                    <div class="small text-muted">
+                        <i class="bi bi-info-circle"></i> User ID: <code id="currentUserId" class="text-warning bg-dark px-2 py-1 rounded"></code>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveUsernameBtn">Save</button>
                 </div>
             </div>
         </div>
@@ -2862,7 +2898,8 @@
     
     <!-- Custom JS -->
     <script src="js/themes.js?v=2"></script>
-    <script src="js/api.js?v=10"></script>
+    <script src="js/user.js?v=1"></script>
+    <script src="js/api.js?v=11"></script>
     <script src="js/ui.js?v=8"></script>
     <script src="js/character-management.js?v=7"></script>
     <script src="js/character-cards.js?v=12"></script>
@@ -2874,6 +2911,48 @@
     <script src="js/app.js?v=9"></script>
     <script src="js/document-library.js?v=1"></script>
     <script src="js/document-autocomplete.js?v=1"></script>
+    
+    <!-- Username Management Handler -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const setUsernameMenuItem = document.getElementById('setUsernameMenuItem');
+            const usernameModal = new bootstrap.Modal(document.getElementById('usernameModal'));
+            const usernameInput = document.getElementById('usernameInput');
+            const currentUserId = document.getElementById('currentUserId');
+            const saveUsernameBtn = document.getElementById('saveUsernameBtn');
+            
+            // Open username modal
+            if (setUsernameMenuItem) {
+                setUsernameMenuItem.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    // Populate current values
+                    usernameInput.value = userManager.getUsername();
+                    currentUserId.textContent = userManager.getUserId();
+                    usernameModal.show();
+                });
+            }
+            
+            // Save username
+            if (saveUsernameBtn) {
+                saveUsernameBtn.addEventListener('click', function() {
+                    const newUsername = usernameInput.value.trim() || 'User';
+                    userManager.setUsername(newUsername);
+                    usernameModal.hide();
+                    
+                    // Show confirmation
+                    const toast = document.createElement('div');
+                    toast.className = 'toast-notification';
+                    toast.textContent = `Username set to: ${newUsername}`;
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.classList.add('show'), 10);
+                    setTimeout(() => {
+                        toast.classList.remove('show');
+                        setTimeout(() => toast.remove(), 300);
+                    }, 3000);
+                });
+            }
+        });
+    </script>
     
     <!-- Document Library Button Handler -->
     <script>
