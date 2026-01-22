@@ -253,10 +253,31 @@ const UI = {
         // Add text content if present
         const content = (message.content || '').trim();
         if (content) {
+            // For assistant messages, convert username references to @ format
+            // LLM generates <username> which gets treated as HTML tags
+            let processedContent = content;
+            if (message.role === 'assistant') {
+                // Replace <username> with @username (both Discord mentions and LLM-generated references)
+                processedContent = processedContent.replace(/<@(\d+)>/g, '@$1'); // Discord mentions <@123456>
+                processedContent = processedContent.replace(/<([A-Za-z0-9_ ]+)>/g, '@$1'); // LLM references <Username> (with spaces)
+            }
+            
             const formattedContent = message.role === 'assistant' 
-                ? this.renderMarkdown(content)
-                : this.escapeHtml(content);
+                ? this.renderMarkdown(processedContent)
+                : this.escapeHtml(processedContent);
             contentHtml += `<div class="message-content">${formattedContent}</div>`;
+        }
+        
+        // Add username badge for non-web multi-user conversations (Discord, etc.)
+        // Only show if platform is set and not 'web'
+        if (message.role === 'user' && message.metadata && message.metadata.username) {
+            const platform = message.metadata.platform ? message.metadata.platform.toLowerCase() : '';
+            if (platform && platform !== 'web') {
+                const username = this.escapeHtml(message.metadata.username);
+                contentHtml += `<div class="message-username">
+                    <span class="username-label">${username}</span>
+                </div>`;
+            }
         }
         
         // Add timestamp

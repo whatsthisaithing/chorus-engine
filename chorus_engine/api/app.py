@@ -655,6 +655,7 @@ class ConversationCreate(BaseModel):
     character_id: str
     title: Optional[str] = None
     source: Optional[str] = "web"  # "web", "discord", etc.
+    image_confirmation_disabled: Optional[bool] = None  # Bypass image generation confirmation dialog
 
 
 class ConversationResponse(BaseModel):
@@ -754,6 +755,11 @@ class MessageResponse(BaseModel):
             audio_url=audio_url,
             audio_emotion=None  # Reserved for future use
         )
+
+
+class MessageMetadataUpdate(BaseModel):
+    """Update message metadata request."""
+    metadata: dict
 
 
 class ChatInThreadRequest(BaseModel):
@@ -2133,7 +2139,8 @@ async def create_conversation(
     conversation = repo.create(
         character_id=request.character_id,
         title=request.title,
-        source=request.source or "web"
+        source=request.source or "web",
+        image_confirmation_disabled=request.image_confirmation_disabled
     )
     
     # Create default thread
@@ -3085,6 +3092,26 @@ async def send_message(
             model=model
         )
         
+        # Log the full interaction to debug file
+        log_llm_call(
+            conversation_id=conversation.id,
+            interaction_type="chat",
+            model=model,
+            prompt=json.dumps(messages, indent=2),  # Full messages array
+            response=response.content,
+            settings={
+                "temperature": temperature if temperature is not None else app_state['system_config'].llm.temperature,
+                "max_tokens": max_tokens if max_tokens is not None else app_state['system_config'].llm.max_response_tokens
+            },
+            metadata={
+                "character_id": character.id,
+                "character_name": character.name,
+                "thread_id": thread_id,
+                "conversation_source": request.conversation_source or 'web',
+                "primary_user": request.primary_user if hasattr(request, 'primary_user') else None
+            }
+        )
+        
         # Phase 1: Append citations to response if document context was used
         response_content = response.content
         if doc_conversation_service and doc_context and doc_context.has_content():
@@ -3340,6 +3367,41 @@ async def add_message_without_response(
         "role": new_message.role,
         "content": new_message.content,
         "created_at": new_message.created_at.isoformat()
+    }
+
+
+@app.patch("/messages/{message_id}/metadata")
+async def update_message_metadata(
+    message_id: str,
+    request: MessageMetadataUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update message metadata.
+    
+    Used by Discord bridge to add Discord message IDs after sending messages,
+    preventing duplicate messages during history sync.
+    
+    Merges new metadata with existing metadata (preserves existing keys).
+    """
+    # Get message
+    msg_repo = MessageRepository(db)
+    message = msg_repo.get_by_id(message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    # Merge metadata (preserve existing, add/update new)
+    existing_metadata = message.meta_data or {}
+    updated_metadata = {**existing_metadata, **request.metadata}
+    
+    # Update message
+    message.meta_data = updated_metadata
+    db.commit()
+    
+    return {
+        "success": True,
+        "message_id": message_id,
+        "metadata": updated_metadata
     }
 
 

@@ -153,7 +153,8 @@ class ChorusClient:
         character_id: str,
         title: str,
         is_private: bool = False,
-        source: str = 'discord'
+        source: str = 'discord',
+        image_confirmation_disabled: bool = True
     ) -> Dict[str, Any]:
         """
         Create a new conversation with a character.
@@ -163,6 +164,7 @@ class ChorusClient:
             title: Conversation title
             is_private: Whether conversation is private
             source: Source platform (discord, test, etc.)
+            image_confirmation_disabled: Bypass image generation confirmation dialog (default True for Discord)
             
         Returns:
             Conversation data with conversation_id and thread_id
@@ -172,7 +174,8 @@ class ChorusClient:
         payload = {
             'character_id': character_id,
             'title': title,
-            'source': source
+            'source': source,
+            'image_confirmation_disabled': image_confirmation_disabled
         }
         
         # Create conversation (automatically creates a "Main Thread")
@@ -240,6 +243,57 @@ class ChorusClient:
         
         endpoint = f'/threads/{thread_id}/messages'
         return self._request('POST', endpoint, json=payload)
+    
+    def confirm_and_generate_image(
+        self,
+        thread_id: int,
+        prompt: str,
+        negative_prompt: str = '',
+        disable_future_confirmations: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Confirm and generate an image for a thread.
+        
+        Args:
+            thread_id: Thread identifier
+            prompt: Image generation prompt
+            negative_prompt: Negative prompt for image generation
+            disable_future_confirmations: Whether to disable future confirmation dialogs
+            
+        Returns:
+            Image generation result with success status and image details
+        """
+        logger.info(f"Confirming and generating image for thread {thread_id}")
+        
+        payload = {
+            'prompt': prompt,
+            'negative_prompt': negative_prompt,
+            'disable_future_confirmations': disable_future_confirmations
+        }
+        
+        endpoint = f'/threads/{thread_id}/generate-image'
+        return self._request('POST', endpoint, json=payload)
+    
+    def update_message_metadata(
+        self,
+        message_id: str,
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Update metadata for an existing message.
+        
+        Args:
+            message_id: Message identifier
+            metadata: Metadata to merge with existing metadata
+            
+        Returns:
+            Updated message data
+        """
+        logger.debug(f"Updating metadata for message {message_id[:8]}...")
+        
+        payload = {'metadata': metadata}
+        endpoint = f'/messages/{message_id}/metadata'
+        return self._request('PATCH', endpoint, json=payload)
     
     def get_conversation_history(
         self,

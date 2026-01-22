@@ -467,6 +467,40 @@ html, body {
     text-align: left;
 }
 
+/* Username label for multi-user conversations (non-web) */
+.message-username {
+    font-size: 0.65rem;
+    margin-top: 0.15rem;
+    margin-bottom: 0.25rem;
+    display: flex;
+    align-items: center;
+}
+
+.user-message .message-username {
+    justify-content: flex-end;
+}
+
+.assistant-message .message-username {
+    justify-content: flex-start;
+}
+
+.username-label {
+    display: inline-block;
+    color: var(--text-secondary);
+    font-weight: 400;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0 0 0.25rem 0.25rem;
+    opacity: 0.8;
+}
+
+.user-message .username-label {
+    background-color: rgba(45, 62, 80, 0.5);
+}
+
+.assistant-message .username-label {
+    background-color: rgba(54, 43, 77, 0.5);
+}
+
 /* Private Messages */
 .message.private-message .message-content {
     position: relative;

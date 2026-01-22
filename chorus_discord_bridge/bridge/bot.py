@@ -3,7 +3,9 @@
 import discord
 import logging
 import asyncio
-from typing import Optional
+import io
+import re
+from typing import Optional, List
 from discord.ext import commands
 
 from .config import BridgeConfig
@@ -68,6 +70,12 @@ class ChorusBot(commands.Bot):
         
         # Initialize response formatter (Phase 3, Task 3.3)
         self.response_formatter = ResponseFormatter()
+        
+        # Rate limiting: Per-user cooldowns (Phase 4, Task 4.2)
+        self.user_cooldowns = {}  # user_id -> last_message_timestamp
+        
+        # Loop detection: Track consecutive bot responses (Phase 4, Task 4.2)
+        self.consecutive_responses = {}  # channel_id -> count
         
         logger.info("ChorusBot initialized with state persistence")
     
@@ -143,6 +151,15 @@ class ChorusBot(commands.Bot):
             f"{message.content[:50]}..."
         )
         
+        # Phase 4, Task 4.2: Reset consecutive response counter (human message received)
+        channel_id = str(message.channel.id)
+        self._reset_consecutive_responses(channel_id)
+        
+        # Phase 4, Task 4.2: Check per-user cooldown
+        if self._is_on_cooldown(str(message.author.id), cooldown_seconds=1.0):
+            logger.debug(f"User {message.author.name} on cooldown, skipping")
+            return
+        
         # Show typing indicator
         async with message.channel.typing():
             try:
@@ -156,6 +173,13 @@ class ChorusBot(commands.Bot):
                 
                 # Get or create conversation for this channel (Phase 2)
                 conversation_id, thread_id = await self._get_or_create_conversation(message)
+                
+                # Phase 4, Task 4.2: Check for runaway loop (bot-to-bot conversations)
+                if self._check_runaway_loop(channel_id, max_consecutive=5):
+                    # Silently pause - don't spam channel with meta-messages
+                    logger.info(f"Pausing due to runaway loop detection in {channel_id}")
+                    await message.add_reaction("🛑")  # Signal that loop was detected
+                    return
                 
                 # Phase 3: Fetch recent message history for context (sliding window)
                 await self._sync_message_history(message, conversation_id, thread_id)
@@ -205,10 +229,66 @@ class ChorusBot(commands.Bot):
                     await message.channel.send("*[No response generated]*")
                     return
                 
-                # Send response to Discord (handle 2000 char limit)
-                await self._send_reply(message.channel, reply_content)
+                # Phase 4, Task 4.6: Check for image generation preview
+                # If confirmation is disabled, trigger generation immediately
+                image_prompt_preview = response.get('image_prompt_preview')
+                if image_prompt_preview and not image_prompt_preview.get('needs_confirmation', True):
+                    logger.info(f"Image preview detected, triggering generation (confirmation disabled)")
+                    try:
+                        # Trigger image generation using the preview prompt
+                        image_result = self.chorus_client.confirm_and_generate_image(
+                            thread_id=thread_id,
+                            prompt=image_prompt_preview['prompt'],
+                            negative_prompt=image_prompt_preview.get('negative_prompt', ''),
+                            disable_future_confirmations=False  # Already disabled
+                        )
+                        
+                        if image_result and image_result.get('success'):
+                            logger.info(f"Image generated successfully: {image_result.get('image_id')}")
+                            # Update assistant_message with image metadata for download
+                            if 'metadata' not in assistant_message:
+                                assistant_message['metadata'] = {}
+                            assistant_message['metadata']['image_path'] = image_result.get('file_path', '').replace('data/', '/')
+                            assistant_message['metadata']['image_id'] = image_result.get('image_id')
+                        else:
+                            logger.warning(f"Image generation failed: {image_result.get('error') if image_result else 'Unknown error'}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate image: {e}")
                 
-                logger.info(f"Sent reply ({len(reply_content)} chars)")
+                # Check for image in assistant message metadata (Phase 4, Task 4.6)
+                image_file = await self._download_image_if_present(assistant_message)
+                
+                # Convert <username> references to Discord @mentions (Phase 4, Tasks 4.7 & 4.8)
+                reply_content = await self._process_username_mentions(message, reply_content)
+                
+                # Send response to Discord (handle 2000 char limit)
+                discord_message_ids = await self._send_reply(message.channel, reply_content, image_file=image_file)
+                
+                # Update assistant message metadata with Discord message IDs to prevent duplication
+                # when syncing history in future messages
+                if discord_message_ids and assistant_message.get('id'):
+                    try:
+                        # Store first Discord message ID in the assistant message metadata
+                        # This allows the history sync to recognize this message and skip it
+                        update_metadata = {
+                            'discord_message_id': discord_message_ids[0],  # Primary message ID
+                            'discord_message_ids': discord_message_ids,  # All IDs if split
+                            'discord_channel_id': str(message.channel.id),
+                            'platform': 'discord'
+                        }
+                        
+                        self.chorus_client.update_message_metadata(
+                            message_id=assistant_message['id'],
+                            metadata=update_metadata
+                        )
+                        logger.debug(f"Updated assistant message {assistant_message['id'][:8]} with Discord IDs")
+                    except Exception as e:
+                        logger.warning(f"Failed to update assistant message metadata: {e}")
+                
+                # Phase 4, Task 4.2: Increment consecutive response counter
+                self._increment_consecutive_responses(channel_id)
+                
+                logger.info(f"Sent reply ({len(reply_content)} chars{', with image' if image_file else ''})")
             
             except ConversationNotFoundError as e:
                 # Conversation was deleted in Chorus - rebuild silently and process message
@@ -217,6 +297,9 @@ class ChorusBot(commands.Bot):
                 
                 discord_channel_id = str(message.channel.id) if not is_dm else str(message.author.id)
                 self.conversation_mapper.delete_conversation_mapping(discord_channel_id)
+                
+                # Clear user cooldown to allow immediate retry
+                self._clear_cooldown(str(message.author.id))
                 
                 # Recursively call on_message to create new conversation and process message
                 # This gives seamless UX - user doesn't need to resend
@@ -274,13 +357,17 @@ class ChorusBot(commands.Bot):
         
         # Check if conversation mapping exists (Phase 2)
         logger.info(f"[MAPPING CHECK] Looking up Discord channel: {discord_channel_id}")
-        mapping = self.conversation_mapper.get_conversation_mapping(discord_channel_id)
+        mapping = self.conversation_mapper.get_conversation_mapping(
+            discord_channel_id, 
+            character_id=self.config.chorus_character_id
+        )
         logger.info(f"[MAPPING RESULT] Found mapping: {mapping is not None}")
         
         if mapping:
             logger.info(
                 f"Using existing conversation: "
-                f"Discord {discord_channel_id} -> Chorus {mapping['chorus_conversation_id']}"
+                f"Discord {discord_channel_id} ({self.config.chorus_character_id}) -> "
+                f"Chorus {mapping['chorus_conversation_id']}"
             )
             return mapping['chorus_conversation_id'], mapping['chorus_thread_id']
         
@@ -303,6 +390,7 @@ class ChorusBot(commands.Bot):
                 discord_guild_id=discord_guild_id,
                 chorus_conversation_id=conversation_id,
                 chorus_thread_id=thread_id,
+                character_id=self.config.chorus_character_id,
                 is_dm=is_dm
             )
             
@@ -323,53 +411,198 @@ class ChorusBot(commands.Bot):
         
         Phase 3, Task 3.2: Use MessageProcessor for format conversion.
         
+        Preserves @mentions (converted to @username by MessageProcessor) so bots
+        can see who is being addressed in group conversations.
+        
         Args:
             message: Discord message object
             
         Returns:
             Cleaned message content
         """
-        # Remove @mentions of the bot first
-        content = message.content
-        content = content.replace(f'<@{self.user.id}>', '').strip()
-        content = content.replace(f'<@!{self.user.id}>', '').strip()
-        
-        # Create a temporary message object with the cleaned content
-        # for processing by MessageProcessor
-        if content:
-            # Process through MessageProcessor
-            # Note: We need to temporarily modify message.content
-            original_content = message.content
-            message.content = content
-            processed = self.message_processor.process_complete_message(message)
-            message.content = original_content  # Restore original
-            return processed
-        
-        # If no text content, still process attachments/embeds
+        # Let MessageProcessor handle all mentions (including this bot's)
+        # This preserves "who's talking to whom" context in group chats
         return self.message_processor.process_complete_message(message)
+    
+    async def _download_image_if_present(
+        self,
+        assistant_message: dict
+    ) -> Optional[discord.File]:
+        """
+        Download image from Chorus API if present in response metadata.
+        
+        Phase 4, Task 4.6: Image generation support with graceful fallback.
+        
+        Args:
+            assistant_message: Assistant message dict from Chorus response
+            
+        Returns:
+            discord.File object if image downloaded successfully, None otherwise
+        """
+        try:
+            metadata = assistant_message.get('metadata', {})
+            if not metadata:
+                return None
+            
+            image_path = metadata.get('image_path')
+            if not image_path:
+                return None
+            
+            # Image was generated, try to download it
+            logger.info(f"Downloading image from Chorus: {image_path}")
+            
+            # Build full URL
+            image_url = f"{self.config.chorus_api_url}{image_path}"
+            
+            # Download image using ChorusClient session
+            try:
+                response = self.chorus_client.session.get(image_url, timeout=10)
+                response.raise_for_status()
+                
+                image_data = response.content
+                
+                # Get filename from path or use default
+                filename = image_path.split('/')[-1] if '/' in image_path else 'image.png'
+                
+                # Create Discord File object
+                discord_file = discord.File(
+                    io.BytesIO(image_data),
+                    filename=filename
+                )
+                
+                logger.info(f"Successfully downloaded image ({len(image_data)} bytes)")
+                return discord_file
+                
+            except Exception as download_error:
+                logger.error(f"Failed to download image from {image_url}: {download_error}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error checking for image: {e}")
+            return None
+    
+    async def _process_username_mentions(
+        self,
+        message: discord.Message,
+        content: str
+    ) -> str:
+        """
+        Process LLM response to convert <username> references to Discord @mentions.
+        
+        Phase 4, Tasks 4.7 & 4.8: Username mention formatting and case preservation.
+        
+        The LLM is instructed to wrap full usernames in angle brackets (e.g., <FitzyCodesThings>).
+        This method converts those to Discord mention format (<@user_id>) for notifications.
+        Shortened/informal names without brackets are left as-is (no notification).
+        
+        Args:
+            message: Original Discord message (for channel context)
+            content: Response text from LLM
+            
+        Returns:
+            Processed content with <username> converted to Discord mentions
+        """
+        logger.debug(f"Processing username mentions in: {content[:100]}...")
+        
+        # Find all <username> patterns
+        username_pattern = r'<([A-Za-z0-9_]+)>'
+        matches = re.findall(username_pattern, content)
+        
+        logger.debug(f"Found {len(matches)} username patterns: {matches}")
+        
+        if not matches:
+            return content  # No username references found
+        
+        # Build username → user_id mapping from recent channel messages
+        username_map = await self._build_username_map(message.channel)
+        
+        logger.debug(f"Username map has {len(username_map)} entries: {list(username_map.keys())}")
+        
+        # Convert each <username> to Discord mention or plain text
+        def replace_username(match):
+            username = match.group(1)
+            
+            # Case-insensitive lookup
+            user_id = username_map.get(username.lower())
+            
+            if user_id:
+                # Found exact match - convert to Discord mention
+                logger.debug(f"Converting <{username}> to <@{user_id}>")
+                return f"<@{user_id}>"
+            else:
+                # No match - just remove brackets (informal name or unknown user)
+                logger.debug(f"No match for <{username}>, removing brackets")
+                return username
+        
+        processed_content = re.sub(username_pattern, replace_username, content)
+        logger.debug(f"Processed content: {processed_content[:100]}...")
+        return processed_content
+    
+    async def _build_username_map(
+        self,
+        channel: discord.abc.Messageable
+    ) -> dict[str, str]:
+        """
+        Build a mapping of username (lowercase) → discord_user_id from recent messages.
+        
+        Args:
+            channel: Discord channel to fetch recent messages from
+            
+        Returns:
+            Dict mapping lowercase username to discord_user_id
+        """
+        username_map = {}
+        
+        try:
+            # Fetch last 50 messages (more than history sync limit to catch more participants)
+            async for msg in channel.history(limit=50):
+                # Map author's username (lowercase) to their user_id
+                username_lower = msg.author.name.lower()
+                username_map[username_lower] = str(msg.author.id)
+            
+            logger.debug(f"Built username map with {len(username_map)} users")
+            
+        except Exception as e:
+            logger.warning(f"Failed to build username map: {e}")
+        
+        return username_map
     
     async def _send_reply(
         self,
         channel: discord.abc.Messageable,
         content: str,
-        max_length: int = 2000
-    ):
+        max_length: int = 2000,
+        image_file: Optional[discord.File] = None
+    ) -> List[str]:
         """
         Send a reply to Discord, splitting if necessary.
         
         Phase 3, Task 3.3: Use ResponseFormatter for intelligent splitting.
+        Phase 4, Task 4.6: Image attachment support.
         
         Args:
             channel: Discord channel to send to
             content: Message content
             max_length: Maximum message length (Discord limit is 2000)
+            image_file: Optional image file to attach (only to first message)
+            
+        Returns:
+            List of Discord message IDs for sent messages
         """
         # Use response formatter to split message intelligently
         chunks = self.response_formatter.format_response(content)
         
-        # Send each chunk
-        for chunk in chunks:
-            await channel.send(chunk)
+        # Send each chunk and collect message IDs
+        message_ids = []
+        for i, chunk in enumerate(chunks):
+            # Attach image only to first message chunk
+            if i == 0 and image_file:
+                sent_msg = await channel.send(chunk, file=image_file)
+            else:
+                sent_msg = await channel.send(chunk)
+            message_ids.append(str(sent_msg.id))
+        
+        return message_ids
     
     async def on_error(self, event_method: str, *args, **kwargs):
         """Handle errors in event handlers."""
@@ -408,15 +641,12 @@ class ChorusBot(commands.Bot):
             logger.debug(f"Syncing last {history_limit} messages for context...")
             
             # Fetch recent Discord messages (before current message)
+            # Include ALL messages for full group chat context (including other bots)
             discord_messages = []
             async for msg in current_message.channel.history(
                 limit=history_limit,
                 before=current_message
             ):
-                # Skip other bots (but include this bot's messages for sync)
-                if msg.author.bot and msg.author != self.user:
-                    continue
-                
                 discord_messages.append(msg)
             
             # Reverse to get chronological order (oldest first)
@@ -565,6 +795,74 @@ class ChorusBot(commands.Bot):
             logger.warning(f"Failed to sync message {message.id}: {e}")
         except Exception as e:
             logger.error(f"Error syncing message {message.id}: {e}")
+    
+    def _is_on_cooldown(self, user_id: str, cooldown_seconds: float = 1.0) -> bool:
+        """
+        Check if user is on cooldown.
+        
+        Args:
+            user_id: Discord user ID
+            cooldown_seconds: Cooldown duration in seconds
+            
+        Returns:
+            True if user is on cooldown, False otherwise
+        """
+        import time
+        now = time.time()
+        
+        if user_id in self.user_cooldowns:
+            last_message = self.user_cooldowns[user_id]
+            if now - last_message < cooldown_seconds:
+                return True
+        
+        # Update timestamp
+        self.user_cooldowns[user_id] = now
+        return False
+    
+    def _clear_cooldown(self, user_id: str):
+        """
+        Clear cooldown for a user.
+        Used when retrying after conversation rebuild.
+        
+        Args:
+            user_id: Discord user ID
+        """
+        if user_id in self.user_cooldowns:
+            del self.user_cooldowns[user_id]
+    
+    def _check_runaway_loop(self, channel_id: str, max_consecutive: int = 5) -> bool:
+        """
+        Check if bot is in a runaway loop (too many consecutive responses).
+        
+        Detects when bot responds many times in a row without human intervention,
+        which can happen in bot-to-bot conversations.
+        
+        Args:
+            channel_id: Discord channel ID
+            max_consecutive: Maximum consecutive bot responses allowed
+            
+        Returns:
+            True if runaway loop detected, False otherwise
+        """
+        consecutive = self.consecutive_responses.get(channel_id, 0)
+        
+        if consecutive >= max_consecutive:
+            logger.warning(
+                f"Runaway loop detected in channel {channel_id}: "
+                f"{consecutive} consecutive responses"
+            )
+            return True
+        
+        return False
+    
+    def _increment_consecutive_responses(self, channel_id: str):
+        """Increment consecutive response counter for channel."""
+        self.consecutive_responses[channel_id] = \
+            self.consecutive_responses.get(channel_id, 0) + 1
+    
+    def _reset_consecutive_responses(self, channel_id: str):
+        """Reset consecutive response counter for channel (called on human message)."""
+        self.consecutive_responses[channel_id] = 0
     
     async def close(self):
         """Clean shutdown."""

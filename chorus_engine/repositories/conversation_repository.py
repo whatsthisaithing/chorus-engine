@@ -13,7 +13,7 @@ class ConversationRepository:
     def __init__(self, db: Session):
         self.db = db
     
-    def create(self, character_id: str, title: Optional[str] = None, source: str = "web") -> Conversation:
+    def create(self, character_id: str, title: Optional[str] = None, source: str = "web", image_confirmation_disabled: Optional[bool] = None) -> Conversation:
         """
         Create a new conversation.
         
@@ -21,6 +21,7 @@ class ConversationRepository:
             character_id: The character this conversation is with
             title: Optional title (auto-generated if not provided)
             source: Source platform ("web", "discord", etc.)
+            image_confirmation_disabled: If True, bypass image generation confirmation dialogs
         
         Returns:
             Created conversation
@@ -33,6 +34,11 @@ class ConversationRepository:
             title=title,
             source=source
         )
+        
+        # Set image confirmation preference if provided (for bridge platforms)
+        if image_confirmation_disabled is not None:
+            conversation.image_confirmation_disabled = "true" if image_confirmation_disabled else "false"
+        
         self.db.add(conversation)
         self.db.commit()
         self.db.refresh(conversation)

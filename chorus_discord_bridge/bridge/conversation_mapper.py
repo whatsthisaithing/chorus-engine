@@ -30,6 +30,7 @@ class ConversationMapper:
         discord_guild_id: Optional[str],
         chorus_conversation_id: str,
         chorus_thread_id: int,
+        character_id: str,
         is_dm: bool = False
     ) -> Dict[str, Any]:
         """Get existing conversation mapping or create new one.
@@ -39,6 +40,7 @@ class ConversationMapper:
             discord_guild_id: Discord server ID (None for DMs)
             chorus_conversation_id: Chorus conversation UUID
             chorus_thread_id: Chorus thread ID
+            character_id: Character ID for this bot
             is_dm: True if DM conversation
             
         Returns:
@@ -46,7 +48,7 @@ class ConversationMapper:
             chorus_conversation_id, chorus_thread_id, created_at, last_message_at
         """
         # Try to get existing mapping
-        existing = self.get_conversation_mapping(discord_channel_id)
+        existing = self.get_conversation_mapping(discord_channel_id, character_id)
         
         if existing:
             logger.info(
@@ -62,14 +64,15 @@ class ConversationMapper:
                 """
                 INSERT INTO conversation_mappings 
                 (discord_channel_id, discord_guild_id, chorus_conversation_id, 
-                 chorus_thread_id, is_dm, message_count)
-                VALUES (?, ?, ?, ?, ?, 0)
+                 chorus_thread_id, character_id, is_dm, message_count)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     discord_channel_id,
                     discord_guild_id,
                     chorus_conversation_id,
                     chorus_thread_id,
+                    character_id,
                     1 if is_dm else 0
                 )
             )
@@ -77,39 +80,53 @@ class ConversationMapper:
             
             logger.info(
                 f"Created new conversation mapping: "
-                f"Discord {discord_channel_id} -> "
+                f"Discord {discord_channel_id} (char: {character_id}) -> "
                 f"Chorus {chorus_conversation_id}"
             )
             
             # Return newly created mapping
-            return self.get_conversation_mapping(discord_channel_id)
+            return self.get_conversation_mapping(discord_channel_id, character_id)
             
         except Exception as e:
             logger.error(f"Failed to create conversation mapping: {e}", exc_info=True)
             raise
     
     def get_conversation_mapping(
-        self, discord_channel_id: str
+        self, discord_channel_id: str, character_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """Get conversation mapping by Discord channel ID.
+        """Get conversation mapping by Discord channel ID and character ID.
         
         Args:
             discord_channel_id: Discord channel or DM user ID
+            character_id: Character ID (optional for backward compatibility)
             
         Returns:
             Conversation mapping dict, or None if not found
         """
         try:
-            cursor = self.db.execute(
-                """
-                SELECT id, discord_channel_id, discord_guild_id,
-                       chorus_conversation_id, chorus_thread_id,
-                       is_dm, created_at, last_message_at, message_count
-                FROM conversation_mappings
-                WHERE discord_channel_id = ?
-                """,
-                (discord_channel_id,)
-            )
+            if character_id:
+                cursor = self.db.execute(
+                    """
+                    SELECT id, discord_channel_id, discord_guild_id,
+                           chorus_conversation_id, chorus_thread_id, character_id,
+                           is_dm, created_at, last_message_at, message_count
+                    FROM conversation_mappings
+                    WHERE discord_channel_id = ? AND character_id = ?
+                    """,
+                    (discord_channel_id, character_id)
+                )
+            else:
+                # Backward compatibility: lookup without character_id
+                cursor = self.db.execute(
+                    """
+                    SELECT id, discord_channel_id, discord_guild_id,
+                           chorus_conversation_id, chorus_thread_id, character_id,
+                           is_dm, created_at, last_message_at, message_count
+                    FROM conversation_mappings
+                    WHERE discord_channel_id = ?
+                    """,
+                    (discord_channel_id,)
+                )
             
             row = cursor.fetchone()
             

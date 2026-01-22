@@ -121,7 +121,7 @@ class Database:
         current_version = self.get_schema_version()
         
         if target_version is None:
-            target_version = 1  # Current latest version
+            target_version = 2  # Current latest version (added character_id)
         
         if current_version >= target_version:
             logger.info(f"Database already at version {current_version}")
@@ -129,10 +129,54 @@ class Database:
         
         logger.info(f"Migrating database from v{current_version} to v{target_version}")
         
-        # Future: Load and apply migration scripts
-        # For now, we only have v1 (initial schema)
+        # Run migrations in order
+        for version in range(current_version + 1, target_version + 1):
+            if not self._run_migration(version):
+                logger.error(f"Migration to v{version} failed")
+                return False
         
         return True
+    
+    def _run_migration(self, version: int) -> bool:
+        """Run a specific migration.
+        
+        Args:
+            version: Migration version to run
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Look for migration file
+            migration_file = self.db_path.parent / "migrations" / f"{version:03d}_*.sql"
+            migration_files = list(self.db_path.parent.glob(f"migrations/{version:03d}_*.sql"))
+            
+            # If not found in db path, try module location
+            if not migration_files:
+                module_dir = Path(__file__).parent.parent
+                migration_files = list(module_dir.glob(f"storage/migrations/{version:03d}_*.sql"))
+            
+            if not migration_files:
+                logger.error(f"Migration file for v{version} not found")
+                return False
+            
+            migration_path = migration_files[0]
+            logger.info(f"Running migration: {migration_path.name}")
+            
+            # Read and execute migration
+            with open(migration_path, 'r', encoding='utf-8') as f:
+                migration_sql = f.read()
+            
+            conn = self.connect()
+            conn.executescript(migration_sql)
+            conn.commit()
+            
+            logger.info(f"Migration to v{version} completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to run migration v{version}: {e}", exc_info=True)
+            return False
     
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a query and return cursor.

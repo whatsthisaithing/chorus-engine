@@ -3,6 +3,8 @@
 # Private development files (internal docs, test scripts, dev logs)
 Private/
 
+bots/
+
 # Python
 __pycache__/
 *.py[cod]
