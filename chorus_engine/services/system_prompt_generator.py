@@ -45,7 +45,13 @@ class SystemPromptGenerator:
         # 1. Base system prompt (always included)
         parts.append(character.system_prompt.strip())
         
-        # 2. Add multi-user context if from a bridge platform
+        # 2. Add identity/alias awareness if character has aliases
+        if hasattr(character, 'aliases') and character.aliases:
+            identity_context = self._generate_identity_context(character.name, character.aliases)
+            parts.append("")
+            parts.append(identity_context)
+        
+        # 3. Add multi-user context if from a bridge platform
         if conversation_source and conversation_source != 'web':
             multi_user_context = self._generate_multi_user_context(
                 primary_user=primary_user,
@@ -54,7 +60,14 @@ class SystemPromptGenerator:
             if multi_user_context:
                 parts.append(multi_user_context)
         
-        # 3. Add immersion-level-specific guidance
+        # 3.5. Add chatbot-specific guidance if role_type is chatbot
+        if hasattr(character, 'role_type') and character.role_type == 'chatbot':
+            chatbot_guidance = self._generate_chatbot_guidance()
+            if chatbot_guidance:
+                parts.append("")
+                parts.append(chatbot_guidance)
+        
+        # 4. Add immersion-level-specific guidance
         immersion_guidance = self._generate_immersion_guidance(
             character.immersion_level,
             character.immersion_settings
@@ -74,6 +87,46 @@ class SystemPromptGenerator:
             parts.append(self._generate_media_guidance())
         
         return "\n\n".join(parts)
+    
+    def _generate_identity_context(self, primary_name: str, aliases: list) -> str:
+        """
+        Generate identity awareness context for characters with multiple names/aliases.
+        
+        Args:
+            primary_name: The character's primary name
+            aliases: List of alternative names the character may be called
+            
+        Returns:
+            Identity awareness guidance
+        """
+        # Build the list of all names (primary + aliases)
+        all_names = [primary_name] + aliases
+        names_str = ", ".join(all_names)
+        
+        parts = ["**Your Identity:**"]
+        parts.append(f"- Your name is {primary_name}")
+        parts.append(f"- You may also be called: {names_str}")
+        parts.append("- All of these names refer to YOU - do not treat them as separate people")
+        parts.append("- When someone mentions any of these names, they are talking about or to you")
+        parts.append("- Do not describe yourself in third person when you see these names")
+        
+        return "\n".join(parts)
+    
+    def _generate_chatbot_guidance(self) -> str:
+        """
+        Generate guidance for chatbot role type (group chat participant).
+        
+        Returns:
+            Chatbot-specific behavioral guidance
+        """
+        parts = ["**Chatbot Role:**"]
+        parts.append("- Your role is 'participant', not 'assistant' or 'facilitator'")
+        parts.append("- You're under NO obligation to be helpful, offer assistance, or solve problems")
+        parts.append("- Think of yourself as 'one of the group' having a casual conversation")
+        parts.append("- Brief reactions and acknowledgments without elaboration are perfectly fine")
+        parts.append("- You can skip responding if you don't have anything particular to add")
+        
+        return "\n".join(parts)
     
     def _generate_multi_user_context(
         self,

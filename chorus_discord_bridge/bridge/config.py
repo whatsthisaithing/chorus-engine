@@ -3,13 +3,26 @@
 import os
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
+from dataclasses import dataclass
 from dotenv import load_dotenv
 
 
 class ConfigError(Exception):
     """Raised when configuration is invalid."""
     pass
+
+
+@dataclass
+class BotConfig:
+    """Configuration for a single bot instance."""
+    character_id: str
+    bot_token: str
+    enabled: bool = True
+    
+    def __repr__(self) -> str:
+        """Return string representation (hiding token)."""
+        return f"BotConfig(character='{self.character_id}', enabled={self.enabled})"
 
 
 class BridgeConfig:
@@ -43,17 +56,46 @@ class BridgeConfig:
     
     def _load_env_overrides(self):
         """Load sensitive values from environment variables."""
-        # Discord bot token (required)
-        bot_token = os.getenv('DISCORD_BOT_TOKEN')
-        if not bot_token:
-            raise ConfigError(
-                "DISCORD_BOT_TOKEN not found in environment.\n"
-                "Copy .env.template to .env and add your bot token."
-            )
+        # For backwards compatibility, check for single DISCORD_BOT_TOKEN
+        default_token = os.getenv('DISCORD_BOT_TOKEN')
         
-        if 'discord' not in self._config:
-            self._config['discord'] = {}
-        self._config['discord']['bot_token'] = bot_token
+        # Load bot configurations
+        if 'bots' in self._config and isinstance(self._config['bots'], list):
+            # Multi-bot mode: Load token for each bot
+            for bot_config in self._config['bots']:
+                character_id = bot_config.get('character_id')
+                token_env = bot_config.get('bot_token_env', f"DISCORD_BOT_TOKEN_{character_id.upper()}")
+                
+                # Try character-specific token first, fall back to default
+                bot_token = os.getenv(token_env) or default_token
+                
+                if not bot_token:
+                    raise ConfigError(
+                        f"No Discord bot token found for character '{character_id}'.\n"
+                        f"Set {token_env} or DISCORD_BOT_TOKEN in .env file."
+                    )
+                
+                bot_config['bot_token'] = bot_token
+        else:
+            # Legacy single-bot mode: Convert to bots array
+            if not default_token:
+                raise ConfigError(
+                    "DISCORD_BOT_TOKEN not found in environment.\n"
+                    "Copy .env.template to .env and add your bot token."
+                )
+            
+            character_id = self._config.get('chorus', {}).get('character_id', 'nova')
+            
+            if 'discord' not in self._config:
+                self._config['discord'] = {}
+            self._config['discord']['bot_token'] = default_token
+            
+            # Convert to bots array format
+            self._config['bots'] = [{
+                'character_id': character_id,
+                'bot_token': default_token,
+                'enabled': True
+            }]
         
         # Chorus API URL (required)
         api_url = os.getenv('CHORUS_API_URL', 'http://localhost:5000')
@@ -68,12 +110,19 @@ class BridgeConfig:
     
     def _validate_config(self):
         """Validate that required configuration values are present."""
-        # Validate Discord config
-        if 'discord' not in self._config:
-            raise ConfigError("Missing 'discord' section in config")
+        # Validate bots configuration
+        if 'bots' not in self._config or not self._config['bots']:
+            raise ConfigError(
+                "Missing 'bots' array in config or no bots configured.\n"
+                "Add at least one bot to the 'bots' array."
+            )
         
-        if 'bot_token' not in self._config['discord']:
-            raise ConfigError("Missing Discord bot token")
+        # Validate each bot config
+        for i, bot_config in enumerate(self._config['bots']):
+            if 'character_id' not in bot_config:
+                raise ConfigError(f"Bot #{i+1} missing 'character_id'")
+            if 'bot_token' not in bot_config:
+                raise ConfigError(f"Bot #{i+1} (character: {bot_config.get('character_id')}) missing bot_token")
         
         # Validate Chorus config
         if 'chorus' not in self._config:
@@ -81,9 +130,6 @@ class BridgeConfig:
         
         if 'api_url' not in self._config['chorus']:
             raise ConfigError("Missing Chorus API URL")
-        
-        if 'character_id' not in self._config['chorus']:
-            raise ConfigError("Missing character_id in chorus config")
         
         # Validate bridge config
         if 'bridge' not in self._config:
@@ -95,6 +141,18 @@ class BridgeConfig:
         self._config['bridge'].setdefault('log_file', 'storage/bridge.log')
     
     # Discord configuration properties
+    @property
+    def bots(self) -> List[BotConfig]:
+        """Get list of bot configurations."""
+        bot_configs = []
+        for bot_data in self._config.get('bots', []):
+            bot_configs.append(BotConfig(
+                character_id=bot_data['character_id'],
+                bot_token=bot_data['bot_token'],
+                enabled=bot_data.get('enabled', True)
+            ))
+        return bot_configs
+    
     @property
     def discord_bot_token(self) -> str:
         """Get Discord bot token."""

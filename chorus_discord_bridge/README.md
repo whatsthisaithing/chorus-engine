@@ -8,11 +8,10 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
 - **Direct Messages**: Characters can handle DMs
 - **Conversation Context**: Maintains full context within each channel
 - **User Tracking**: Remembers users across messages
-- **Multi-User Memory Attribution**: Remembers which user said what (Phase 3)
-- **Hot-Swappable Characters**: Change active character without restarting
+- **Multi-User Memory Attribution**: Remembers which user said what
+- **🆕 Multi-Bot Support**: Run multiple characters from a single instance - [See Multi-Bot Setup](MULTI_BOT_SETUP.md)
 - **Rate Limiting**: Prevents spam and abuse
 - **Graceful Error Handling**: Survives API failures and recovers automatically
-- **🆕 Fully Portable**: Run multiple bots simultaneously with different characters - [See Multi-Bot Setup](MULTI_BOT_SETUP.md)
 
 ## Quick Start
 
@@ -24,29 +23,31 @@ A standalone Discord bridge service that allows Chorus Engine characters to part
 
 ### Single Bot Setup
 
-Follow these steps to run one Discord bot:
-
-> **Want to run multiple bots?** See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for running multiple characters simultaneously!
+> **Want to run multiple bots?** See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for running multiple characters from one instance!
 
 ### Installation
 
-The Discord Bridge creates a **self-contained virtual environment** with lightweight dependencies (~15MB).
-
 #### Windows
 
-1. **Run the installation script** (from the bridge directory):
+1. **Run the installation script**:
    ```bash
+   cd chorus_discord_bridge
    install_bridge.bat
    ```
-   This creates a `.venv` folder with all dependencies.
 
 2. **Edit configuration**:
    ```bash
-   notepad .env
-   # Add your Discord bot token: DISCORD_BOT_TOKEN=your_token_here
+   # Copy templates
+   copy config.yaml.template config.yaml
+   copy .env.template .env
    
+   # Edit .env
+   notepad .env
+   # Add: DISCORD_BOT_TOKEN=your_token_here
+   
+   # Edit config.yaml
    notepad config.yaml
-   # Set your character: character_id: "nova"
+   # Configure bots array (see Multi-Bot Setup)
    ```
 
 3. **Run the bridge**:
@@ -56,20 +57,26 @@ The Discord Bridge creates a **self-contained virtual environment** with lightwe
 
 #### Linux/Mac
 
-1. **Run the installation script** (from the bridge directory):
+1. **Run the installation script**:
    ```bash
+   cd chorus_discord_bridge
    chmod +x install_bridge.sh start_bridge.sh
    ./install_bridge.sh
    ```
-   This creates a `.venv` folder with all dependencies.
 
 2. **Edit configuration**:
    ```bash
-   nano .env
-   # Add your Discord bot token: DISCORD_BOT_TOKEN=your_token_here
+   # Copy templates
+   cp config.yaml.template config.yaml
+   cp .env.template .env
    
+   # Edit .env
+   nano .env
+   # Add: DISCORD_BOT_TOKEN=your_token_here
+   
+   # Edit config.yaml
    nano config.yaml
-   # Set your character: character_id: "nova"
+   # Configure bots array (see Multi-Bot Setup)
    ```
 
 3. **Run the bridge**:
@@ -77,35 +84,52 @@ The Discord Bridge creates a **self-contained virtual environment** with lightwe
    ./start_bridge.sh
    ```
 
-### Portability
-
-The bridge is **fully portable**! You can:
-- Copy the entire folder anywhere on your system
-- Run multiple instances with different characters
-- No shared resources or port conflicts
-
-See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for running multiple bots.
-
 ## Creating a Discord Bot
 
-See [scripts/create_bot.md](scripts/create_bot.md) for detailed instructions on creating a Discord bot and getting your token.
+See [DISCORD_BOT_CREATION.md](DISCORD_BOT_CREATION.md) for detailed instructions on creating a Discord bot and getting your token.
 
 ## Configuration
 
 ### Environment Variables (.env)
 
-- `DISCORD_BOT_TOKEN`: Your Discord bot token (required)
-- `CHORUS_API_URL`: Chorus Engine API URL (default: http://localhost:5000)
+**Single Bot:**
+```env
+DISCORD_BOT_TOKEN=your_bot_token_here
+```
+
+**Multiple Bots:**
+```env
+DISCORD_BOT_TOKEN_NOVA=nova_bot_token_here
+DISCORD_BOT_TOKEN_MARCUS=marcus_bot_token_here
+# Pattern: DISCORD_BOT_TOKEN_<CHARACTER_ID_UPPERCASE>
+```
+
+**Other Variables:**
+- `CHORUS_API_URL`: Chorus Engine API URL (default: http://localhost:8000)
 - `CHORUS_API_KEY`: Optional API key if Chorus requires authentication
 
 ### Application Settings (config.yaml)
 
+**Multi-Bot Configuration:**
+```yaml
+bots:
+  - character_id: "nova"
+    bot_token_env: "DISCORD_BOT_TOKEN_NOVA"
+    enabled: true
+  
+  - character_id: "marcus"
+    bot_token_env: "DISCORD_BOT_TOKEN_MARCUS"
+    enabled: true
+```
+
+**Shared Settings:**
 - **discord.command_prefix**: Prefix for bot commands (default: "!")
 - **discord.rate_limit**: Rate limiting settings
 - **discord.max_history_fetch**: Number of messages to fetch for context (default: 10)
-- **chorus.character_id**: Active character name (default: "nova")
 - **chorus.timeout**: API request timeout in seconds (default: 30)
 - **bridge.log_level**: Logging verbosity (default: "INFO")
+
+See [MULTI_BOT_SETUP.md](MULTI_BOT_SETUP.md) for detailed configuration guide.
 
 ## Usage
 

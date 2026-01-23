@@ -1,28 +1,25 @@
 # Discord Bridge - Quick Reference
 
-## ✅ Uses Shared Python Environment
+## Overview
 
-The Discord Bridge uses the **same** Python environment as Chorus Engine:
-- **Windows**: `python_embeded/python.exe` (embedded Python)
-- **Linux/Mac**: `venv/` (virtual environment)
+The Discord Bridge connects Chorus Engine characters to Discord. 
 
-**Benefits:**
-- ✅ No dependency hell
-- ✅ Consistent Python version
-- ✅ Shared packages reduce disk space
-- ✅ Easier maintenance
+**New**: Multi-bot support! Run multiple characters from one instance. See [QUICKSTART_MULTI_BOT.md](QUICKSTART_MULTI_BOT.md)
+
+**⚠️ Performance Tip**: When running multiple bots, it's highly recommended to use the same LLM model for all characters to avoid model loading/unloading delays on consumer hardware.
 
 ## Installation Commands
 
 ### Windows
 ```bash
-cd j:\Dev\chorus-engine\chorus_discord_bridge
+cd chorus_discord_bridge
 install_bridge.bat
 ```
 
 ### Linux/Mac
 ```bash
-cd chorus-engine/chorus_discord_bridge
+cd chorus_discord_bridge
+chmod +x install_bridge.sh start_bridge.sh
 ./install_bridge.sh
 ```
 
@@ -30,15 +27,37 @@ cd chorus-engine/chorus_discord_bridge
 
 ### Windows
 ```bash
-cd j:\Dev\chorus-engine\chorus_discord_bridge
+cd chorus_discord_bridge
 start_bridge.bat
 ```
 
 ### Linux/Mac
 ```bash
-cd chorus-engine/chorus_discord_bridge
+cd chorus_discord_bridge
 ./start_bridge.sh
 ```
+
+## Configuration
+
+### Single Bot Setup
+
+├── chorus_engine/               # Main Chorus Engine
+├── start.bat / start.sh         # Start Chorus Engine
+│
+└── chorus_discord_bridge/       # Discord Bridge
+    ├── bridge/                  # Bridge code
+    ├── storage/                 # Bridge state and logs
+    ├── config.yaml              # Configuration (bots array)
+    ├── .env                     # Bot token
+    bot_token_env: "DISCORD_BOT_TOKEN"
+    enabled: true
+```
+
+### Multiple Bots Setup
+
+See [QUICKSTART_MULTI_BOT.md](QUICKSTART_MULTI_BOT.md) for detailed multi-bot setup.
+
+**⚠️ Performance Tip**: It's highly recommended that all characters use the same LLM model for optimal performance on consumer hardware.
 
 ## File Structure
 
@@ -62,38 +81,24 @@ chorus-engine/                    # Root (same as before)
 
 The bridge adds these packages to the **shared** Python environment:
 - `discord.py` - Discord bot framework
-- `requests` - Already in Chorus Engine
-- `pyyaml` - Already in Chorus Engine
-- `python-dotenv` - Already in Chorus Engine
-- `aiosqlite` - New (for bridge state management)
+- `requestsrequires these packages:
+- `discord.py` - Discord bot framework
+- `requests` - HTTP client
+- `pyyaml` - YAML parsing
+- `python-dotenv` - Environment variables
+- `aiosqlite` - Async SQLite (for state management)
+
+All automatically installed by `install_bridge.bat/sh`.
 
 ## Configuration Files
 
-Bridge-specific config (in `chorus_discord_bridge/`):
-- `.env` - Discord bot token (secret)
-- `config.yaml` - Bridge settings
-- `storage/state.db` - Bridge state (created on first run)
-- `storage/bridge.log` - Bridge logs
+- `.env` - Bot tokens and Chorus Engine URL (secret)
+- `config.yaml` - Bridge settings and bots arrayogs
 
 ## Common Tasks
 
 ### Check if Chorus Engine is running
-```bash
-curl http://localhost:5000/api/characters
-```
-
-### Test bridge connection to Chorus
-**Windows:**
-```bash
-cd j:\Dev\chorus-engine
-python_embeded\python.exe chorus_discord_bridge\scripts\test_connection.py
-```
-
-**Linux/Mac:**
-```bash
-cd chorus-engine
-source venv/bin/activate
-python chorus_discord_bridge/scripts/test_connection.py
+```bash8000/api/characters
 ```
 
 ### View bridge logs
@@ -102,17 +107,23 @@ type chorus_discord_bridge\storage\bridge.log     # Windows
 tail -f chorus_discord_bridge/storage/bridge.log  # Linux/Mac
 ```
 
-### Update bridge dependencies
-**Windows:**
-```bash
-cd j:\Dev\chorus-engine
-python_embeded\python.exe -m pip install -r chorus_discord_bridge\requirements.txt
-```
+### Add a new bot
+1. Create Discord application and get token
+2. Add to `.env`: `DISCORD_BOT_TOKEN_NEWBOT=token_here`
+3. Add to `config.yaml` bots array
+4. **Recommended: Use same LLM model as other bots for best performance**
+5. Restart bridge
 
-**Linux/Mac:**
-```bash
-source venv/bin/activate
-pip install -r chorus_discord_bridge/requirements.txt
+### Enable/disable a bot
+Edit `config.yaml`:
+```yaml
+bots:
+  - character_id: "nova"
+    enabled: true   # Active
+  - character_id: "marcus"
+    enabled: false  # Disabled
+```
+Restart bridge to apply. install -r chorus_discord_bridge/requirements.txt
 ```
 
 ## Typical Workflow
@@ -128,36 +139,65 @@ pip install -r chorus_discord_bridge/requirements.txt
    install_bridge.bat   # Windows
    ./install_bridge.sh  # Linux/Mac
    ```
+nstall Chorus Engine first (if not done)
+   cd chorus-engine
+   install.bat          # Windows
+   ./install.sh         # Linux/Mac
+   
+   # Then install Discord Bridge
+   cd chorus_discord_bridge
+   install_bridge.bat   # Windows
+   ./install_bridge.sh  # Linux/Mac
+   ```
 
 2. **Edit Discord configuration:**
    ```bash
-   notepad chorus_discord_bridge\.env          # Windows
-   nano chorus_discord_bridge/.env             # Linux/Mac
+   # Copy templates
+   copy .env.template .env                     # Windows
+   copy config.yaml.template config.yaml
+   
+   cp .env.template .env                       # Linux/Mac
+   cp config.yaml.template config.yaml
+   
+   # Edit files
+   notepad .env          # Windows
+   notepad config.yaml
+   
+   nano .env             # Linux/Mac
+   nano config.yaml
    ```
 
 3. **Start both services:**
    ```bash
    # Terminal 1: Start Chorus Engine
-   start.bat / ./start.sh
-   
-   # Terminal 2: Start Discord Bridge
-   cd chorus_discord_bridge
-   start_bridge.bat / ./start_bridge.sh
-   ```
-
-4. **Test in Discord:**
-   - @mention your bot in a channel
-   - Or send it a direct message
-
-## Troubleshooting
-
-### "Embedded Python not found"
-→ Run main `install.bat` first to set up Python
-
-### "Cannot connect to Chorus Engine"
+   cd chorus-ennel
+   - Cannot connect to Chorus Engine"
 → Start Chorus Engine first with `start.bat`
+→ Check `CHORUS_API_URL` in `.env` (default: http://localhost:8000)
 
 ### "discord.py not found"
+→ Run `install_bridge.bat` to install bridge dependencies
+
+### Bot responds slowly
+→ **Most common**: Different LLM models causing loading/unloading delays
+→ **Recommended**: Configure all characters to use same model in `characters/*.yaml`
+→ Or accept slower performance with diverse models
+→ Restart Chorus Engine and bridge after changes
+
+### Wrong character responding
+→ Verify `character_id` in `config.yaml` matches character YAML filename
+→ Restart bridge after config changes
+
+### Changes to requirements.txt not taking effect
+→ Re-run `install_bridge.bat` to update dependencies
+
+---
+
+## Multi-Bot Setup
+
+See [QUICKSTART_MULTI_BOT.md](QUICKSTART_MULTI_BOT.md) for running multiple characters.
+
+**⚠️ Performance Tip**: It's highly recommended that all characters use the same LLM model for optimal performance!
 → Run `install_bridge.bat` to install bridge dependencies
 
 ### Changes to requirements.txt not taking effect

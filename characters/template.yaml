@@ -16,6 +16,13 @@ name: Character Name
 # Brief description of character's purpose/personality (shown in character selector)
 role: Brief Role Description
 
+# Other names/aliases this character may be called (optional)
+# Used to help the character recognize when they're being addressed or mentioned
+# Example: If Discord bot is "Nova Chorus", add that here so they know it refers to them
+aliases:
+  - Alternative Name 1
+  - Alternative Name 2
+
 # SYSTEM PROMPT: The Core Character Instructions
 # ================================================
 # This field works differently based on custom_system_prompt setting below:
@@ -87,11 +94,12 @@ custom_system_prompt: false
 # CHARACTER TYPE / ROLE
 # ---------------------
 # Classification of character archetype for specialized capabilities
-# Options: companion, assistant, analyst, other
+# Options: companion, assistant, analyst, chatbot, other
 # 
 # • companion: Casual conversational partner, focuses on engagement and personality
 # • assistant: General-purpose helper for tasks and information
 # • analyst: Specialized for document analysis and data computation (Phase 1-7)
+# • chatbot: Group chat participant (Discord, Slack, etc.) - casual, not facilitative
 # • other: Custom/specialized role
 #
 # Default: assistant

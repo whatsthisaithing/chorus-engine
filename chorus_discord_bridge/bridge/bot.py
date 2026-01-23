@@ -77,7 +77,7 @@ class ChorusBot(commands.Bot):
         # Loop detection: Track consecutive bot responses (Phase 4, Task 4.2)
         self.consecutive_responses = {}  # channel_id -> count
         
-        logger.info("ChorusBot initialized with state persistence")
+        logger.info(f\"ChorusBot initialized for character '{self.character_id}' with state persistence\")
     
     async def setup_hook(self):
         """Called when the bot is setting up."""
@@ -92,10 +92,8 @@ class ChorusBot(commands.Bot):
         
         # Verify character exists
         try:
-            character_info = self.chorus_client.get_character_info(
-                self.config.chorus_character_id
-            )
-            character_name = character_info.get('name', self.config.chorus_character_id)
+            character_info = self.chorus_client.get_character_info(self.character_id)
+            character_name = character_info.get('name', self.character_id)
             logger.info(f"✓ Active character: {character_name}")
         except ChorusAPIError as e:
             logger.error(f"Failed to load character: {e}")
@@ -359,14 +357,14 @@ class ChorusBot(commands.Bot):
         logger.info(f"[MAPPING CHECK] Looking up Discord channel: {discord_channel_id}")
         mapping = self.conversation_mapper.get_conversation_mapping(
             discord_channel_id, 
-            character_id=self.config.chorus_character_id
+            character_id=self.character_id
         )
         logger.info(f"[MAPPING RESULT] Found mapping: {mapping is not None}")
         
         if mapping:
             logger.info(
                 f"Using existing conversation: "
-                f"Discord {discord_channel_id} ({self.config.chorus_character_id}) -> "
+                f"Discord {discord_channel_id} ({self.character_id}) -> "
                 f"Chorus {mapping['chorus_conversation_id']}"
             )
             return mapping['chorus_conversation_id'], mapping['chorus_thread_id']
@@ -376,7 +374,7 @@ class ChorusBot(commands.Bot):
         logger.info(f"Creating new conversation: {title} (private={is_dm})")
         try:
             conv_data = self.chorus_client.create_conversation(
-                character_id=self.config.chorus_character_id,
+                character_id=self.character_id,
                 title=title,
                 is_private=is_dm  # DMs are private, channels are not
             )
@@ -390,7 +388,7 @@ class ChorusBot(commands.Bot):
                 discord_guild_id=discord_guild_id,
                 chorus_conversation_id=conversation_id,
                 chorus_thread_id=thread_id,
-                character_id=self.config.chorus_character_id,
+                character_id=self.character_id,
                 is_dm=is_dm
             )
             

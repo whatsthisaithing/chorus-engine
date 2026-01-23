@@ -9,8 +9,9 @@ from logging.handlers import RotatingFileHandler
 # Add parent directory to path for imports when run as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from bridge.config import BridgeConfig, ConfigError
+from bridge.config import BridgeConfig, ConfigError, BotConfig
 from bridge.bot import ChorusBot
+from bridge.chorus_client import ChorusClient
 
 
 def setup_logging(config: BridgeConfig):
@@ -64,7 +65,7 @@ def setup_logging(config: BridgeConfig):
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("Chorus Discord Bridge v0.1.0")
+    print("Chorus Discord Bridge v0.2.0 - Multi-Bot Support")
     print("=" * 60)
     
     try:
@@ -72,34 +73,84 @@ def main():
         print("Loading configuration...")
         config_path = Path(__file__).parent.parent / "config.yaml"
         config = BridgeConfig(str(config_path))
-        print(f"✓ Configuration loaded: {config}")
         
         # Setup logging
         setup_logging(config)
         logger = logging.getLogger(__name__)
         logger.info("=" * 60)
-        logger.info("Chorus Discord Bridge Starting")
+        logger.info("Chorus Discord Bridge Starting - Multi-Bot Mode")
         logger.info("=" * 60)
-        logger.info(f"Character: {config.chorus_character_id}")
         logger.info(f"Chorus API: {config.chorus_api_url}")
         logger.info(f"Log Level: {config.bridge_log_level}")
         
-        # Create and run bot
-        print("\nStarting Discord bot...")
-        logger.info("Initializing Discord bot...")
+        # Get enabled bots
+        enabled_bots = [bot for bot in config.bots if bot.enabled]
         
-        bot = ChorusBot(config)
+        if not enabled_bots:
+            logger.error("No enabled bots found in configuration!")
+            print("\n No enabled bots configured. Check config.yaml")
+            sys.exit(1)
         
-        # Run the bot
-        logger.info("Connecting to Discord...")
-        print("Connecting to Discord...")
+        logger.info(f"Found {len(enabled_bots)} enabled bot(s):")
+        for bot_config in enabled_bots:
+            logger.info(f"  - {bot_config.character_id}")
+        
+        # Create shared Chorus client (more efficient than per-bot)
+        logger.info("Creating shared Chorus API client...")
+        shared_chorus_client = ChorusClient(
+            api_url=config.chorus_api_url,
+            api_key=config.chorus_api_key,
+            timeout=config.chorus_timeout,
+            retry_attempts=config.chorus_retry_attempts,
+            retry_delay=config.chorus_retry_delay
+        )
+        
+        # Verify Chorus Engine connection
+        if not shared_chorus_client.health_check():
+            logger.warning("Cannot connect to Chorus Engine API!")
+            logger.warning(f"Attempted URL: {config.chorus_api_url}")
+            print(f"\n Cannot connect to Chorus Engine at {config.chorus_api_url}")
+            print("  Make sure Chorus Engine is running and CHORUS_API_URL is correct in .env")
+            sys.exit(1)
+        else:
+            logger.info(" Connected to Chorus Engine")
+            print(f" Connected to Chorus Engine: {config.chorus_api_url}")
+        
+        # Create bot instances
+        print(f"\nInitializing {len(enabled_bots)} bot(s)...")
+        bots = []
+        for bot_config in enabled_bots:
+            logger.info(f"Initializing bot for character '''{bot_config.character_id}''...")
+            print(f"  - {bot_config.character_id}")
+            
+            bot = ChorusBot(
+                config=config,
+                character_id=bot_config.character_id,
+                chorus_client=shared_chorus_client
+            )
+            bots.append((bot, bot_config.bot_token))
+        
+        print(f"\n All bots initialized")
+        print("\nConnecting to Discord...")
+        logger.info("Starting all bots...")
         print("(Press Ctrl+C to stop)")
         print()
         
-        bot.run(config.discord_bot_token, log_handler=None)
+        # Run all bots concurrently
+        async def run_all_bots():
+            tasks = []
+            for bot, token in bots:
+                # Each bot.start() is a coroutine that runs the bot
+                tasks.append(bot.start(token))
+            
+            # Run all bots concurrently
+            await asyncio.gather(*tasks)
+        
+        # Run the event loop
+        asyncio.run(run_all_bots())
         
     except ConfigError as e:
-        print(f"\n❌ Configuration Error:\n{e}")
+        print(f"\n Configuration Error:\n{e}")
         print("\nPlease check your configuration files:")
         print("  - config.yaml (copy from config.yaml.template)")
         print("  - .env (copy from .env.template)")
@@ -112,9 +163,10 @@ def main():
     
     except Exception as e:
         logger.exception("Fatal error")
-        print(f"\n❌ Fatal Error: {e}")
+        print(f"\n Fatal Error: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
+

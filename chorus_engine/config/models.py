@@ -394,9 +394,9 @@ class CharacterConfig(BaseModel):
     system_prompt: str = Field(min_length=10)
     
     # Character type/role classification (Phase 1-7: Document Analysis)
-    role_type: Literal["companion", "assistant", "analyst", "other"] = Field(
+    role_type: Literal["companion", "assistant", "analyst", "chatbot", "other"] = Field(
         default="assistant",
-        description="Character archetype: companion (casual chat), assistant (task help), analyst (data/documents), other (custom)"
+        description="Character archetype: companion (casual chat), assistant (task help), analyst (data/documents), chatbot (group chat participant), other (custom)"
     )
     
     # Power user mode: Skip immersion guidance and use raw system prompt
