@@ -22,14 +22,17 @@ logger = logging.getLogger(__name__)
 class ChorusBot(commands.Bot):
     """Discord bot that bridges to Chorus Engine."""
     
-    def __init__(self, config: BridgeConfig):
+    def __init__(self, config: BridgeConfig, character_id: str, chorus_client: Optional[ChorusClient] = None):
         """
         Initialize the Discord bot.
         
         Args:
             config: Bridge configuration
+            character_id: Character ID to use for this bot instance
+            chorus_client: Optional shared Chorus client instance
         """
         self.config = config
+        self.character_id = character_id
         
         # Setup Discord intents
         intents = discord.Intents.default()
@@ -45,14 +48,17 @@ class ChorusBot(commands.Bot):
             help_command=None  # Disable default help command
         )
         
-        # Initialize Chorus client
-        self.chorus_client = ChorusClient(
-            api_url=config.chorus_api_url,
-            api_key=config.chorus_api_key,
-            timeout=config.chorus_timeout,
-            retry_attempts=config.chorus_retry_attempts,
-            retry_delay=config.chorus_retry_delay
-        )
+        # Use shared Chorus client or create new one
+        if chorus_client:
+            self.chorus_client = chorus_client
+        else:
+            self.chorus_client = ChorusClient(
+                api_url=config.chorus_api_url,
+                api_key=config.chorus_api_key,
+                timeout=config.chorus_timeout,
+                retry_attempts=config.chorus_retry_attempts,
+                retry_delay=config.chorus_retry_delay
+            )
         
         # Initialize state management (Phase 2)
         db_path = config.bridge_state_db_path or "storage/state.db"
@@ -77,7 +83,7 @@ class ChorusBot(commands.Bot):
         # Loop detection: Track consecutive bot responses (Phase 4, Task 4.2)
         self.consecutive_responses = {}  # channel_id -> count
         
-        logger.info(f\"ChorusBot initialized for character '{self.character_id}' with state persistence\")
+        logger.info(f"ChorusBot initialized for character '{self.character_id}' with state persistence")
     
     async def setup_hook(self):
         """Called when the bot is setting up."""
@@ -485,25 +491,26 @@ class ChorusBot(commands.Bot):
         content: str
     ) -> str:
         """
-        Process LLM response to convert <username> references to Discord @mentions.
+        Process LLM response to convert @username or <username> references to Discord @mentions.
         
         Phase 4, Tasks 4.7 & 4.8: Username mention formatting and case preservation.
         
-        The LLM is instructed to wrap full usernames in angle brackets (e.g., <FitzyCodesThings>).
+        The LLM may output @username or <username> when referring to users.
         This method converts those to Discord mention format (<@user_id>) for notifications.
-        Shortened/informal names without brackets are left as-is (no notification).
+        Shortened/informal names without @ or brackets are left as-is (no notification).
         
         Args:
             message: Original Discord message (for channel context)
             content: Response text from LLM
             
         Returns:
-            Processed content with <username> converted to Discord mentions
+            Processed content with @username converted to Discord mentions
         """
         logger.debug(f"Processing username mentions in: {content[:100]}...")
         
-        # Find all <username> patterns
-        username_pattern = r'<([A-Za-z0-9_]+)>'
+        # Find all @username or <username> patterns
+        # Matches: @Username, @User123, <Username>, etc.
+        username_pattern = r'(?:@|<)([A-Za-z0-9_]+)>?'
         matches = re.findall(username_pattern, content)
         
         logger.debug(f"Found {len(matches)} username patterns: {matches}")
@@ -516,21 +523,22 @@ class ChorusBot(commands.Bot):
         
         logger.debug(f"Username map has {len(username_map)} entries: {list(username_map.keys())}")
         
-        # Convert each <username> to Discord mention or plain text
+        # Convert each @username or <username> to Discord mention
         def replace_username(match):
-            username = match.group(1)
+            full_match = match.group(0)  # Full match including @ or <
+            username = match.group(1)     # Just the username part
             
             # Case-insensitive lookup
             user_id = username_map.get(username.lower())
             
             if user_id:
                 # Found exact match - convert to Discord mention
-                logger.debug(f"Converting <{username}> to <@{user_id}>")
+                logger.debug(f"Converting {full_match} to <@{user_id}>")
                 return f"<@{user_id}>"
             else:
-                # No match - just remove brackets (informal name or unknown user)
-                logger.debug(f"No match for <{username}>, removing brackets")
-                return username
+                # No match - keep original format
+                logger.debug(f"No match for {full_match}, keeping original")
+                return full_match
         
         processed_content = re.sub(username_pattern, replace_username, content)
         logger.debug(f"Processed content: {processed_content[:100]}...")
