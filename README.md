@@ -111,6 +111,29 @@ Same workflow-first approach, applied to audio.
 
 ---
 
+### 💬 Platform Bridges: Discord & Beyond
+
+**New in v1.1**: Take your AI characters beyond the web UI with platform bridges.
+
+* **Discord Bridge** (Available Now):
+  * Multiple bots in a single workspace
+  * @mention to invoke characters in channels or DMs
+  * Maintains full conversation context and history
+  * Separate memory per platform (Discord memories don't leak to web UI)
+  * Multi-user conversation support with proper attribution
+  * Image generation support
+  * Rate limiting and spam protection
+* **Slack Bridge** (Coming Soon):
+  * Same architecture as Discord
+  * Socket Mode for easy setup
+  * Workspace-aware conversations
+
+**See**: `chorus_discord_bridge/README.md` for setup instructions
+
+Bring your characters to the platforms you use every day.
+
+---
+
 ### 🧰 Coming Soon
 
 * Code execution for assistant-enabled analytics and programming
@@ -126,26 +149,33 @@ Tools are capabilities — not silent background agents.
 
 <table>
 <tr>
-<td width="33%">
+<td width="25%">
 <h3 align="center">Catching Up With Nova</h3>
 <a href="Documentation/Screenshots/CatchingUpWithNova.jpeg">
 <img src="Documentation/Screenshots/CatchingUpWithNova.jpeg" alt="Catching Up With Nova" width="100%">
 </a>
 <p align="center"><em>Natural conversation with context-aware responses, streaming text, and TTS voice generation</em></p>
 </td>
-<td width="33%">
+<td width="25%">
 <h3 align="center">Memory Panel</h3>
 <a href="Documentation/Screenshots/NovaMemoryPanel.jpeg">
 <img src="Documentation/Screenshots/NovaMemoryPanel.jpeg" alt="Nova Memory Panel" width="100%">
 </a>
 <p align="center"><em>Inspectable, editable memory system with semantic search and type filtering</em></p>
 </td>
-<td width="33%">
+<td width="25%">
 <h3 align="center">Conversation Analysis</h3>
 <a href="Documentation/Screenshots/NovaConversationAnalysis.jpeg">
 <img src="Documentation/Screenshots/NovaConversationAnalysis.jpeg" alt="Nova Conversation Analysis" width="100%">
 </a>
 <p align="center"><em>Tone and interaction analysis, conversation themes, and memory extractions</em></p>
+</td>
+<td width="25%">
+<h3 align="center">Discord Integration</h3>
+<a href="Documentation/Screenshots/DiscordConversation.jpg">
+<img src="Documentation/Screenshots/DiscordConversation.jpg" alt="Discord Conversation" width="100%">
+</a>
+<p align="center"><em>Multiple characters in Discord with @mention support, multi-user conversations, and platform-isolated memory</em></p>
 </td>
 </tr>
 </table>
