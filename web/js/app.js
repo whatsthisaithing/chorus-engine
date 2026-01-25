@@ -269,6 +269,31 @@ window.App = {
             this.showServerLogsModal();
         });
         
+        // Restart server menu item
+        document.getElementById('restartServerMenuItem').addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (confirm('⚠️ This will restart the server. All active connections will be closed.\n\nContinue?')) {
+                try {
+                    const response = await fetch('/system/restart', { method: 'POST' });
+                    if (response.ok) {
+                        UI.showToast('Server is restarting... (this may take 15-20 seconds)', 'info');
+                        // Wait for server to restart, then reload page
+                        setTimeout(() => {
+                            UI.showToast('Server should be ready. Reloading page...', 'info');
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 2000);
+                        }, 15000);
+                    } else {
+                        throw new Error('Failed to restart server');
+                    }
+                } catch (error) {
+                    console.error('Restart failed:', error);
+                    UI.showToast('Failed to restart server', 'danger');
+                }
+            }
+        });
+        
         // Per-conversation log viewers
         document.getElementById('viewDebugLogMenuItem').addEventListener('click', (e) => {
             e.preventDefault();

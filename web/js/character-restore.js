@@ -143,7 +143,8 @@ window.CharacterRestore = {
             const result = await API.restoreCharacter(
                 this.selectedFile,
                 customId || null,
-                autoRename
+                autoRename,
+                false // cleanup_orphans - initially false
             );
             
             // Show success
@@ -179,7 +180,56 @@ window.CharacterRestore = {
             
         } catch (error) {
             console.error('Restore failed:', error);
-            UI.showToast(`Restore failed: ${error.message}`, 'error');
+            
+            // Check if error is about orphaned data
+            if (error.message && error.message.includes('orphaned data')) {
+                // Show confirmation dialog for cleanup
+                const shouldCleanup = confirm(
+                    '⚠️ Orphaned Data Detected\n\n' +
+                    error.message + '\n\n' +
+                    'Would you like to clean up the orphaned data and try again?\n\n' +
+                    '(This will permanently delete the orphaned conversations, memories, and vectors)'
+                );
+                
+                if (shouldCleanup) {
+                    try {
+                        // Retry with cleanup_orphans=true
+                        document.getElementById('restoreProgressText').textContent = 'Cleaning up orphaned data and restoring...';
+                        
+                        const result = await API.restoreCharacter(
+                            this.selectedFile,
+                            customId || null,
+                            autoRename,
+                            true // cleanup_orphans - now true
+                        );
+                        
+                        // Show success (same as above)
+                        document.getElementById('restoreProgress').style.display = 'none';
+                        document.getElementById('restoreSuccess').style.display = 'block';
+                        document.getElementById('restoreSummary').innerHTML = this.buildRestoreSummary(result);
+                        document.getElementById('restoreCancelBtn').textContent = 'Close';
+                        document.getElementById('restoreCancelBtn').disabled = false;
+                        document.getElementById('confirmRestoreBtn').style.display = 'none';
+                        
+                        UI.showToast(`Character restored successfully after cleanup: ${result.character_id}`, 'success');
+                        
+                        if (window.App && typeof window.App.loadCharacters === 'function') {
+                            await window.App.loadCharacters();
+                            const characterSelect = document.getElementById('characterSelect');
+                            if (characterSelect) {
+                                characterSelect.value = result.character_id;
+                                characterSelect.dispatchEvent(new Event('change'));
+                            }
+                        }
+                        return; // Exit successfully
+                    } catch (cleanupError) {
+                        console.error('Restore with cleanup failed:', cleanupError);
+                        UI.showToast(`Restore failed even after cleanup: ${cleanupError.message}`, 'error');
+                    }
+                }
+            } else {
+                UI.showToast(`Restore failed: ${error.message}`, 'error');
+            }
             
             // Reset UI
             document.getElementById('restoreProgress').style.display = 'none';

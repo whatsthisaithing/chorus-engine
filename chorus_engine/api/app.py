@@ -1301,6 +1301,7 @@ async def restore_character(
     new_character_id: Optional[str] = Query(None, description="Custom ID for restored character"),
     rename_if_exists: bool = Query(False, description="Auto-rename character if ID already exists"),
     overwrite: bool = Query(False, description="Overwrite existing character (not yet implemented)"),
+    cleanup_orphans: bool = Query(False, description="Clean up orphaned data before restore"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1348,10 +1349,16 @@ async def restore_character(
             backup_file=temp_file_path,
             new_character_id=new_character_id,
             rename_if_exists=rename_if_exists,
-            overwrite=overwrite
+            overwrite=overwrite,
+            cleanup_orphans=cleanup_orphans
         )
         
         logger.info(f"Character restored successfully: {result['character_id']}")
+        
+        # Reload characters in app state so it appears immediately
+        from chorus_engine.config.loader import ConfigLoader
+        loader = ConfigLoader()
+        app_state["characters"] = loader.load_all_characters()
         
         return {
             "success": True,
@@ -7589,6 +7596,22 @@ async def update_system_config(config: dict):
     except Exception as e:
         logger.error(f"Failed to write system config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/system/restart")
+async def trigger_restart():
+    """
+    Manually restart the server.
+    
+    Useful after operations that require a full reload (e.g., after restoring a character).
+    Returns immediately, server restarts after 1 second delay.
+    """
+    logger.info("Manual server restart triggered via API")
+    
+    # Trigger server restart in background
+    asyncio.create_task(restart_server())
+    
+    return {"success": True, "message": "Server restarting..."}
 
 
 async def restart_server():

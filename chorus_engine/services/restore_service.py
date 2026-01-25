@@ -79,7 +79,8 @@ class CharacterRestoreService:
         backup_file: Path,
         new_character_id: Optional[str] = None,
         rename_if_exists: bool = False,
-        overwrite: bool = False
+        overwrite: bool = False,
+        cleanup_orphans: bool = False
     ) -> Dict[str, Any]:
         """
         Restore a character from backup file.
@@ -89,6 +90,7 @@ class CharacterRestoreService:
             new_character_id: Optional custom ID for restored character (takes precedence over rename_if_exists)
             rename_if_exists: If True, auto-rename character if ID exists (appends timestamp)
             overwrite: If True, overwrite existing character (requires confirmation)
+            cleanup_orphans: If True, automatically clean up orphaned data before restore
         
         Returns:
             Dict with restoration summary
@@ -123,7 +125,12 @@ class CharacterRestoreService:
                 character_id = new_character_id
                 logger.info(f"Using custom character ID: {character_id}")
             
-            if self._character_exists(character_id):
+            # Check for existing character and orphaned data
+            yaml_exists, orphan_counts = self._character_exists(character_id)
+            has_orphans = any(count > 0 for count in orphan_counts.values())
+            
+            if yaml_exists:
+                # Character YAML exists - handle normally
                 if overwrite:
                     logger.warning(f"Overwriting existing character: {character_id}")
                     self._delete_existing_character(character_id)
@@ -136,6 +143,21 @@ class CharacterRestoreService:
                     raise RestoreError(
                         f"Character {character_id} already exists. "
                         f"Use new_character_id parameter, rename_if_exists=True, or overwrite=True"
+                    )
+            elif has_orphans:
+                # No YAML but has orphaned data - this will cause duplicates!
+                orphan_summary = ", ".join([f"{k}={v}" for k, v in orphan_counts.items() if v > 0])
+                
+                if cleanup_orphans:
+                    logger.warning(f"Cleaning up orphaned data for {character_id}: {orphan_summary}")
+                    deleted_counts = self._cleanup_orphaned_data(character_id)
+                    logger.info(f"Orphaned data cleaned: {deleted_counts}")
+                else:
+                    logger.warning(f"Found orphaned data for {character_id}: {orphan_summary}")
+                    raise RestoreError(
+                        f"Character {character_id} has orphaned data from incomplete deletion: {orphan_summary}. "
+                        f"This will cause duplicate conversations/memories. "
+                        f"Use cleanup_orphans=True to remove orphaned data first, or use a different character_id."
                     )
             
             # Step 5: Restore character configuration
@@ -221,15 +243,125 @@ class CharacterRestoreService:
                 f"Supported versions: {self.SUPPORTED_BACKUP_VERSIONS}"
             )
     
-    def _character_exists(self, character_id: str) -> bool:
+    def _character_exists(self, character_id: str) -> Tuple[bool, Dict[str, int]]:
         """
-        Check if character already exists.
+        Check if character already exists and detect orphaned data.
         
-        Only checks for YAML file since that's the authoritative source.
-        Database orphans from incomplete deletions are ignored.
+        Returns:
+            Tuple of (yaml_exists, orphan_counts)
+            - yaml_exists: True if character YAML file exists
+            - orphan_counts: Dict with counts of orphaned database records
         """
         yaml_exists = (self.characters_dir / f"{character_id}.yaml").exists()
-        return yaml_exists
+        
+        # Check for orphaned database records (from incomplete deletions)
+        orphan_counts = {
+            'conversations': 0,
+            'memories': 0,
+            'vectors': 0
+        }
+        
+        # Count orphaned conversations
+        orphan_counts['conversations'] = self.db.query(Conversation).filter(
+            Conversation.character_id == character_id
+        ).count()
+        
+        # Count orphaned memories
+        orphan_counts['memories'] = self.db.query(Memory).filter(
+            Memory.character_id == character_id
+        ).count()
+        
+        # Check for orphaned vector collection
+        collection = self.vector_store.get_collection(character_id)
+        if collection:
+            orphan_counts['vectors'] = collection.count()
+        
+        return yaml_exists, orphan_counts
+    
+    def _cleanup_orphaned_data(self, character_id: str) -> Dict[str, int]:
+        """
+        Clean up orphaned database records for a character.
+        
+        This removes data left behind from incomplete character deletions.
+        
+        Args:
+            character_id: Character ID to clean up
+            
+        Returns:
+            Dict with counts of deleted items
+        """
+        deleted_counts = {
+            'conversations': 0,
+            'threads': 0,
+            'messages': 0,
+            'memories': 0,
+            'images': 0,
+            'videos': 0,
+            'audio': 0,
+            'voice_samples': 0,
+            'vectors': 0
+        }
+        
+        try:
+            # Delete conversations (CASCADE will handle threads, messages, summaries, media)
+            conversations = self.db.query(Conversation).filter(
+                Conversation.character_id == character_id
+            ).all()
+            
+            for conv in conversations:
+                deleted_counts['conversations'] += 1
+                # Count related records before deletion
+                deleted_counts['threads'] += len(conv.threads)
+                for thread in conv.threads:
+                    deleted_counts['messages'] += len(thread.messages)
+                
+                self.db.delete(conv)
+            
+            # Delete memories
+            memories = self.db.query(Memory).filter(
+                Memory.character_id == character_id
+            ).all()
+            deleted_counts['memories'] = len(memories)
+            for memory in memories:
+                self.db.delete(memory)
+            
+            # Delete generated images
+            images = self.db.query(GeneratedImage).filter(
+                GeneratedImage.character_id == character_id
+            ).all()
+            deleted_counts['images'] = len(images)
+            for image in images:
+                self.db.delete(image)
+            
+            # Delete voice samples
+            samples = self.db.query(VoiceSample).filter(
+                VoiceSample.character_id == character_id
+            ).all()
+            deleted_counts['voice_samples'] = len(samples)
+            for sample in samples:
+                self.db.delete(sample)
+            
+            # Delete workflow records
+            workflows = self.db.query(Workflow).filter(
+                Workflow.character_name == character_id
+            ).all()
+            for workflow in workflows:
+                self.db.delete(workflow)
+            
+            # Commit database changes
+            self.db.commit()
+            
+            # Delete vector collection
+            if self.vector_store.delete_collection(character_id):
+                deleted_counts['vectors'] = 1
+            
+            logger.info(f"Cleaned up orphaned data for {character_id}: {deleted_counts}")
+            return deleted_counts
+            
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Failed to cleanup orphaned data: {e}")
+            raise RestoreError(f"Cleanup failed: {e}")
     
     def _delete_existing_character(self, character_id: str):
         """Delete existing character data (for overwrite mode)."""
