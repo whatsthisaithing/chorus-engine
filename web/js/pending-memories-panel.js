@@ -30,6 +30,12 @@ class PendingMemoriesPanel {
             this.button.addEventListener('click', () => this.open());
         }
         
+        // Initialize global reference
+        window.pendingMemoriesPanel = this;
+        
+        // Initialize global reference
+        window.pendingMemoriesPanel = this;
+        
         // Batch actions
         if (this.batchApproveBtn) {
             this.batchApproveBtn.addEventListener('click', () => this.batchApprove());
@@ -47,11 +53,29 @@ class PendingMemoriesPanel {
         }
     }
     
+    async updateCount(characterId) {
+        // Update badge with pending memory count
+        try {
+            const response = await fetch(`/characters/${characterId}/pending-memories`);
+            if (response.ok) {
+                const memories = await response.json();
+                const count = memories.length;
+                
+                if (this.badge) {
+                    this.badge.textContent = count;
+                    this.badge.style.display = count > 0 ? '' : 'none';
+                }
+            }
+        } catch (error) {
+            console.error('Error updating pending count:', error);
+        }
+    }
+    
     async open() {
-        // Get current character
-        const characterId = window.currentCharacterId;
+        // Get current character from App state
+        const characterId = window.App?.state?.currentCharacter;
         if (!characterId) {
-            showNotification('Please select a character first', 'warning');
+            UI.showToast('Please select a character first', 'warning');
             return;
         }
         
@@ -77,7 +101,7 @@ class PendingMemoriesPanel {
             
         } catch (error) {
             console.error('Error loading pending memories:', error);
-            showNotification('Failed to load pending memories', 'error');
+            UI.showToast('Failed to load pending memories', 'error');
         }
     }
     
@@ -265,12 +289,13 @@ class PendingMemoriesPanel {
             
             if (!response.ok) throw new Error('Failed to approve memory');
             
-            showNotification('Memory approved', 'success');
+            UI.showToast('Memory approved', 'success');
             await this.load(); // Reload list
+            this.updateCount(this.selectedCharacterId); // Update badge
             
         } catch (error) {
             console.error('Error approving memory:', error);
-            showNotification('Failed to approve memory', 'error');
+            UI.showToast('Failed to approve memory', 'error');
         }
     }
     
@@ -282,12 +307,13 @@ class PendingMemoriesPanel {
             
             if (!response.ok) throw new Error('Failed to reject memory');
             
-            showNotification('Memory rejected', 'success');
+            UI.showToast('Memory rejected', 'success');
             await this.load(); // Reload list
+            this.updateCount(this.selectedCharacterId); // Update badge
             
         } catch (error) {
             console.error('Error rejecting memory:', error);
-            showNotification('Failed to reject memory', 'error');
+            UI.showToast('Failed to reject memory', 'error');
         }
     }
     
@@ -306,12 +332,13 @@ class PendingMemoriesPanel {
             if (!response.ok) throw new Error('Failed to batch approve');
             
             const result = await response.json();
-            showNotification(`Approved ${result.approved_count} memories`, 'success');
+            UI.showToast(`Approved ${result.approved_count} memories`, 'success');
             await this.load();
+            this.updateCount(this.selectedCharacterId); // Update badge
             
         } catch (error) {
             console.error('Error batch approving:', error);
-            showNotification('Failed to batch approve', 'error');
+            UI.showToast('Failed to batch approve', 'error');
         }
     }
     
@@ -331,12 +358,13 @@ class PendingMemoriesPanel {
                 if (response.ok) successCount++;
             }
             
-            showNotification(`Rejected ${successCount} memories`, 'success');
+            UI.showToast(`Rejected ${successCount} memories`, 'success');
             await this.load();
+            this.updateCount(this.selectedCharacterId); // Update badge
             
         } catch (error) {
             console.error('Error batch rejecting:', error);
-            showNotification('Failed to batch reject', 'error');
+            UI.showToast('Failed to batch reject', 'error');
         }
     }
     
@@ -388,3 +416,4 @@ document.addEventListener('DOMContentLoaded', () => {
     // Start polling for updates
     pendingMemoriesPanel.startPolling();
 });
+

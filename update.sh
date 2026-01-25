@@ -39,8 +39,34 @@ echo ""
 # Change to script directory
 cd "$(dirname "$0")"
 
+# Run pre-update diagnostics
+echo "[1/5] Running pre-update diagnostics..."
+if ! python3 check_before_update.py --fix; then
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -eq 2 ]; then
+        echo ""
+        echo "============================================================"
+        echo "CRITICAL ERROR DETECTED"
+        echo "============================================================"
+        echo "Pre-update diagnostics found critical issues that could not"
+        echo "be fixed automatically. Please review the errors above and"
+        echo "consider backing up your data before proceeding."
+        echo ""
+        read -p "Continue with update anyway? (y/n): " CONTINUE
+        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+            echo "Update cancelled"
+            exit 1
+        fi
+    else
+        echo ""
+        echo "[INFO] Issues were detected and fixed automatically."
+        echo ""
+    fi
+fi
+echo ""
+
 # Check for Git and pull latest code
-echo "[1/4] Checking for code updates..."
+echo "[2/5] Checking for code updates..."
 if command -v git &> /dev/null; then
     echo "[INFO] Git found - pulling latest code..."
     if git pull; then
@@ -81,11 +107,11 @@ fi
 echo "[OK] Python found"
 echo ""
 
-echo "[2/4] Upgrading pip..."
+echo "[3/5] Upgrading pip..."
 $PIP_CMD install --upgrade pip
 echo ""
 
-echo "[3/4] Updating dependencies from requirements.txt..."
+echo "[4/5] Updating dependencies from requirements.txt..."
 $PIP_CMD install --upgrade -r requirements.txt
 
 if [ $? -ne 0 ]; then
@@ -94,7 +120,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "[4/4] Running database migrations..."
+echo "[5/5] Running database migrations..."
 $PYTHON_CMD -c "from alembic.config import Config; from alembic import command; cfg = Config('alembic.ini'); command.upgrade(cfg, 'head')"
 
 if [ $? -ne 0 ]; then

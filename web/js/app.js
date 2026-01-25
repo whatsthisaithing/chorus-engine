@@ -439,8 +439,14 @@ window.App = {
         
         // Enable memory and workflow buttons
         document.getElementById('memoryPanelBtn').disabled = false;
+        document.getElementById('pending-memories-btn').disabled = false;
         document.getElementById('manageWorkflowsBtn').disabled = false;
         document.getElementById('manageVoiceSamplesBtn').disabled = false; // Phase 6
+        
+        // Update pending memories count
+        if (window.pendingMemoriesPanel) {
+            window.pendingMemoriesPanel.updateCount(characterId);
+        }
         
         // Update character profile card
         const character = this.state.characters.find(c => c.id === characterId);

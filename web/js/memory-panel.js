@@ -135,10 +135,12 @@ window.MemoryPanel = {
         const container = document.getElementById('memoryList');
         const memories = this.isSearchMode ? this.searchResults : this.allMemories;
         
-        // Apply filter
-        let filtered = memories;
+        // Filter out pending memories (they have their own panel)
+        let filtered = memories.filter(m => m.status !== 'pending');
+        
+        // Apply type filter
         if (this.currentFilter !== 'all') {
-            filtered = memories.filter(m => m.memory_type === this.currentFilter);
+            filtered = filtered.filter(m => m.memory_type === this.currentFilter);
         }
         
         if (filtered.length === 0) {

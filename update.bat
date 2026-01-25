@@ -40,8 +40,33 @@ echo.
 REM Change to script directory
 cd /d "%~dp0"
 
+REM Run pre-update diagnostics
+echo [1/5] Running pre-update diagnostics...
+python check_before_update.py --fix
+if errorlevel 2 (
+    echo.
+    echo ============================================================
+    echo CRITICAL ERROR DETECTED
+    echo ============================================================
+    echo Pre-update diagnostics found critical issues that could not
+    echo be fixed automatically. Please review the errors above and
+    echo consider backing up your data before proceeding.
+    echo.
+    set /p CONTINUE="Continue with update anyway? (y/n): "
+    if /i not "!CONTINUE!"=="y" (
+        echo Update cancelled
+        pause
+        exit /b 1
+    )
+) else if errorlevel 1 (
+    echo.
+    echo [INFO] Issues were detected and fixed automatically.
+    echo.
+)
+echo.
+
 REM Check for Git and pull latest code
-echo [1/4] Checking for code updates...
+echo [2/5] Checking for code updates...
 git --version >nul 2>&1
 if errorlevel 1 (
     echo [SKIP] Git not found - skipping code update
@@ -96,14 +121,14 @@ set "PIP_CMD=pip"
 echo [OK] Python found
 echo.
 
-echo [2/4] Upgrading pip...
+echo [3/5] Upgrading pip...
 %PIP_CMD% install --upgrade pip
 if errorlevel 1 (
     echo [WARNING] Pip upgrade failed, continuing anyway...
 )
 echo.
 
-echo [3/4] Updating PyTorch with CUDA 13.0 support...
+echo [4/5] Updating PyTorch with CUDA 13.0 support...
 %PIP_CMD% install --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/cu130
 if errorlevel 1 (
     echo [WARNING] PyTorch CUDA update failed, keeping existing version
