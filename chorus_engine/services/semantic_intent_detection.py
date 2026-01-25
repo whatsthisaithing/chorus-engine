@@ -212,15 +212,16 @@ class SemanticIntentDetector:
     @staticmethod
     def _anchor_bonus(message: str, intent_name: str) -> float:
         """
-        Apply lexical anchor bonus for specific intents.
-        Hybrid approach: adds small boost if intent-specific keywords present.
+        Apply lexical anchor bonus/penalty for specific intents.
+        Hybrid approach: adds small boost if intent-specific keywords present,
+        or applies penalty if context indicates false positive.
         
         Args:
             message: User's message text (lowercase)
             intent_name: Name of the intent being scored
             
         Returns:
-            Bonus to add to similarity score (0.0 or 0.05)
+            Bonus/penalty to add to similarity score (-0.15 to +0.05)
         """
         message_lower = message.lower()
         
@@ -229,6 +230,27 @@ class SemanticIntentDetector:
             anchor_words = ["remind", "reminder", "don't let me forget", "don't forget"]
             if any(word in message_lower for word in anchor_words):
                 return 0.05
+        
+        if intent_name == "send_image":
+            # Penalty if talking about past images or hypothetical/future scenarios
+            past_indicators = [
+                "you showed", "you sent", "you created", "you made",
+                "you needed to send", "you generated", "you took",
+                "the image you", "the photo you", "the picture you"
+            ]
+            future_hypothetical = [
+                "when you can", "you'll be able", "you will be able",
+                "i'll let you know", "being able to", "talking about",
+                "i send to you", "i send you", "when i send"
+            ]
+            
+            # Check for past tense indicators
+            if any(phrase in message_lower for phrase in past_indicators):
+                return -0.15
+            
+            # Check for future/hypothetical context
+            if any(phrase in message_lower for phrase in future_hypothetical):
+                return -0.15
         
         return 0.0
     
