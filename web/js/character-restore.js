@@ -164,12 +164,18 @@ window.CharacterRestore = {
             
             UI.showToast(`Character restored successfully: ${result.character_id}`, 'success');
             
-            // Reload character list after a short delay
-            setTimeout(() => {
-                if (window.CharacterManagement) {
-                    CharacterManagement.loadCharacters();
+            // Reload character list to show the restored character
+            if (window.App && typeof window.App.loadCharacters === 'function') {
+                await window.App.loadCharacters();
+                
+                // Select the restored character
+                const characterSelect = document.getElementById('characterSelect');
+                if (characterSelect) {
+                    characterSelect.value = result.character_id;
+                    // Trigger change event to load the character
+                    characterSelect.dispatchEvent(new Event('change'));
                 }
-            }, 1000);
+            }
             
         } catch (error) {
             console.error('Restore failed:', error);

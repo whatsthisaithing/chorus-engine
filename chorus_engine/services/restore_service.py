@@ -557,9 +557,7 @@ class CharacterRestoreService:
                 return 0
             
             # Get or create collection for character
-            collection = self.vector_store.get_collection(character_id)
-            if collection is None:
-                collection = self.vector_store.create_collection(character_id)
+            collection = self.vector_store.get_or_create_collection(character_id)
             
             # Prepare data for batch insert
             ids = []
