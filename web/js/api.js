@@ -559,7 +559,6 @@ class API {
         return { blob, size, sizeMB };
     }
     
-    static async restoreCharacter(file, newCharacterId = null, renameIfExists = false) {
     /**
      * Restore character from backup file
      */
