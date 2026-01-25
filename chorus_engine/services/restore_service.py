@@ -16,6 +16,7 @@ import shutil
 import zipfile
 import os
 import yaml
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
@@ -143,11 +144,11 @@ class CharacterRestoreService:
             
             # Step 6: Restore SQL data
             logger.info("Restoring database records...")
-            restored_counts = self._restore_sql_data(temp_dir, character_id, original_id)
+            restored_counts, id_maps = self._restore_sql_data(temp_dir, character_id, original_id)
             
-            # Step 7: Restore vector store
+            # Step 7: Restore vector store with remapped memory IDs
             logger.info("Restoring vector store...")
-            vector_count = self._restore_vector_store(temp_dir, character_id)
+            vector_count = self._restore_vector_store(temp_dir, character_id, id_maps['memories'])
             restored_counts['vectors'] = vector_count
             
             # Step 8: Restore media files
@@ -221,14 +222,14 @@ class CharacterRestoreService:
             )
     
     def _character_exists(self, character_id: str) -> bool:
-        """Check if character already exists in database."""
-        conv_exists = self.db.query(Conversation).filter(
-            Conversation.character_id == character_id
-        ).first() is not None
+        """
+        Check if character already exists.
         
+        Only checks for YAML file since that's the authoritative source.
+        Database orphans from incomplete deletions are ignored.
+        """
         yaml_exists = (self.characters_dir / f"{character_id}.yaml").exists()
-        
-        return conv_exists or yaml_exists
+        return yaml_exists
     
     def _delete_existing_character(self, character_id: str):
         """Delete existing character data (for overwrite mode)."""
@@ -280,13 +281,25 @@ class CharacterRestoreService:
         temp_dir: Path,
         character_id: str,
         original_id: str
-    ) -> Dict[str, int]:
+    ) -> Tuple[Dict[str, int], Dict[str, Dict[str, str]]]:
         """
-        Restore all SQL database records.
+        Restore all SQL database records with ID remapping.
+        
+        Generates new UUIDs for all primary keys and updates all foreign key references
+        to prevent collisions with existing data. This allows restoring the same backup
+        multiple times or restoring into a database with orphaned records.
         
         Returns:
-            Dict with counts of restored items
+            Tuple of (counts dict, id_maps dict)
         """
+        # ID mapping tables to track old_id -> new_id conversions
+        id_maps = {
+            'conversations': {},
+            'threads': {},
+            'messages': {},
+            'memories': {}
+        }
+        
         counts = {
             'conversations': 0,
             'threads': 0,
@@ -308,12 +321,17 @@ class CharacterRestoreService:
                 conversations_data = json.load(f)
             
             for conv_data in conversations_data:
+                # Generate new conversation ID and track mapping
+                old_conv_id = conv_data['id']
+                new_conv_id = str(uuid.uuid4())
+                id_maps['conversations'][old_conv_id] = new_conv_id
+                
                 # Update character_id if renamed
                 conv_data['character_id'] = character_id
                 
-                # Create conversation
+                # Create conversation with new ID
                 conv = Conversation(
-                    id=conv_data['id'],
+                    id=new_conv_id,
                     character_id=conv_data['character_id'],
                     title=conv_data['title'],
                     created_at=datetime.fromisoformat(conv_data['created_at']),
@@ -332,9 +350,14 @@ class CharacterRestoreService:
                 
                 # Restore threads
                 for thread_data in conv_data.get('threads', []):
+                    # Generate new thread ID and track mapping
+                    old_thread_id = thread_data['id']
+                    new_thread_id = str(uuid.uuid4())
+                    id_maps['threads'][old_thread_id] = new_thread_id
+                    
                     thread = Thread(
-                        id=thread_data['id'],
-                        conversation_id=conv.id,
+                        id=new_thread_id,
+                        conversation_id=new_conv_id,  # Use new conversation ID
                         title=thread_data['title'],
                         created_at=datetime.fromisoformat(thread_data['created_at']),
                         updated_at=datetime.fromisoformat(thread_data['updated_at'])
@@ -344,9 +367,14 @@ class CharacterRestoreService:
                     
                     # Restore messages
                     for msg_data in thread_data.get('messages', []):
+                        # Generate new message ID and track mapping
+                        old_msg_id = msg_data['id']
+                        new_msg_id = str(uuid.uuid4())
+                        id_maps['messages'][old_msg_id] = new_msg_id
+                        
                         message = Message(
-                            id=msg_data['id'],
-                            thread_id=thread.id,
+                            id=new_msg_id,
+                            thread_id=new_thread_id,  # Use new thread ID
                             role=msg_data['role'],
                             content=msg_data['content'],
                             meta_data=msg_data.get('meta_data'),
@@ -362,10 +390,13 @@ class CharacterRestoreService:
                 # Restore conversation summary if present
                 if 'summary' in conv_data and conv_data['summary']:
                     summary_data = conv_data['summary']
+                    old_thread_id = summary_data.get('thread_id')
+                    new_thread_id = id_maps['threads'].get(old_thread_id) if old_thread_id else None
+                    
                     summary = ConversationSummary(
-                        id=summary_data['id'],
-                        conversation_id=conv.id,
-                        thread_id=summary_data.get('thread_id'),
+                        id=str(uuid.uuid4()),  # Generate new ID
+                        conversation_id=new_conv_id,  # Use new conversation ID
+                        thread_id=new_thread_id,  # Use new thread ID if present
                         summary=summary_data['summary'],
                         summary_type=summary_data.get('summary_type', 'progressive'),
                         message_range_start=summary_data['message_range_start'],
@@ -387,24 +418,46 @@ class CharacterRestoreService:
                 memories_data = json.load(f)
             
             for mem_data in memories_data:
+                # Generate new memory ID and track mapping
+                old_mem_id = mem_data['id']
+                new_mem_id = str(uuid.uuid4())
+                id_maps['memories'][old_mem_id] = new_mem_id
+                
                 # Update character_id if renamed
                 mem_data['character_id'] = character_id
                 
+                # Remap conversation_id and thread_id if they exist
+                old_conv_id = mem_data.get('conversation_id')
+                new_conv_id = id_maps['conversations'].get(old_conv_id) if old_conv_id else None
+                
+                old_thread_id = mem_data.get('thread_id')
+                new_thread_id = id_maps['threads'].get(old_thread_id) if old_thread_id else None
+                
+                # Remap source_messages (list of message IDs)
+                source_messages = mem_data.get('source_messages')
+                if source_messages and isinstance(source_messages, list):
+                    new_source_messages = []
+                    for old_msg_id in source_messages:
+                        new_msg_id = id_maps['messages'].get(old_msg_id)
+                        if new_msg_id:
+                            new_source_messages.append(new_msg_id)
+                    source_messages = new_source_messages if new_source_messages else None
+                
                 memory = Memory(
-                    id=mem_data['id'],
-                    conversation_id=mem_data.get('conversation_id'),
-                    thread_id=mem_data.get('thread_id'),
+                    id=new_mem_id,
+                    conversation_id=new_conv_id,
+                    thread_id=new_thread_id,
                     character_id=mem_data['character_id'],
                     memory_type=mem_data['memory_type'],
                     content=mem_data['content'],
-                    vector_id=mem_data.get('vector_id'),
+                    vector_id=new_mem_id,  # Use new memory ID as vector ID
                     embedding_model=mem_data.get('embedding_model', 'all-MiniLM-L6-v2'),
                     priority=mem_data.get('priority', 50),
                     tags=mem_data.get('tags'),
                     confidence=mem_data.get('confidence'),
                     category=mem_data.get('category'),
                     status=mem_data.get('status', 'approved'),
-                    source_messages=mem_data.get('source_messages'),
+                    source_messages=source_messages,
                     emotional_weight=mem_data.get('emotional_weight'),
                     participants=mem_data.get('participants'),
                     key_moments=mem_data.get('key_moments'),
@@ -427,7 +480,7 @@ class CharacterRestoreService:
                 wf_data['character_name'] = character_id
                 
                 workflow = Workflow(
-                    id=wf_data['id'],
+                    # Generate new ID (workflows use integer autoincrement, so let DB assign)
                     character_name=wf_data['character_name'],
                     workflow_name=wf_data['workflow_name'],
                     workflow_file_path=wf_data['workflow_file_path'],
@@ -454,62 +507,83 @@ class CharacterRestoreService:
                 # Update character_id if renamed
                 img_data['character_id'] = character_id
                 
-                image = GeneratedImage(
-                    id=img_data['id'],
-                    conversation_id=img_data['conversation_id'],
-                    thread_id=img_data['thread_id'],
-                    message_id=img_data.get('message_id'),
-                    character_id=img_data['character_id'],
-                    prompt=img_data['prompt'],
-                    negative_prompt=img_data.get('negative_prompt'),
-                    workflow_file=img_data['workflow_file'],
-                    file_path=img_data['file_path'],
-                    thumbnail_path=img_data.get('thumbnail_path'),
-                    width=img_data.get('width'),
-                    height=img_data.get('height'),
-                    seed=img_data.get('seed'),
-                    notes=img_data.get('notes'),
-                    created_at=datetime.fromisoformat(img_data['created_at']),
-                    generation_time=img_data.get('generation_time')
-                )
-                self.db.add(image)
-                counts['images'] += 1
+                # Remap conversation_id, thread_id, message_id
+                old_conv_id = img_data['conversation_id']
+                new_conv_id = id_maps['conversations'].get(old_conv_id)
+                
+                old_thread_id = img_data['thread_id']
+                new_thread_id = id_maps['threads'].get(old_thread_id)
+                
+                old_msg_id = img_data.get('message_id')
+                new_msg_id = id_maps['messages'].get(old_msg_id) if old_msg_id else None
+                
+                if new_conv_id and new_thread_id:  # Only add if IDs mapped successfully
+                    image = GeneratedImage(
+                        # Let DB assign new ID (integer autoincrement)
+                        conversation_id=new_conv_id,
+                        thread_id=new_thread_id,
+                        message_id=new_msg_id,
+                        character_id=img_data['character_id'],
+                        prompt=img_data['prompt'],
+                        negative_prompt=img_data.get('negative_prompt'),
+                        workflow_file=img_data['workflow_file'],
+                        file_path=img_data['file_path'],
+                        thumbnail_path=img_data.get('thumbnail_path'),
+                        width=img_data.get('width'),
+                        height=img_data.get('height'),
+                        seed=img_data.get('seed'),
+                        notes=img_data.get('notes'),
+                        created_at=datetime.fromisoformat(img_data['created_at']),
+                        generation_time=img_data.get('generation_time')
+                    )
+                    self.db.add(image)
+                    counts['images'] += 1
             
             # Restore videos
             for vid_data in media_data.get('videos', []):
-                video = GeneratedVideo(
-                    id=vid_data['id'],
-                    conversation_id=vid_data['conversation_id'],
-                    file_path=vid_data['file_path'],
-                    thumbnail_path=vid_data.get('thumbnail_path'),
-                    format=vid_data.get('format'),
-                    duration_seconds=vid_data.get('duration_seconds'),
-                    width=vid_data.get('width'),
-                    height=vid_data.get('height'),
-                    prompt=vid_data['prompt'],
-                    negative_prompt=vid_data.get('negative_prompt'),
-                    workflow_file=vid_data.get('workflow_file'),
-                    comfy_prompt_id=vid_data.get('comfy_prompt_id'),
-                    generation_time_seconds=vid_data.get('generation_time_seconds'),
-                    created_at=datetime.fromisoformat(vid_data['created_at'])
-                )
-                self.db.add(video)
-                counts['videos'] += 1
+                # Remap conversation_id
+                old_conv_id = vid_data['conversation_id']
+                new_conv_id = id_maps['conversations'].get(old_conv_id)
+                
+                if new_conv_id:  # Only add if ID mapped successfully
+                    video = GeneratedVideo(
+                        # Let DB assign new ID (integer autoincrement)
+                        conversation_id=new_conv_id,
+                        file_path=vid_data['file_path'],
+                        thumbnail_path=vid_data.get('thumbnail_path'),
+                        format=vid_data.get('format'),
+                        duration_seconds=vid_data.get('duration_seconds'),
+                        width=vid_data.get('width'),
+                        height=vid_data.get('height'),
+                        prompt=vid_data['prompt'],
+                        negative_prompt=vid_data.get('negative_prompt'),
+                        workflow_file=vid_data.get('workflow_file'),
+                        comfy_prompt_id=vid_data.get('comfy_prompt_id'),
+                        generation_time_seconds=vid_data.get('generation_time_seconds'),
+                        created_at=datetime.fromisoformat(vid_data['created_at'])
+                    )
+                    self.db.add(video)
+                    counts['videos'] += 1
             
             # Restore audio messages
             for audio_data in media_data.get('audio_messages', []):
-                audio = AudioMessage(
-                    id=audio_data['id'],
-                    message_id=audio_data['message_id'],
-                    audio_filename=audio_data['audio_filename'],
-                    workflow_name=audio_data.get('workflow_name'),
-                    generation_duration=audio_data.get('generation_duration'),
-                    text_preprocessed=audio_data.get('text_preprocessed'),
-                    voice_sample_id=audio_data.get('voice_sample_id'),
-                    created_at=datetime.fromisoformat(audio_data['created_at'])
-                )
-                self.db.add(audio)
-                counts['audio'] += 1
+                # Remap message_id
+                old_msg_id = audio_data['message_id']
+                new_msg_id = id_maps['messages'].get(old_msg_id)
+                
+                if new_msg_id:  # Only add if ID mapped successfully
+                    audio = AudioMessage(
+                        # Let DB assign new ID (integer autoincrement)
+                        message_id=new_msg_id,
+                        audio_filename=audio_data['audio_filename'],
+                        workflow_name=audio_data.get('workflow_name'),
+                        generation_duration=audio_data.get('generation_duration'),
+                        text_preprocessed=audio_data.get('text_preprocessed'),
+                        voice_sample_id=audio_data.get('voice_sample_id'),
+                        created_at=datetime.fromisoformat(audio_data['created_at'])
+                    )
+                    self.db.add(audio)
+                    counts['audio'] += 1
             
             # Restore voice samples
             for sample_data in media_data.get('voice_samples', []):
@@ -517,7 +591,7 @@ class CharacterRestoreService:
                 sample_data['character_id'] = character_id
                 
                 sample = VoiceSample(
-                    id=sample_data['id'],
+                    # Let DB assign new ID (integer autoincrement)
                     character_id=sample_data['character_id'],
                     filename=sample_data['filename'],
                     transcript=sample_data['transcript'],
@@ -531,11 +605,16 @@ class CharacterRestoreService:
         self.db.commit()
         
         logger.info(f"Restored SQL data: {counts}")
-        return counts
+        return counts, id_maps
     
-    def _restore_vector_store(self, temp_dir: Path, character_id: str) -> int:
+    def _restore_vector_store(self, temp_dir: Path, character_id: str, memory_id_map: Dict[str, str]) -> int:
         """
-        Restore vector store from backup.
+        Restore vector store from backup with remapped memory IDs.
+        
+        Args:
+            temp_dir: Temporary directory with extracted backup
+            character_id: New character ID
+            memory_id_map: Mapping of old_memory_id -> new_memory_id
         
         Returns:
             Number of vectors restored
@@ -559,26 +638,25 @@ class CharacterRestoreService:
             # Get or create collection for character
             collection = self.vector_store.get_or_create_collection(character_id)
             
-            # Prepare data for batch insert
+            # Prepare data for batch insert with remapped IDs
             ids = []
             embeddings = []
             documents = []
             metadatas = []
             
             for vec in vectors:
-                ids.append(vec['id'])
+                old_id = vec['id']
+                # Use remapped memory ID as vector ID
+                new_id = memory_id_map.get(old_id, old_id)  # Fallback to old ID if not in map
                 
                 # Convert embedding list back to format ChromaDB expects
                 # ChromaDB will handle conversion to numpy array internally
                 embedding = vec.get('embedding')
                 if embedding:
+                    ids.append(new_id)
                     embeddings.append(embedding)
-                else:
-                    # Skip vectors without embeddings
-                    continue
-                
-                documents.append(vec.get('document', ''))
-                metadatas.append(vec.get('metadata', {}))
+                    documents.append(vec.get('document', ''))
+                    metadatas.append(vec.get('metadata', {}))
             
             # Add vectors to collection
             if ids:
