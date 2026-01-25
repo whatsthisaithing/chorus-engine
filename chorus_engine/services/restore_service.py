@@ -65,7 +65,8 @@ class CharacterRestoreService:
         self.workflows_dir = workflows_dir or Path("workflows")
         
         # Initialize vector store
-        self.vector_store = VectorStore()
+        vector_store_dir = self.data_dir / "vector_store"
+        self.vector_store = VectorStore(persist_directory=vector_store_dir)
         
         # Create directories if needed
         self.characters_dir.mkdir(parents=True, exist_ok=True)
