@@ -3465,6 +3465,90 @@ window.App = {
             console.error('Failed to download image request log:', error);
             UI.showToast('Failed to download image request log', 'error');
         }
+    },
+    
+    /**
+     * Show modal to regenerate vectors for current character
+     */
+    async showRegenerateVectorsModal() {
+        // Try to get character from main state or from character editor
+        let characterId = this.state.selectedCharacter;
+        
+        // If called from character config modal, get the character being edited
+        if (!characterId && window.CharacterManagement && window.CharacterManagement.currentCharacter) {
+            characterId = window.CharacterManagement.currentCharacter.id;
+        }
+        
+        if (!characterId) {
+            UI.showToast('No character selected', 'error');
+            return;
+        }
+        
+        try {
+            // Check vector health
+            const response = await fetch(`/characters/${characterId}/vector-health`);
+            const health = await response.json();
+            
+            const message = health.needs_regeneration
+                ? `⚠️ Vector Health Check\n\n` +
+                  `Memories: ${health.memory_count}\n` +
+                  `Vectors: ${health.vector_count}\n` +
+                  `Missing: ${health.missing_vectors}\n\n` +
+                  `This will:\n` +
+                  `- Delete all existing vectors\n` +
+                  `- Regenerate ${health.memory_count} embeddings\n` +
+                  `- Take ~${Math.ceil(health.memory_count / 2)} seconds\n\n` +
+                  `Embeddings will be slightly different from originals.\n\n` +
+                  `Continue?`
+                : `✓ Vector Health Check\n\n` +
+                  `All ${health.memory_count} memories have valid vector embeddings.\n\n` +
+                  `No regeneration needed.`;
+            
+            if (!health.needs_regeneration) {
+                alert(message);
+                return;
+            }
+            
+            if (!confirm(message)) {
+                return;
+            }
+            
+            // Show progress
+            UI.showToast('Regenerating vectors...', 'info');
+            
+            // Use EventSource for SSE
+            const eventSource = new EventSource(`/characters/${characterId}/regenerate-vectors`);
+            
+            eventSource.onmessage = (event) => {
+                const progress = JSON.parse(event.data);
+                
+                // Show progress toast
+                if (progress.status === 'running') {
+                    UI.showToast(`${progress.message} (${progress.percent}%)`, 'info');
+                } else if (progress.status === 'success') {
+                    eventSource.close();
+                    UI.showToast('Vector embeddings regenerated successfully!', 'success');
+                    
+                    // Refresh character stats
+                    if (this.state.selectedCharacter) {
+                        this.selectCharacter(this.state.selectedCharacter);
+                    }
+                } else if (progress.status === 'error') {
+                    eventSource.close();
+                    UI.showToast(`Failed to regenerate vectors: ${progress.message}`, 'error');
+                }
+            };
+            
+            eventSource.onerror = (error) => {
+                console.error('Vector regeneration stream error:', error);
+                eventSource.close();
+                UI.showToast('Failed to regenerate vectors', 'error');
+            };
+            
+        } catch (error) {
+            console.error('Failed to check vector health:', error);
+            UI.showToast(`Error: ${error.message}`, 'error');
+        }
     }
 };
 

@@ -123,12 +123,30 @@ window.CharacterRestore = {
         
         const customId = document.getElementById('restoreCharacterName').value.trim();
         const autoRename = document.getElementById('restoreAutoRename').checked;
+        const overwrite = document.getElementById('restoreOverwrite').checked;
         
         // Validate custom ID if provided
         if (customId) {
             if (!/^[a-zA-Z0-9_-]+$/.test(customId)) {
                 UI.showToast('Character ID can only contain letters, numbers, underscores, and hyphens', 'error');
                 return;
+            }
+        }
+        
+        // Confirm overwrite if selected
+        if (overwrite) {
+            const confirmMsg = '⚠️ OVERWRITE WARNING\n\n' +
+                'This will PERMANENTLY DELETE the existing character and all associated data:\n' +
+                '• All conversations and messages\n' +
+                '• All memories and vector embeddings\n' +
+                '• All generated images, videos, and audio\n' +
+                '• Voice samples and workflows\n\n' +
+                'The character will be replaced with the backup version.\n\n' +
+                'This action CANNOT BE UNDONE!\n\n' +
+                'Are you absolutely sure you want to continue?';
+            
+            if (!confirm(confirmMsg)) {
+                return; // User cancelled
             }
         }
         
@@ -144,7 +162,8 @@ window.CharacterRestore = {
                 this.selectedFile,
                 customId || null,
                 autoRename,
-                false // cleanup_orphans - initially false
+                false, // cleanup_orphans - initially false
+                overwrite
             );
             
             // Show success
@@ -176,6 +195,11 @@ window.CharacterRestore = {
                     // Trigger change event to load the character
                     characterSelect.dispatchEvent(new Event('change'));
                 }
+                
+                // Check if vectors need regeneration
+                if (result.vector_health && result.vector_health.needs_regeneration) {
+                    this.showVectorRegenerationPrompt(result);
+                }
             }
             
         } catch (error) {
@@ -200,7 +224,8 @@ window.CharacterRestore = {
                             this.selectedFile,
                             customId || null,
                             autoRename,
-                            true // cleanup_orphans - now true
+                            true, // cleanup_orphans - now true
+                            overwrite
                         );
                         
                         // Show success (same as above)
@@ -369,6 +394,86 @@ window.CharacterRestore = {
         document.getElementById('confirmRestoreBtn').style.display = 'block';
         document.getElementById('restoreCancelBtn').disabled = false;
         document.getElementById('restoreCancelBtn').textContent = 'Cancel';
+    },
+    
+    /**
+     * Show prompt to regenerate missing vectors after restore
+     */
+    showVectorRegenerationPrompt(restoreResult) {
+        const health = restoreResult.vector_health;
+        
+        const shouldRegenerate = confirm(
+            '⚠️ Vector Embeddings Missing\n\n' +
+            `This backup has ${health.memory_count} memories but only ${health.vector_count} vector embeddings.\n` +
+            `${health.missing_vectors} embeddings are missing.\n\n` +
+            'Without vectors, memory retrieval will not work correctly.\n\n' +
+            'Regenerate embeddings now?\n' +
+            `- Takes ~${Math.ceil(health.memory_count / 2)} seconds\n` +
+            '- Memories will work normally\n' +
+            '- Embeddings will be slightly different from original\n\n' +
+            'You can also regenerate later from character settings.'
+        );
+        
+        if (shouldRegenerate) {
+            this.regenerateVectors(restoreResult.character_id);
+        }
+    },
+    
+    /**
+     * Regenerate vectors for a character with progress display
+     */
+    async regenerateVectors(characterId) {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('restoreCharacterModal'));
+        
+        try {
+            // Show progress
+            document.getElementById('restoreUploadSection').style.display = 'none';
+            document.getElementById('restoreSuccess').style.display = 'none';
+            document.getElementById('restoreProgress').style.display = 'block';
+            document.getElementById('restoreProgressText').textContent = 'Regenerating vector embeddings...';
+            
+            // Create EventSource for SSE
+            const eventSource = new EventSource(`/characters/${characterId}/regenerate-vectors`);
+            
+            eventSource.onmessage = (event) => {
+                const progress = JSON.parse(event.data);
+                
+                // Update progress text
+                document.getElementById('restoreProgressText').textContent = 
+                    `${progress.message} (${progress.percent}%)`;
+                
+                // If complete or error, close connection
+                if (progress.status === 'success') {
+                    eventSource.close();
+                    UI.showToast('Vector embeddings regenerated successfully!', 'success');
+                    
+                    // Close modal after brief delay
+                    setTimeout(() => {
+                        if (modal) modal.hide();
+                        this.resetModal();
+                    }, 1500);
+                } else if (progress.status === 'error') {
+                    eventSource.close();
+                    UI.showToast(`Failed to regenerate vectors: ${progress.message}`, 'error');
+                    document.getElementById('restoreProgress').style.display = 'none';
+                    document.getElementById('restoreUploadSection').style.display = 'block';
+                }
+            };
+            
+            eventSource.onerror = (error) => {
+                console.error('Vector regeneration stream error:', error);
+                eventSource.close();
+                UI.showToast('Failed to regenerate vectors', 'error');
+                document.getElementById('restoreProgress').style.display = 'none';
+                document.getElementById('restoreUploadSection').style.display = 'block';
+            };
+            
+        } catch (error) {
+            console.error('Failed to start vector regeneration:', error);
+            UI.showToast(`Failed to regenerate vectors: ${error.message}`, 'error');
+            document.getElementById('restoreProgress').style.display = 'none';
+            document.getElementById('restoreUploadSection').style.display = 'block';
+        }
     }
 };
 

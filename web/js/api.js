@@ -562,13 +562,14 @@ class API {
     /**
      * Restore character from backup file
      */
-    static async restoreCharacter(file, newCharacterId = null, renameIfExists = false, cleanupOrphans = false) {
+    static async restoreCharacter(file, newCharacterId = null, renameIfExists = false, cleanupOrphans = false, overwrite = false) {
         const formData = new FormData();
         formData.append('file', file);
         
         const params = new URLSearchParams({ 
             rename_if_exists: renameIfExists,
-            cleanup_orphans: cleanupOrphans
+            cleanup_orphans: cleanupOrphans,
+            overwrite: overwrite
         });
         if (newCharacterId) {
             params.append('new_character_id', newCharacterId);

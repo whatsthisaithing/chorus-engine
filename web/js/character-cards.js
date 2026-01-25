@@ -27,6 +27,13 @@ window.CharacterCards = {
             this.openExportModal();
         });
         
+        // Regenerate Vectors button in character editor
+        document.getElementById('regenerateVectorsModalBtn')?.addEventListener('click', async () => {
+            if (window.App && typeof window.App.showRegenerateVectorsModal === 'function') {
+                await window.App.showRegenerateVectorsModal();
+            }
+        });
+        
         // Confirm export button
         document.getElementById('confirmExportCardBtn')?.addEventListener('click', async () => {
             await this.confirmExport();

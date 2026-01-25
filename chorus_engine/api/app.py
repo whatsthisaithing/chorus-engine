@@ -1384,6 +1384,69 @@ async def restore_character(
                 logger.warning(f"Failed to delete temporary file: {e}")
 
 
+@app.get("/characters/{character_id}/vector-health")
+async def check_character_vector_health(character_id: str, db: Session = Depends(get_db)):
+    """
+    Check if character has missing or corrupted vector embeddings.
+    
+    Returns:
+        Dict with memory_count, vector_count, missing_vectors, needs_regeneration
+    """
+    from chorus_engine.services.vector_regeneration_service import VectorRegenerationService
+    
+    vector_store_dir = Path("data/vector_store")
+    vector_store = VectorStore(persist_directory=vector_store_dir)
+    embedder = EmbeddingService()
+    
+    regen_service = VectorRegenerationService(
+        db=db,
+        vector_store=vector_store,
+        embedder=embedder
+    )
+    
+    health = regen_service.check_vector_health(character_id)
+    return health
+
+
+@app.get("/characters/{character_id}/regenerate-vectors")
+async def regenerate_character_vectors(character_id: str, db: Session = Depends(get_db)):
+    """
+    Regenerate all vector embeddings for a character.
+    
+    Returns streaming progress updates as SSE (Server-Sent Events).
+    """
+    from chorus_engine.services.vector_regeneration_service import VectorRegenerationService
+    from fastapi.responses import StreamingResponse
+    import json
+    
+    async def event_stream():
+        vector_store_dir = Path("data/vector_store")
+        vector_store = VectorStore(persist_directory=vector_store_dir)
+        embedder = EmbeddingService()
+        
+        regen_service = VectorRegenerationService(
+            db=db,
+            vector_store=vector_store,
+            embedder=embedder
+        )
+        
+        try:
+            for progress in regen_service.regenerate_vectors(character_id):
+                yield f"data: {json.dumps(progress)}\n\n"
+        except Exception as e:
+            logger.error(f"Error in regenerate_vectors stream: {e}")
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
 @app.post("/characters/{character_id}/clone")
 async def clone_character(character_id: str, new_id: str):
     """

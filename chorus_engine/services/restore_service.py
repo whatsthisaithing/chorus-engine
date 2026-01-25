@@ -183,6 +183,18 @@ class CharacterRestoreService:
             workflow_count = self._restore_workflows(temp_dir, character_id)
             restored_counts['workflow_files'] = workflow_count
             
+            # Step 10: Check vector health
+            logger.info("Checking vector health...")
+            memory_count = restored_counts.get('memories', 0)
+            vector_count = restored_counts.get('vectors', 0)
+            
+            vector_health = {
+                'memory_count': memory_count,
+                'vector_count': vector_count,
+                'missing_vectors': max(0, memory_count - vector_count),
+                'needs_regeneration': memory_count > vector_count
+            }
+            
             logger.info(f"Restore completed successfully for character: {character_id}")
             
             return {
@@ -190,7 +202,8 @@ class CharacterRestoreService:
                 'original_id': original_id,
                 'renamed': character_id != original_id,
                 'backup_date': manifest.get('backup_date'),
-                'restored_counts': restored_counts
+                'restored_counts': restored_counts,
+                'vector_health': vector_health
             }
             
         except Exception as e:
@@ -364,18 +377,90 @@ class CharacterRestoreService:
             raise RestoreError(f"Cleanup failed: {e}")
     
     def _delete_existing_character(self, character_id: str):
-        """Delete existing character data (for overwrite mode)."""
-        # TODO: Implement full character deletion
-        # This should delete:
-        # - All conversations, threads, messages
-        # - All memories
-        # - All media records
-        # - Vector store collection
-        # - Media files
-        # - Workflow files
-        # - Character YAML
-        logger.warning(f"Character deletion not yet fully implemented for {character_id}")
-        raise NotImplementedError("Character overwrite not yet implemented")
+        """
+        Delete existing character completely (for overwrite mode).
+        
+        Removes:
+        - Character YAML configuration
+        - Profile images
+        - All database records (conversations, memories, etc.)
+        - Vector store collection
+        - Media files (images, videos, audio, voice samples)
+        - Workflow files
+        
+        Args:
+            character_id: Character ID to delete
+        """
+        try:
+            deleted_items = []
+            
+            # Delete character YAML
+            yaml_path = self.characters_dir / f"{character_id}.yaml"
+            if yaml_path.exists():
+                yaml_path.unlink()
+                deleted_items.append("YAML")
+                logger.debug(f"Deleted character YAML: {yaml_path}")
+            
+            # Delete profile images (may have various extensions)
+            profile_dir = self.data_dir / "character_images"
+            if profile_dir.exists():
+                for ext in ['png', 'jpg', 'jpeg', 'webp', 'gif']:
+                    for profile_file in profile_dir.glob(f"{character_id}.*{ext}"):
+                        profile_file.unlink()
+                        deleted_items.append(f"profile image ({profile_file.name})")
+                        logger.debug(f"Deleted profile image: {profile_file}")
+            
+            # Delete media files
+            # Images
+            images_dir = self.data_dir / "images"
+            if images_dir.exists():
+                for conv_dir in images_dir.iterdir():
+                    if conv_dir.is_dir():
+                        # Check if this conversation belongs to the character
+                        conv = self.db.query(Conversation).filter(
+                            Conversation.id == conv_dir.name,
+                            Conversation.character_id == character_id
+                        ).first()
+                        if conv:
+                            shutil.rmtree(conv_dir)
+                            deleted_items.append(f"image directory ({conv_dir.name})")
+            
+            # Videos
+            videos_dir = self.data_dir / "videos"
+            if videos_dir.exists():
+                for conv_dir in videos_dir.iterdir():
+                    if conv_dir.is_dir():
+                        conv = self.db.query(Conversation).filter(
+                            Conversation.id == conv_dir.name,
+                            Conversation.character_id == character_id
+                        ).first()
+                        if conv:
+                            shutil.rmtree(conv_dir)
+                            deleted_items.append(f"video directory ({conv_dir.name})")
+            
+            # Voice samples
+            voice_samples_dir = self.data_dir / "voice_samples" / character_id
+            if voice_samples_dir.exists():
+                shutil.rmtree(voice_samples_dir)
+                deleted_items.append("voice samples")
+            
+            # Workflow files
+            workflow_types = ['image', 'audio', 'video']
+            for wf_type in workflow_types:
+                workflow_dir = self.workflows_dir / wf_type / character_id
+                if workflow_dir.exists():
+                    shutil.rmtree(workflow_dir)
+                    deleted_items.append(f"{wf_type} workflows")
+            
+            # Clean up all database records and vectors
+            deleted_counts = self._cleanup_orphaned_data(character_id)
+            
+            logger.info(f"Deleted character {character_id}: {', '.join(deleted_items)}")
+            logger.info(f"Database cleanup: {deleted_counts}")
+            
+        except Exception as e:
+            logger.error(f"Failed to delete character {character_id}: {e}")
+            raise RestoreError(f"Character deletion failed: {e}")
     
     def _restore_character_config(self, temp_dir: Path, character_id: str):
         """Restore character.yaml file."""

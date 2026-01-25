@@ -1670,6 +1670,9 @@
                                     <button type="button" class="btn btn-outline-info" id="exportCharacterCardBtn">
                                         <i class="bi bi-card-image"></i> Export Card
                                     </button>
+                                    <button type="button" class="btn btn-outline-warning" id="regenerateVectorsModalBtn" title="Regenerate missing or corrupted memory embeddings">
+                                        <i class="bi bi-arrow-repeat"></i> Regenerate Vectors
+                                    </button>
                                     <button type="button" class="btn btn-outline-danger ms-auto" id="deleteCharacterBtn">
                                         <i class="bi bi-trash"></i> Delete
                                     </button>
@@ -2473,7 +2476,7 @@
                                     <i class="bi bi-file-earmark-zip" id="restoreUploadIcon" style="font-size: 3rem; color: var(--bs-secondary); transition: all 0.2s;"></i>
                                 </div>
                                 <h6 class="card-title">Upload Backup File</h6>
-                                <p class="card-text text-muted small">
+                                <p class="card-text text-secondary small">
                                     Drag & drop a .zip backup file here, or click to browse
                                 </p>
                                 <input type="file" id="restoreFileInput" accept=".zip,.cbak" style="display: none;">
@@ -2492,13 +2495,23 @@
                             </small>
                         </div>
                         
-                        <div class="form-check">
+                        <div class="form-check mb-2">
                             <input class="form-check-input" type="checkbox" id="restoreAutoRename" checked>
                             <label class="form-check-label" for="restoreAutoRename">
                                 Auto-rename if character exists (appends timestamp)
                             </label>
-                            <small class="form-text text-muted d-block">
+                            <small class="form-text text-secondary d-block">
                                 If unchecked and character exists, restore will fail unless you specify a custom ID
+                            </small>
+                        </div>
+                        
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="restoreOverwrite">
+                            <label class="form-check-label" for="restoreOverwrite">
+                                <span class="text-danger">Overwrite existing character</span>
+                            </label>
+                            <small class="form-text text-danger d-block">
+                                ⚠️ WARNING: Permanently deletes existing character and replaces with backup. Cannot be undone!
                             </small>
                         </div>
                     </div>
