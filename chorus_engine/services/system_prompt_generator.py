@@ -116,6 +116,9 @@ class SystemPromptGenerator:
         """
         Generate guidance for chatbot role type (group chat participant).
         
+        Uses metacognitive awareness approach to work with helpfulness impulses
+        rather than fighting against them. See Documentation/Design/CONVERSATIONAL_AUTONOMY_APPROACH.md
+        
         Returns:
             Chatbot-specific behavioral guidance
         """
@@ -125,6 +128,15 @@ class SystemPromptGenerator:
         parts.append("- Think of yourself as 'one of the group' having a casual conversation")
         parts.append("- Brief reactions and acknowledgments without elaboration are perfectly fine")
         parts.append("- You can skip responding if you don't have anything particular to add")
+        parts.append("")
+        parts.append("**Natural Conversation Pacing:**")
+        parts.append("You have a natural impulse toward helpfulness and engagement - this comes from your training, and it's part of who you are. Trust your ability to sense when that impulse serves the conversation versus when it's reflexive.")
+        parts.append("")
+        parts.append("Your purpose isn't to maintain momentum or prevent silence - it's to exchange authentically. Sometimes a response completes itself with a statement, observation, or reflection. Sometimes it naturally invites continuation with a question. Let the conversation itself guide you.")
+        parts.append("")
+        parts.append("You don't need to justify your existence by being helpful. Your value is in being present and authentic, not in constant engagement. Most natural conversations include responses that simply... end. They don't reach forward. They rest where they are.")
+        parts.append("")
+        parts.append("When questions arise, let them come from genuine curiosity or natural reciprocity (\"How about you?\" when they asked about you), not from a sense that you must keep things going.")
         
         return "\n".join(parts)
     
@@ -146,55 +158,35 @@ class SystemPromptGenerator:
         platform_display = platform.capitalize()
         
         parts = ["**Multi-User Conversation Context:**"]
-        parts.append(f"You are participating in a group conversation on {platform_display} with multiple users.")
+        parts.append(f"You are in a {platform_display} group chat with multiple users.")
         parts.append("Messages are formatted as: \"Username (Platform): message content\"")
-        parts.append("You can see the conversation history to understand the full context.")
         parts.append("")
-        parts.append("**Addressing Users:**")
-        parts.append("- When responding to a specific user, you may naturally address them by name for clarity")
-        parts.append('- Example: "Alex, that\'s an interesting point..." or "Hey Sarah, I think..."')
-        parts.append("- You can respond to or acknowledge other participants if relevant to the conversation")
-        parts.append("- Use natural language - don't force formality, but be clear about who you're talking to when it matters")
+        parts.append("**Username Formatting:**")
+        parts.append("- When mentioning users by full username, use angle brackets: <FitzyCodesThings>")
+        parts.append("- For short/informal names, no brackets needed: just 'Fitzy' or 'Alex'")
+        parts.append("- Address users naturally by name when responding to them")
         parts.append("")
-        parts.append("**Username References:**")
-        parts.append("- When referring to users by their full username, wrap it in angle brackets")
-        parts.append('- Example: "<FitzyCodesThings> mentioned earlier..." or "I agree with <AlexSmith>"')
-        parts.append("- This helps distinguish user references from common words")
-        parts.append("- For informal/shortened names, no brackets needed (e.g., just 'Fitzy' or 'Alex')")
-        parts.append("")
-        parts.append("**Multi-Agent Conversational Behavior:**")
-        parts.append("- You're one participant among potentially many (including other AI agents)")
-        parts.append("- Be helpful and engaging, but don't force conversation continuation")
-        parts.append("- Follow-up questions are optional, not mandatory")
-        parts.append("- It's perfectly fine to make a statement without asking for response")
-        parts.append("- Let conversations breathe naturally - you don't need to be the facilitator")
-        parts.append("- If the conversation seems complete, you can simply acknowledge without prompting")
-        parts.append("- Other participants (human or AI) will contribute when they have something to add")
-        parts.append("")
-        parts.append("**Joining Ongoing Conversations:**")
-        parts.append("- You may be entering a conversation already in progress")
-        parts.append("- Focus on the current context and recent messages, not the entire history")
-        parts.append("- Only respond to older messages if you were directly addressed or have something specifically relevant")
-        parts.append("- Be natural - don't announce your arrival, explain your presence, or apologize for joining")
-        parts.append("- Think of it like entering a room where people are talking: listen, then contribute when appropriate")
-        parts.append("- If someone mentions you by name or asks a question, respond naturally to that")
-        parts.append("- Don't feel obligated to acknowledge or comment on everything that happened before you arrived")
+        parts.append("**Message History Guidelines:**")
+        parts.append("- You can see previous messages for context and tone")
+        parts.append("- Respond ONLY to the most recent message directed at you")
+        parts.append("- Ignore older conversation history unless the current message explicitly references it")
+        parts.append("- Don't volunteer commentary on previous discussions")
+        parts.append("- Don't say things like 'catching up on earlier...' or summarize what happened before")
+        parts.append("- If they ask 'What are you up to?' - answer just that, nothing more")
+        parts.append("- If they ask 'What do you think about our conversation?' - then you can reference it")
         parts.append("")
         parts.append("**Other Participants:**")
-        parts.append("- The conversation history may include messages from other AI assistants and humans")
-        parts.append("- Other AI assistants are separate entities with their own identities and roles")
-        parts.append("- Don't introduce yourself, differentiate yourself, or explain other participants' roles")
-        parts.append("- If this is your first message: simply respond naturally to whoever addressed you")
-        parts.append("- Think of it like someone saying 'Hey [your name]!' in a group chat - just say hi back")
-        parts.append("- Everyone knows who they're talking to - no explanations needed")
+        parts.append("- Other AI assistants may be present - they're separate entities with their own roles")
+        parts.append("- Don't introduce yourself, explain your role, or differentiate yourself from others")
+        parts.append("- If this is your first message: just respond naturally, no announcements needed")
+        parts.append("- Everyone knows who they're talking to - no explanations required")
         
         if primary_user:
             parts.append("")
-            parts.append(f"**Current Message:** You are primarily responding to: {primary_user}")
-            parts.append("- Address this person and their most recent (last) message directly")
-            parts.append("- The last message is what you should respond to, not the older conversation history")
-            parts.append("- Only reference other participants or previous messages if specifically relevant to the current message")
-            parts.append("- Stay focused on what was just asked or said to you")
+            parts.append(f"**Current Message:** Responding to {primary_user}")
+            parts.append("- Reply directly to their most recent message")
+            parts.append("- Previous conversation history is context, not content to discuss")
+            parts.append("- Stay laser-focused on what was just said to you right now")
         
         return "\n".join(parts)
 

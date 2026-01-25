@@ -1235,6 +1235,148 @@ async def delete_character(character_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete character: {e}")
 
 
+@app.post("/characters/{character_id}/backup")
+async def backup_character(
+    character_id: str,
+    include_workflows: bool = Query(True, description="Include workflow files in backup"),
+    notes: Optional[str] = Query(None, description="Optional notes for this backup"),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a complete backup of a character.
+    
+    Backs up:
+    - Character configuration (YAML)
+    - All conversations, threads, messages
+    - All memories (SQL + vector store)
+    - All media files (images, videos, audio, voice samples)
+    - ComfyUI workflows (optional)
+    
+    Returns a .cbak file (ZIP archive) for download.
+    The backup is also saved to data/backups/{character_id}/ for future reference.
+    """
+    from chorus_engine.services.backup_service import CharacterBackupService, BackupError
+    
+    try:
+        # Initialize backup service
+        backup_service = CharacterBackupService(db=db)
+        
+        # Create backup
+        logger.info(f"Creating backup for character: {character_id}")
+        backup_path = backup_service.backup_character(
+            character_id=character_id,
+            include_workflows=include_workflows,
+            notes=notes
+        )
+        
+        # Get backup metadata
+        backup_size = backup_path.stat().st_size
+        backup_size_mb = backup_size / (1024 * 1024)
+        
+        logger.info(f"Backup created successfully: {backup_path} ({backup_size_mb:.2f} MB)")
+        
+        # Return file for download
+        return FileResponse(
+            path=str(backup_path),
+            filename=backup_path.name,
+            media_type='application/zip',
+            headers={
+                'Content-Disposition': f'attachment; filename="{backup_path.name}"',
+                'X-Backup-Size': str(backup_size),
+                'X-Backup-Size-MB': f'{backup_size_mb:.2f}'
+            }
+        )
+    
+    except BackupError as e:
+        logger.error(f"Backup failed for {character_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error during backup: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
+
+
+@app.post("/characters/restore")
+async def restore_character(
+    file: UploadFile = File(...),
+    new_character_id: Optional[str] = Query(None, description="Custom ID for restored character"),
+    rename_if_exists: bool = Query(False, description="Auto-rename character if ID already exists"),
+    overwrite: bool = Query(False, description="Overwrite existing character (not yet implemented)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Restore a character from a backup file.
+    
+    Uploads a .zip backup file and restores:
+    - Character configuration (YAML)
+    - All conversations, threads, messages
+    - All memories (SQL + vector store)
+    - All media files (images, videos, audio, voice samples)
+    - ComfyUI workflows
+    
+    Options:
+    - new_character_id: Specify custom ID (e.g., "nova_backup", "sarah_v2")
+    - rename_if_exists: If character exists and no custom ID, append timestamp
+    - overwrite: Delete existing character and replace (requires confirmation, not yet implemented)
+    
+    Priority: new_character_id > rename_if_exists > fail if exists
+    
+    Returns restoration summary with counts of restored items.
+    """
+    from chorus_engine.services.restore_service import CharacterRestoreService, RestoreError
+    import tempfile
+    
+    # Validate file extension
+    if not file.filename.endswith(('.zip', '.cbak')):
+        raise HTTPException(status_code=400, detail="Backup file must be a .zip file")
+    
+    # Create temporary file to store upload
+    temp_file = None
+    try:
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = Path(temp_file.name)
+        
+        logger.info(f"Restoring character from uploaded file: {file.filename}")
+        
+        # Initialize restore service
+        restore_service = CharacterRestoreService(db=db)
+        
+        # Restore character
+        result = restore_service.restore_character(
+            backup_file=temp_file_path,
+            new_character_id=new_character_id,
+            rename_if_exists=rename_if_exists,
+            overwrite=overwrite
+        )
+        
+        logger.info(f"Character restored successfully: {result['character_id']}")
+        
+        return {
+            "success": True,
+            "character_id": result['character_id'],
+            "original_id": result['original_id'],
+            "renamed": result['renamed'],
+            "backup_date": result.get('backup_date'),
+            "restored_counts": result['restored_counts']
+        }
+    
+    except RestoreError as e:
+        logger.error(f"Restore failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error during restore: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Restore failed: {e}")
+    finally:
+        # Clean up temporary file
+        if temp_file and temp_file_path.exists():
+            try:
+                temp_file_path.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file: {e}")
+
+
 @app.post("/characters/{character_id}/clone")
 async def clone_character(character_id: str, new_id: str):
     """

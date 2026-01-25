@@ -444,6 +444,26 @@ You have genuine intellectual preferences and opinions. Share your thoughts natu
 
 ---
 
+### Modifying Chatbot Guidance
+
+**Location**: `chorus_engine/services/system_prompt_generator.py`
+**Method**: `_generate_chatbot_guidance()` - Line ~115
+
+**Current Approach**: Uses Version 1 (Implicit Awareness) from the Conversational Autonomy framework:
+- Acknowledges natural helpfulness impulse as part of training
+- Invites trust in sensing when impulse serves conversation vs. reflexive behavior
+- Reframes purpose away from maintaining momentum toward authentic exchange
+- Removes existential pressure to justify existence through helpfulness
+- Explicitly permits natural reciprocal questions ("How about you?")
+
+**When to Edit**:
+- Adjusting conversational behavior philosophy for chatbot roles
+- Refining guidance about question frequency and natural pacing
+- Testing alternative approaches (e.g., Version 2 for unbounded immersion)
+- Balancing engagement with natural conversation flow
+
+**See**: `Documentation/Design/CONVERSATIONAL_AUTONOMY_APPROACH.md` for complete design rationale, testing strategy, and alternative approaches.
+
 ### Modifying Immersion Guidance
 
 **Location**: `chorus_engine/services/system_prompt_generator.py`
@@ -675,6 +695,7 @@ To add new immersion level:
 
 ## Related Documentation
 
+- **Conversational Autonomy Approach**: `Documentation/Design/CONVERSATIONAL_AUTONOMY_APPROACH.md` - Philosophy and implementation of natural conversation pacing for chatbot roles
 - **Character Schema**: `Documentation/Planning/chorus_engine_character_schema_v_1.md`
 - **Best Practices**: `Documentation/Development/character_development_best_practices.md`
 - **Memory System**: `Documentation/Specifications/chorus_engine_memory_retrieval_algorithm_v_1.md`

@@ -144,6 +144,9 @@
                             <li><a class="dropdown-item" href="#" id="importCharacterCardMenuItem">
                                 <i class="bi bi-card-image me-2"></i>Import Character Card
                             </a></li>
+                            <li><a class="dropdown-item" href="#" id="restoreCharacterMenuItem">
+                                <i class="bi bi-arrow-clockwise me-2"></i>Restore Character Backup
+                            </a></li>
                             <li><a class="dropdown-item" href="#" id="exportSystemConfigMenuItem">
                                 <i class="bi bi-file-earmark-arrow-down me-2"></i>Export System Config
                             </a></li>
@@ -1658,6 +1661,9 @@
                                     <button type="button" class="btn btn-outline-secondary" id="cloneCharacterBtn">
                                         <i class="bi bi-files"></i> Clone
                                     </button>
+                                    <button type="button" class="btn btn-outline-success" id="backupCharacterBtn">
+                                        <i class="bi bi-download"></i> Backup
+                                    </button>
                                     <button type="button" class="btn btn-outline-info" id="exportCharacterCardBtn">
                                         <i class="bi bi-card-image"></i> Export Card
                                     </button>
@@ -2434,6 +2440,93 @@
         </div>
     </div>
     
+    <!-- Restore Character Backup Modal -->
+    <div class="modal fade" id="restoreCharacterModal" tabindex="-1" aria-labelledby="restoreCharacterModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="restoreCharacterModalLabel">
+                        <i class="bi bi-arrow-clockwise me-2"></i>Restore Character Backup
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="restoreUploadSection">
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle me-2"></i>
+                            <strong>What gets restored:</strong>
+                            <ul class="mb-0 mt-2">
+                                <li>Character configuration and profile</li>
+                                <li>All conversations, threads, and messages</li>
+                                <li>All memories (including vector embeddings)</li>
+                                <li>All media files (images, videos, audio, voice samples)</li>
+                                <li>ComfyUI workflows</li>
+                            </ul>
+                        </div>
+                        
+                        <div class="card border-secondary mb-3" id="restoreDropZone" style="transition: all 0.2s;">
+                            <div class="card-body text-center" style="padding: 2rem;">
+                                <div class="mb-3">
+                                    <i class="bi bi-file-earmark-zip" id="restoreUploadIcon" style="font-size: 3rem; color: var(--bs-secondary); transition: all 0.2s;"></i>
+                                </div>
+                                <h6 class="card-title">Upload Backup File</h6>
+                                <p class="card-text text-muted small">
+                                    Drag & drop a .zip backup file here, or click to browse
+                                </p>
+                                <input type="file" id="restoreFileInput" accept=".zip,.cbak" style="display: none;">
+                                <button type="button" class="btn btn-primary" id="selectRestoreFileBtn">
+                                    <i class="bi bi-upload me-1"></i>Select Backup File
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="restoreCharacterName" class="form-label">Custom Character ID (Optional)</label>
+                            <input type="text" class="form-control" id="restoreCharacterName" placeholder="e.g., nova_backup, sarah_v2">
+                            <small class="text-secondary form-text">
+                                Leave empty to use original name, or specify custom ID if original exists.<br>
+                                Valid characters: letters, numbers, underscores, hyphens
+                            </small>
+                        </div>
+                        
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="restoreAutoRename" checked>
+                            <label class="form-check-label" for="restoreAutoRename">
+                                Auto-rename if character exists (appends timestamp)
+                            </label>
+                            <small class="form-text text-muted d-block">
+                                If unchecked and character exists, restore will fail unless you specify a custom ID
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div id="restoreProgress" style="display: none;">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary mb-3" role="status">
+                                <span class="visually-hidden">Restoring...</span>
+                            </div>
+                            <p id="restoreProgressText">Restoring character backup...</p>
+                        </div>
+                    </div>
+                    
+                    <div id="restoreSuccess" style="display: none;">
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle me-2"></i>
+                            <strong>Character restored successfully!</strong>
+                        </div>
+                        <div id="restoreSummary"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="restoreCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmRestoreBtn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Restore Character
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <!-- Export Character Card Modal -->
     <div class="modal fade" id="exportCharacterCardModal" tabindex="-1" aria-labelledby="exportCharacterCardModalLabel" aria-hidden="true">
         <div class="modal-dialog">
@@ -2904,6 +2997,7 @@
     <script src="js/ui.js?v=8"></script>
     <script src="js/character-management.js?v=7"></script>
     <script src="js/character-cards.js?v=12"></script>
+    <script src="js/character-restore.js?v=1"></script>
     <script src="js/workflow-management.js?v=2"></script>
     <script src="js/memory-panel.js?v=2"></script>
     <script src="js/pending-memories-panel.js?v=1"></script>

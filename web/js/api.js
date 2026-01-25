@@ -538,6 +538,50 @@ class API {
     
     // === Export/Import ===
     
+    static async backupCharacter(characterId, includeWorkflows = true, notes = null) {
+        const params = new URLSearchParams({ include_workflows: includeWorkflows });
+        if (notes) {
+            params.append('notes', notes);
+        }
+        
+        const url = `${API_BASE_URL}/characters/${characterId}/backup?${params}`;
+        const response = await fetch(url, { method: 'POST' });
+        
+        if (!response.ok) {
+            throw new Error(`Failed to backup character: ${response.statusText}`);
+        }
+        
+        // Return blob and headers for metadata
+        const blob = await response.blob();
+        const size = response.headers.get('X-Backup-Size');
+        const sizeMB = response.headers.get('X-Backup-Size-MB');
+        
+        return { blob, size, sizeMB };
+    }
+    
+    static async restoreCharacter(file, newCharacterId = null, renameIfExists = false) {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const params = new URLSearchParams({ rename_if_exists: renameIfExists });
+        if (newCharacterId) {
+            params.append('new_character_id', newCharacterId);
+        }
+        
+        const url = `${API_BASE_URL}/characters/restore?${params}`;
+        const response = await fetch(url, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `Failed to restore character: ${response.statusText}`);
+        }
+        
+        return response.json();
+    }
+    
     static async exportCharacter(characterId) {
         const url = `${API_BASE_URL}/characters/${characterId}/export`;
         const response = await fetch(url);

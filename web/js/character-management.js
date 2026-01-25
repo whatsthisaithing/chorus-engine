@@ -50,6 +50,11 @@ window.CharacterManagement = {
             this.cloneCurrentCharacter();
         });
         
+        // Backup button
+        document.getElementById('backupCharacterBtn').addEventListener('click', () => {
+            this.backupCurrentCharacter();
+        });
+        
         // Delete button
         document.getElementById('deleteCharacterBtn').addEventListener('click', () => {
             this.deleteCurrentCharacter();
@@ -288,6 +293,8 @@ window.CharacterManagement = {
         // Show/hide buttons based on character type
         const isImmutable = IMMUTABLE_CHARACTERS.includes(character.id);
         document.getElementById('deleteCharacterBtn').style.display = isImmutable ? 'none' : 'inline-block';
+        // Backup button always visible for existing characters
+        document.getElementById('backupCharacterBtn').style.display = 'inline-block';
         
         // Update form controls state
         const formElements = document.getElementById('characterForm').elements;
@@ -318,6 +325,9 @@ window.CharacterManagement = {
         
         // Enable ID field for new characters
         document.getElementById('charId').disabled = false;
+        
+        // Hide backup button for new characters (nothing to backup yet)
+        document.getElementById('backupCharacterBtn').style.display = 'none';
         
         // Enable all form fields
         const formElements = document.getElementById('characterForm').elements;
@@ -883,6 +893,45 @@ window.CharacterManagement = {
         } catch (error) {
             console.error('Failed to clone character:', error);
             this.showFormStatus(`Error: ${error.message}`, 'danger');
+        }
+    },
+    
+    /**
+     * Backup current character
+     */
+    async backupCurrentCharacter() {
+        if (!this.currentCharacter) {
+            UI.showToast('No character selected', 'error');
+            return;
+        }
+        
+        const characterName = this.currentCharacter.name || this.currentCharacter.id;
+        
+        try {
+            UI.showToast(`Creating backup for ${characterName}...`, 'info');
+            
+            // Create backup
+            const { blob, sizeMB } = await API.backupCharacter(
+                this.currentCharacter.id,
+                true,  // include workflows
+                null   // no notes
+            );
+            
+            // Create download link
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${this.currentCharacter.id}_backup_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            
+            UI.showToast(`Backup created successfully! (${sizeMB} MB)`, 'success');
+            
+        } catch (error) {
+            console.error('Failed to backup character:', error);
+            UI.showToast(`Backup failed: ${error.message}`, 'error');
         }
     },
     
