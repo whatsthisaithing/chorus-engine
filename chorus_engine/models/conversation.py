@@ -404,3 +404,53 @@ class GeneratedVideo(Base):
         prompt_preview = self.prompt[:50] + "..." if len(self.prompt) > 50 else self.prompt
         duration_str = f"{self.duration_seconds:.1f}s" if self.duration_seconds else "unknown"
         return f"<GeneratedVideo(id={self.id}, format={self.format}, duration={duration_str}, prompt={prompt_preview})>"
+
+
+class ImageAttachment(Base):
+    """
+    Image attachment for vision system.
+    
+    Stores image files uploaded by users and their vision analysis results.
+    Supports the two-stage vision architecture:
+    - Vision model observes (structured perception)
+    - Character LLM interprets through personality
+    """
+    __tablename__ = "image_attachments"
+    
+    id = Column(String(50), primary_key=True, default=generate_uuid)
+    message_id = Column(String(50), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(String(50), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
+    character_id = Column(String(50), nullable=False)
+    
+    # File storage
+    original_path = Column(String(500), nullable=False)
+    processed_path = Column(String(500), nullable=True)
+    original_filename = Column(String(255), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    mime_type = Column(String(50), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    uploaded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Vision analysis
+    vision_processed = Column(String(10), nullable=False, default="false")  # "true" or "false"
+    vision_skipped = Column(String(10), nullable=False, default="false")  # "true" or "false"
+    vision_skip_reason = Column(String(100), nullable=True)
+    
+    vision_model = Column(String(100), nullable=True)
+    vision_backend = Column(String(50), nullable=True)
+    vision_processed_at = Column(DateTime, nullable=True)
+    vision_processing_time_ms = Column(Integer, nullable=True)
+    
+    vision_observation = Column(Text, nullable=True)
+    vision_confidence = Column(Float, nullable=True)
+    vision_tags = Column(Text, nullable=True)  # JSON string
+    
+    # User metadata
+    description = Column(Text, nullable=True)
+    source = Column(String(20), nullable=False, default="web")
+    
+    def __repr__(self):
+        filename = self.original_filename or "unknown"
+        status = "processed" if self.vision_processed == "true" else ("skipped" if self.vision_skipped == "true" else "pending")
+        return f"<ImageAttachment(id={self.id}, file={filename}, status={status})>"

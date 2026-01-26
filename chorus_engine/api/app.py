@@ -375,6 +375,36 @@ async def lifespan(app: FastAPI):
         app_state["title_service"] = title_service
         logger.info("✓ Title generation service initialized")
         
+        # Initialize vision/image attachment service (Phase 1 - Vision System)
+        vision_config = getattr(system_config, 'vision', None)
+        
+        if vision_config and getattr(vision_config, 'enabled', False):
+            try:
+                from chorus_engine.services.image_attachment_service import ImageAttachmentService
+                from chorus_engine.services.vision_service import VisionService
+                
+                vision_service = VisionService(
+                    vision_config=vision_config.dict(),
+                    llm_config=system_config.llm.dict()
+                )
+                
+                image_attachment_service = ImageAttachmentService(
+                    vision_service=vision_service,
+                    base_storage_path=Path("data/images")
+                )
+                
+                app_state["vision_service"] = vision_service
+                app_state["image_attachment_service"] = image_attachment_service
+                logger.info(f"✓ Vision system initialized (backend: {vision_service.backend}, model: {vision_service.model_name})")
+            except Exception as e:
+                logger.warning(f"⚠ Failed to initialize vision system: {e}")
+                app_state["vision_service"] = None
+                app_state["image_attachment_service"] = None
+        else:
+            logger.info("Vision system not configured or disabled")
+            app_state["vision_service"] = None
+            app_state["image_attachment_service"] = None
+        
         logger.info(f"✓ Chorus Engine ready with {len(characters)} character(s)")
         
     except Exception as e:
@@ -717,6 +747,8 @@ class MessageResponse(BaseModel):
     has_audio: str = "false"  # "true" or "false" as string
     audio_url: Optional[str] = None
     audio_emotion: Optional[str] = None
+    # Phase 1 Vision: Image attachments
+    attachments: List["ImageAttachmentResponse"] = []
     
     class Config:
         from_attributes = True
@@ -729,7 +761,7 @@ class MessageResponse(BaseModel):
         
         Args:
             obj: Message ORM object
-            db_session: Optional database session to check for audio
+            db_session: Optional database session to check for audio and attachments
         """
         # Check if message has audio (Phase 6)
         has_audio = "false"
@@ -743,6 +775,15 @@ class MessageResponse(BaseModel):
                 has_audio = "true"
                 audio_url = f"/audio/{audio_record.audio_filename}"
         
+        # Check for image attachments (Phase 1 Vision)
+        attachments = []
+        if db_session:
+            from chorus_engine.models import ImageAttachment
+            image_attachments = db_session.query(ImageAttachment).filter(
+                ImageAttachment.message_id == obj.id
+            ).all()
+            attachments = [ImageAttachmentResponse.from_orm(att) for att in image_attachments]
+        
         return cls(
             id=obj.id,
             thread_id=obj.thread_id,
@@ -753,7 +794,8 @@ class MessageResponse(BaseModel):
             metadata=obj.meta_data,
             has_audio=has_audio,
             audio_url=audio_url,
-            audio_emotion=None  # Reserved for future use
+            audio_emotion=None,  # Reserved for future use
+            attachments=attachments
         )
 
 
@@ -762,12 +804,60 @@ class MessageMetadataUpdate(BaseModel):
     metadata: dict
 
 
+class ImageAttachmentResponse(BaseModel):
+    """Image attachment response with vision analysis."""
+    id: str
+    url: str
+    filename: str
+    mime_type: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_size: Optional[int] = None
+    
+    # Vision analysis fields
+    vision_processed: bool = False
+    vision_skipped: bool = False
+    vision_skip_reason: Optional[str] = None
+    vision_observation: Optional[str] = None  # Full JSON structured observation
+    vision_confidence: Optional[float] = None
+    vision_tags: Optional[str] = None  # JSON array string
+    vision_model: Optional[str] = None
+    vision_backend: Optional[str] = None
+    vision_processing_time_ms: Optional[int] = None
+    
+    @classmethod
+    def from_orm(cls, obj):
+        """Convert ImageAttachment ORM object to response model."""
+        return cls(
+            id=obj.id,
+            url=f"/api/attachments/{obj.id}/file",
+            filename=obj.original_filename or "image.png",
+            mime_type=obj.mime_type,
+            width=obj.width,
+            height=obj.height,
+            file_size=obj.file_size,
+            vision_processed=(obj.vision_processed == "true"),
+            vision_skipped=(obj.vision_skipped == "true"),
+            vision_skip_reason=obj.vision_skip_reason,
+            vision_observation=obj.vision_observation,
+            vision_confidence=obj.vision_confidence,
+            vision_tags=obj.vision_tags,
+            vision_model=obj.vision_model,
+            vision_backend=obj.vision_backend,
+            vision_processing_time_ms=obj.vision_processing_time_ms
+        )
+    
+    class Config:
+        from_attributes = True
+
+
 class ChatInThreadRequest(BaseModel):
     """Send message in a thread."""
     message: str
     metadata: Optional[dict] = None
     primary_user: Optional[str] = None  # Name of user who invoked the bot (for multi-user contexts)
     conversation_source: Optional[str] = None  # Platform source: 'web', 'discord', 'slack', etc.
+    image_attachment_id: Optional[str] = None  # ID of pre-uploaded image attachment to link to this message
 
 
 class ChatInThreadResponse(BaseModel):
@@ -2973,6 +3063,131 @@ async def send_message(
         is_private=(conversation.is_private == "true")
     )
     
+    # Commit the user message so we have an ID
+    db.flush()
+    
+    # Phase 1.5: Link and analyze pre-uploaded image attachment if provided
+    vision_observation = None
+    
+    if request.image_attachment_id:
+        try:
+            from chorus_engine.models import ImageAttachment
+            from pathlib import Path
+            
+            logger.info(f"[VISION] Linking attachment {request.image_attachment_id} to message {user_message.id}")
+            
+            # Get the pre-uploaded attachment
+            attachment = db.query(ImageAttachment).filter(
+                ImageAttachment.id == request.image_attachment_id
+            ).first()
+            
+            if attachment:
+                # Link attachment to message and set conversation/character context
+                attachment.message_id = user_message.id
+                attachment.conversation_id = conversation.id
+                attachment.character_id = character_id
+                db.flush()
+                
+                # Trigger vision analysis if not already processed
+                if attachment.vision_processed != "true":
+                    vision_service = app_state.get("vision_service")
+                    if vision_service:
+                        try:
+                            logger.info(f"[VISION] Analyzing image {attachment.id}...")
+                            
+                            # Analyze the image
+                            result = await vision_service.analyze_image(
+                                image_path=Path(attachment.original_path),
+                                context=request.message,
+                                character_id=character_id
+                            )
+                            
+                            # Update attachment with vision results
+                            from datetime import datetime
+                            attachment.vision_processed = "true"
+                            attachment.vision_model = result.model
+                            attachment.vision_backend = result.backend
+                            attachment.vision_processed_at = datetime.now()
+                            attachment.vision_processing_time_ms = result.processing_time_ms
+                            attachment.vision_observation = result.observation
+                            attachment.vision_confidence = result.confidence
+                            attachment.vision_tags = json.dumps(result.tags) if result.tags else None
+                            
+                            vision_observation = result.observation
+                            db.flush()
+                            
+                            logger.info(
+                                f"[VISION] Image analyzed: confidence={result.confidence:.2f}, "
+                                f"time={result.processing_time_ms}ms"
+                            )
+                            
+                            # Create visual memory if enabled
+                            memory_config = vision_service.config.get("memory", {})
+                            if memory_config.get("auto_create", True):
+                                min_confidence = memory_config.get("min_confidence", 0.6)
+                                if result.confidence >= min_confidence:
+                                    try:
+                                        from chorus_engine.repositories.memory_repository import MemoryRepository
+                                        memory_repo = MemoryRepository(db)
+                                        
+                                        # Parse vision data for memory content
+                                        vision_data = json.loads(result.observation) if isinstance(result.observation, str) else result.observation
+                                        
+                                        # Build natural language description
+                                        parts = []
+                                        if vision_data.get("main_subject"):
+                                            parts.append(f"an image of {vision_data['main_subject']}")
+                                        
+                                        details = []
+                                        if vision_data.get("people") and isinstance(vision_data["people"], dict):
+                                            count = vision_data["people"].get("count", 0)
+                                            if count > 0:
+                                                details.append(f"{count} person" if count == 1 else f"{count} people")
+                                        if vision_data.get("mood"):
+                                            details.append(f"conveying a {vision_data['mood']} mood")
+                                        
+                                        content = f"User showed me {parts[0] if parts else 'an image'}"
+                                        if details:
+                                            content += f". The image with {', '.join(details)}"
+                                        content += "."
+                                        
+                                        # Create memory
+                                        memory = memory_repo.create(
+                                            character_id=character_id,
+                                            conversation_id=conversation.id,
+                                            content=content,
+                                            type=MemoryType.EXPLICIT,
+                                            category="visual",
+                                            priority=memory_config.get("default_priority", 70),
+                                            confidence=result.confidence,
+                                            status="auto_approved",
+                                            metadata={
+                                                "source_messages": [user_message.id],
+                                                "image_attachment_id": attachment.id,
+                                                "vision_model": result.model,
+                                                "vision_backend": result.backend
+                                            }
+                                        )
+                                        db.flush()
+                                        logger.info(f"[VISION] Created visual memory: {memory.id}")
+                                    except Exception as e:
+                                        logger.error(f"[VISION] Failed to create visual memory: {e}", exc_info=True)
+                            
+                        except Exception as e:
+                            logger.error(f"[VISION] Failed to analyze attachment: {e}", exc_info=True)
+                            attachment.vision_skipped = "true"
+                            attachment.vision_skip_reason = f"analysis_failed: {str(e)[:80]}"
+                            db.flush()
+                else:
+                    vision_observation = attachment.vision_observation
+                    logger.info(f"[VISION] Using cached vision analysis")
+            else:
+                logger.warning(f"[VISION] Attachment {request.image_attachment_id} not found")
+        
+        except Exception as e:
+            logger.error(f"[VISION] Failed to link image attachment: {e}", exc_info=True)
+            # Don't fail the entire request if vision processing fails
+    
     # Phase 6.5: Semantic intent detection (embedding-based)
     semantic_intents = []
     semantic_has_image = False
@@ -3016,7 +3231,7 @@ async def send_message(
             # Use dedicated intent detection model (gemma2:9b) for better performance
             intent_model = app_state.get("intent_model", "gemma2:9b")
             detected_intents = await intent_service.detect_intents(
-                message=request.message,
+                message=message,
                 character=character,
                 model=intent_model,
                 context=None
@@ -3723,6 +3938,96 @@ async def send_message_stream(
         is_private=(conversation.is_private == "true")
     )
     
+    # Task 1.8: Handle image attachment if present (same logic as non-streaming endpoint)
+    if request.image_attachment_id:
+        from chorus_engine.models.conversation import ImageAttachment
+        from chorus_engine.repositories.memory_repository import MemoryRepository
+        
+        try:
+            # Find the uploaded attachment (with "pending" placeholders)
+            attachment = db.query(ImageAttachment).filter(
+                ImageAttachment.id == request.image_attachment_id
+            ).first()
+            
+            if attachment:
+                logger.info(f"[VISION] Linking attachment {request.image_attachment_id} to message {user_message.id}")
+                
+                # Link attachment to message
+                attachment.message_id = user_message.id
+                attachment.conversation_id = conversation.id
+                attachment.character_id = character_id
+                
+                # Trigger vision analysis if not already processed
+                if attachment.vision_processed != "true":
+                    vision_service = app_state.get("vision_service")
+                    if vision_service:
+                        logger.info(f"[VISION] Analyzing image {attachment.id}...")
+                        
+                        try:
+                            from pathlib import Path
+                            image_path = Path(attachment.original_path)
+                            
+                            # Run vision analysis
+                            result = await vision_service.analyze_image(image_path)
+                            
+                            # Update attachment with results
+                            attachment.vision_observation = result.observation
+                            attachment.vision_confidence = result.confidence
+                            attachment.vision_tags = ",".join(result.tags) if result.tags else None
+                            attachment.vision_model = vision_service.model_name
+                            attachment.vision_backend = vision_service.backend
+                            attachment.vision_processing_time_ms = result.processing_time_ms
+                            attachment.vision_processed = "true"
+                            attachment.vision_processed_at = datetime.now()
+                            
+                            logger.info(f"[VISION] Image analyzed: confidence={result.confidence}, time={result.processing_time_ms}ms")
+                            
+                            # Create visual memory if confidence is high enough
+                            min_confidence = app_state["system_config"].vision.memory.get("min_confidence", 0.6)
+                            if result.confidence >= min_confidence:
+                                try:
+                                    memory_repo = MemoryRepository(db)
+                                    memory_category = app_state["system_config"].vision.memory.get("category", "visual")
+                                    memory_priority = app_state["system_config"].vision.memory.get("default_priority", 70)
+                                    
+                                    # Create EXPLICIT memory with visual observation
+                                    memory_content = f"User showed me an image: {result.observation}"
+                                    
+                                    memory = memory_repo.create(
+                                        conversation_id=conversation.id,
+                                        character_id=character_id,
+                                        content=memory_content,
+                                        memory_type="explicit",
+                                        category=memory_category,
+                                        priority=memory_priority,
+                                        confidence=result.confidence,
+                                        source_messages=[user_message.id],
+                                        metadata={"attachment_id": attachment.id}
+                                    )
+                                    logger.info(f"[VISION] Created visual memory: {memory.id}")
+                                except Exception as mem_error:
+                                    logger.error(f"[VISION] Failed to create visual memory: {mem_error}")
+                            
+                        except Exception as vision_error:
+                            logger.error(f"[VISION] Vision analysis failed: {vision_error}")
+                            attachment.vision_processed = "false"
+                            attachment.vision_skipped = "true"
+                            attachment.vision_skip_reason = f"error: {str(vision_error)}"
+                    else:
+                        logger.warning("[VISION] Vision service not available")
+                        attachment.vision_skipped = "true"
+                        attachment.vision_skip_reason = "vision_service_not_available"
+                else:
+                    logger.info(f"[VISION] Attachment {attachment.id} already processed (using cached analysis)")
+                
+                db.commit()
+            else:
+                logger.warning(f"[VISION] Attachment {request.image_attachment_id} not found")
+                
+        except Exception as e:
+            logger.error(f"[VISION] Failed to process image attachment: {e}")
+            db.rollback()
+    
     # Phase 6.5: Semantic intent detection (embedding-based, runs in parallel with keyword)
     semantic_intents = []
     semantic_has_image = False
@@ -4005,13 +4310,42 @@ async def send_message_stream(
     character_config_for_stream = character  # Phase 8: Character config for memory profile
     title_auto_generated = conversation.title_auto_generated  # For title generation
     
+    # Task 1.9: Capture attachment data for streaming response
+    user_message_attachments = []
+    if request.image_attachment_id:
+        from chorus_engine.models.conversation import ImageAttachment
+        attachment = db.query(ImageAttachment).filter(
+            ImageAttachment.id == request.image_attachment_id
+        ).first()
+        if attachment:
+            user_message_attachments.append({
+                'id': attachment.id,
+                'file_name': attachment.original_filename,
+                'file_size': attachment.file_size,
+                'mime_type': attachment.mime_type,
+                'vision_processed': attachment.vision_processed,
+                'vision_observation': attachment.vision_observation,
+                'vision_confidence': attachment.vision_confidence,
+                'vision_tags': attachment.vision_tags,
+                'vision_model': attachment.vision_model,
+                'vision_backend': attachment.vision_backend,
+                'vision_processing_time_ms': attachment.vision_processing_time_ms
+            })
+    
     async def generate_stream():
         """Stream generator that yields SSE-formatted chunks."""
         try:
             full_content = ""
             
-            # Send user message first
-            yield f"data: {json.dumps({'type': 'user_message', 'content': user_message_content, 'id': user_message_id})}\n\n"
+            # Send user message first (Task 1.9: include attachments if present)
+            user_msg_data = {
+                'type': 'user_message',
+                'content': user_message_content,
+                'id': user_message_id
+            }
+            if user_message_attachments:
+                user_msg_data['attachments'] = user_message_attachments
+            yield f"data: {json.dumps(user_msg_data)}\n\n"
             
             # Send image detection info if found
             if image_request_detected and image_prompt_preview:
@@ -6737,6 +7071,145 @@ async def serve_audio_file(filename: str):
         raise HTTPException(status_code=404, detail="Audio file not found")
     except Exception as e:
         logger.error(f"Failed to serve audio file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/attachments/upload")
+async def upload_image_attachment(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload an image file and return an attachment ID for later use in messages.
+    The attachment will be saved but not yet linked to a message.
+    Vision analysis will be triggered when the attachment is linked to a message.
+    """
+    try:
+        from chorus_engine.models import ImageAttachment
+        import uuid
+        from pathlib import Path
+        from PIL import Image
+        import io
+        
+        # Validate file type
+        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)}"
+            )
+        
+        # Read file content
+        content = await file.read()
+        
+        # Get image dimensions
+        try:
+            img = Image.open(io.BytesIO(content))
+            width, height = img.size
+            img.close()
+        except Exception as e:
+            logger.warning(f"Failed to get image dimensions: {e}")
+            width, height = None, None
+        
+        # Generate unique filename
+        attachment_id = str(uuid.uuid4())
+        file_extension = Path(file.filename).suffix or ".jpg"
+        safe_filename = f"{attachment_id}{file_extension}"
+        
+        # Save to data/images/attachments directory
+        attachments_dir = Path("data/images/attachments")
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        file_path = attachments_dir / safe_filename
+        
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        # Create attachment record (will be linked to message/conversation later)
+        # Use placeholder values for required fields that will be set when linked
+        attachment = ImageAttachment(
+            id=attachment_id,
+            message_id="pending",  # Placeholder - will be updated when linked to message
+            conversation_id="pending",  # Placeholder - will be updated when linked
+            character_id="pending",  # Placeholder - will be updated when linked
+            original_filename=file.filename,
+            original_path=str(file_path),
+            mime_type=file.content_type,
+            file_size=len(content),
+            width=width,
+            height=height,
+            vision_processed="false",
+            vision_skipped="false"
+        )
+        
+        db.add(attachment)
+        db.commit()
+        db.refresh(attachment)
+        
+        logger.info(f"[VISION] Image uploaded: {attachment_id} ({file.filename}, {len(content)} bytes)")
+        
+        return {
+            "attachment_id": attachment_id,
+            "filename": file.filename,
+            "size": len(content),
+            "width": width,
+            "height": height,
+            "mime_type": file.content_type,
+            "url": f"/api/attachments/{attachment_id}/file"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload image attachment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/attachments/{attachment_id}", response_model=ImageAttachmentResponse)
+async def get_image_attachment(attachment_id: str, db: Session = Depends(get_db)):
+    """Get image attachment details by ID."""
+    try:
+        from chorus_engine.models import ImageAttachment
+        
+        attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
+        if not attachment:
+            raise HTTPException(status_code=404, detail="Image attachment not found")
+        
+        return ImageAttachmentResponse.from_orm(attachment)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get image attachment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/attachments/{attachment_id}/file")
+async def serve_image_attachment(attachment_id: str, db: Session = Depends(get_db)):
+    """Serve an image attachment file by attachment ID."""
+    try:
+        from chorus_engine.models import ImageAttachment
+        
+        # Query attachment from database
+        attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
+        if not attachment:
+            raise HTTPException(status_code=404, detail="Image attachment not found")
+        
+        # Get file path
+        file_path = Path(attachment.original_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Image file not found on disk")
+        
+        # Determine content type
+        mime_type = attachment.mime_type or "image/jpeg"
+        
+        return FileResponse(
+            path=str(file_path),
+            media_type=mime_type,
+            filename=attachment.original_filename or "image.png"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to serve image attachment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

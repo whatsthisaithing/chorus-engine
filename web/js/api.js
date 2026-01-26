@@ -250,11 +250,16 @@ class API {
      * @param {function} onComplete - Callback when streaming completes
      * @param {function} onError - Callback for errors
      */
-    static async sendMessageStream(threadId, message, onChunk, onComplete, onError) {
+    static async sendMessageStream(threadId, message, onChunk, onComplete, onError, attachmentId = null) {
         const url = `${API_BASE_URL}/threads/${threadId}/messages/stream`;
         
         // Build payload with user metadata
         const payload = { message };
+        
+        // Task 1.8: Add attachment_id if present
+        if (attachmentId) {
+            payload.image_attachment_id = attachmentId;
+        }
         
         if (typeof userManager !== 'undefined') {
             payload.metadata = userManager.getUserMetadata();
@@ -294,8 +299,10 @@ class API {
                             const data = JSON.parse(line.slice(6));
                             
                             if (data.type === 'user_message') {
-                                // Backend echoes user message - ignore it since we already added it
-                                continue;
+                                // Backend echoes user message with attachment data - update if needed
+                                if (onChunk.userMessageCallback) {
+                                    onChunk.userMessageCallback(data);
+                                }
                             } else if (data.type === 'content') {
                                 onChunk(data.content);
                             } else if (data.type === 'image_request') {

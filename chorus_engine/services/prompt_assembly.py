@@ -207,6 +207,34 @@ class PromptAssemblyService:
                 thread_id,
                 limit=max_history_messages
             )
+            
+            # Task 1.8: Enrich user messages with vision observations from attached images
+            try:
+                from chorus_engine.models.conversation import ImageAttachment
+                
+                for message in messages:
+                    if message.role == MessageRole.USER:
+                        # Check if this message has image attachments with vision analysis
+                        attachments = self.db.query(ImageAttachment).filter(
+                            ImageAttachment.message_id == message.id,
+                            ImageAttachment.vision_processed == "true"
+                        ).all()
+                        
+                        if attachments:
+                            # Add vision observations to message content
+                            vision_contexts = []
+                            for attachment in attachments:
+                                if attachment.vision_observation:
+                                    vision_contexts.append(
+                                        f"[VISUAL CONTEXT: {attachment.vision_observation}]"
+                                    )
+                            
+                            if vision_contexts:
+                                # Append vision context to message content
+                                message.content += "\n\n" + "\n\n".join(vision_contexts)
+            except Exception as e:
+                logger.error(f"Failed to enrich messages with vision observations: {e}")
+                # Continue without vision enrichment if it fails
         
         # Phase 8: Add greeting context if this is the first message in conversation
         if messages and len(messages) <= 2:  # First user message or first exchange

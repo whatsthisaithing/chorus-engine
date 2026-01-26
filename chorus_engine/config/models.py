@@ -154,6 +154,69 @@ class SystemTTSConfig(BaseModel):
     )
 
 
+class VisionConfig(BaseModel):
+    """Vision system configuration."""
+    
+    enabled: bool = Field(default=False, description="Enable vision system")
+    model: dict = Field(
+        default_factory=lambda: {
+            "name": "qwen2-vl:7b",
+            "load_timeout_seconds": 60
+        },
+        description="Vision model configuration"
+    )
+    processing: dict = Field(
+        default_factory=lambda: {
+            "max_retries": 2,
+            "timeout_seconds": 30,
+            "resize_target": 1024,
+            "supported_formats": ["jpg", "jpeg", "png", "webp", "gif"],
+            "max_file_size_mb": 10
+        },
+        description="Image processing settings"
+    )
+    output: dict = Field(
+        default_factory=lambda: {
+            "format": "structured",
+            "include_confidence": True
+        },
+        description="Output format configuration"
+    )
+    memory: dict = Field(
+        default_factory=lambda: {
+            "auto_create": True,
+            "category": "visual",
+            "default_priority": 70,
+            "min_confidence": 0.6
+        },
+        description="Visual memory creation settings"
+    )
+    intent: dict = Field(
+        default_factory=lambda: {
+            "bridge_always_analyze": False,
+            "bridge_never_analyze": False,
+            "web_ui_always_analyze": True,
+            "use_semantic_detection": False,
+            "confidence_threshold": 0.45,
+            "trigger_phrases": [
+                "what do you see",
+                "look at",
+                "what's in",
+                "describe",
+                "check this"
+            ]
+        },
+        description="Intent detection settings"
+    )
+    cache: dict = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "allow_reanalysis": True
+        },
+        description="Cache settings"
+    )
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -163,6 +226,7 @@ class SystemConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
     tts: SystemTTSConfig = Field(default_factory=SystemTTSConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)

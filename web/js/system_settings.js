@@ -36,6 +36,15 @@ class SystemSettingsManager {
             });
         }
         
+        // Task 1.9 Phase 1 Expansion: Vision configuration toggle
+        const visionToggle = document.getElementById('vision_enabled');
+        if (visionToggle) {
+            visionToggle.addEventListener('change', (e) => {
+                const settings = document.getElementById('vision_settings');
+                if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
+            });
+        }
+        
         // Save button
         const saveBtn = document.getElementById('saveSystemSettingsBtn');
         if (saveBtn) {
@@ -124,6 +133,41 @@ class SystemSettingsManager {
         document.getElementById('document_analysis_chunk_token_estimate').value = config.document_analysis.chunk_token_estimate || 512;
         document.getElementById('document_analysis_document_budget_ratio').value = config.document_analysis.document_budget_ratio || 0.15;
 
+        // Task 1.9 Phase 1 Expansion: Vision Configuration
+        const vision = config.vision || {};
+        const visionEnabled = vision.enabled || false;
+        document.getElementById('vision_enabled').checked = visionEnabled;
+        document.getElementById('vision_settings').style.display = visionEnabled ? 'block' : 'none';
+        
+        // Model settings (backend is derived from llm.provider, not configurable separately)
+        document.getElementById('vision_model_name').value = vision.model?.name || 'qwen3-vl:4b';
+        document.getElementById('vision_model_load_timeout_seconds').value = vision.model?.load_timeout_seconds || 60;
+        
+        // Processing settings
+        document.getElementById('vision_processing_timeout_seconds').value = vision.processing?.timeout_seconds || 30;
+        document.getElementById('vision_processing_max_retries').value = vision.processing?.max_retries || 2;
+        document.getElementById('vision_processing_resize_target').value = vision.processing?.resize_target || 1024;
+        document.getElementById('vision_processing_max_file_size_mb').value = vision.processing?.max_file_size_mb || 10;
+        
+        // Output settings
+        document.getElementById('vision_output_format').value = vision.output?.format || 'structured';
+        document.getElementById('vision_output_include_confidence').checked = vision.output?.include_confidence !== false;
+        
+        // Memory settings
+        document.getElementById('vision_memory_auto_create').checked = vision.memory?.auto_create !== false;
+        document.getElementById('vision_memory_min_confidence').value = vision.memory?.min_confidence || 0.6;
+        document.getElementById('vision_memory_category').value = vision.memory?.category || 'visual';
+        document.getElementById('vision_memory_default_priority').value = vision.memory?.default_priority || 70;
+        
+        // Intent settings
+        document.getElementById('vision_intent_web_ui_always_analyze').checked = vision.intent?.web_ui_always_analyze !== false;
+        document.getElementById('vision_intent_bridge_always_analyze').checked = vision.intent?.bridge_always_analyze || false;
+        document.getElementById('vision_intent_bridge_never_analyze').checked = vision.intent?.bridge_never_analyze || false;
+        
+        // Cache settings
+        document.getElementById('vision_cache_enabled').checked = vision.cache?.enabled !== false;
+        document.getElementById('vision_cache_allow_reanalysis').checked = vision.cache?.allow_reanalysis !== false;
+
         // General Configuration
         document.getElementById('api_host').value = config.api_host || 'localhost';
         document.getElementById('api_port').value = config.api_port || 8080;
@@ -169,6 +213,38 @@ class SystemSettingsManager {
                 max_chunks_cap: parseInt(document.getElementById('document_analysis_max_chunks_cap').value),
                 chunk_token_estimate: parseInt(document.getElementById('document_analysis_chunk_token_estimate').value),
                 document_budget_ratio: parseFloat(document.getElementById('document_analysis_document_budget_ratio').value)
+            },
+            vision: {
+                enabled: document.getElementById('vision_enabled').checked,
+                model: {
+                    name: document.getElementById('vision_model_name').value,
+                    load_timeout_seconds: parseInt(document.getElementById('vision_model_load_timeout_seconds').value)
+                },
+                processing: {
+                    timeout_seconds: parseInt(document.getElementById('vision_processing_timeout_seconds').value),
+                    max_retries: parseInt(document.getElementById('vision_processing_max_retries').value),
+                    resize_target: parseInt(document.getElementById('vision_processing_resize_target').value),
+                    max_file_size_mb: parseInt(document.getElementById('vision_processing_max_file_size_mb').value)
+                },
+                output: {
+                    format: document.getElementById('vision_output_format').value,
+                    include_confidence: document.getElementById('vision_output_include_confidence').checked
+                },
+                memory: {
+                    auto_create: document.getElementById('vision_memory_auto_create').checked,
+                    min_confidence: parseFloat(document.getElementById('vision_memory_min_confidence').value),
+                    category: document.getElementById('vision_memory_category').value,
+                    default_priority: parseInt(document.getElementById('vision_memory_default_priority').value)
+                },
+                intent: {
+                    web_ui_always_analyze: document.getElementById('vision_intent_web_ui_always_analyze').checked,
+                    bridge_always_analyze: document.getElementById('vision_intent_bridge_always_analyze').checked,
+                    bridge_never_analyze: document.getElementById('vision_intent_bridge_never_analyze').checked
+                },
+                cache: {
+                    enabled: document.getElementById('vision_cache_enabled').checked,
+                    allow_reanalysis: document.getElementById('vision_cache_allow_reanalysis').checked
+                }
             },
             ui: {
                 color_scheme: document.getElementById('ui_color_scheme').value

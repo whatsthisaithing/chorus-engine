@@ -271,50 +271,95 @@
                     </div>
                 </div>
                 
-                <!-- Input Area -->
+                <!-- Input Area (Enhanced with Image Upload) -->
                 <div class="chat-input border-top p-3 bg-light">
                     <form id="messageForm">
-                        <div class="input-group">
+                        <!-- Image Attachment Preview Area (hidden when empty) -->
+                        <div id="attachmentPreview" class="attachment-preview-area" style="display: none;">
+                            <div class="attachment-preview-scroll">
+                                <!-- Populated by message-input.js -->
+                            </div>
+                        </div>
+                        
+                        <!-- Input Row -->
+                        <div class="input-row">
+                            <!-- Hidden file input for image selection -->
                             <input 
-                                type="text" 
+                                type="file" 
+                                id="imageFileInput" 
+                                accept="image/jpeg,image/jpg,image/png,image/webp,image/gif" 
+                                style="display: none;"
+                            >
+                            
+                            <!-- Attach Image Button (+ icon) -->
+                            <button 
+                                type="button" 
+                                id="attachImageBtn" 
+                                class="btn-attach" 
+                                title="Attach Image"
+                                disabled
+                            >
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z"/>
+                                </svg>
+                            </button>
+                            
+                            <!-- Auto-expanding Textarea -->
+                            <textarea 
                                 id="messageInput" 
-                                class="form-control" 
+                                class="message-textarea" 
                                 placeholder="Type your message..." 
+                                rows="1"
                                 disabled
                                 autocomplete="off"
-                            >
+                            ></textarea>
+                            
                             <!-- Phase 9: Scene Capture Button -->
                             <button 
                                 type="button" 
                                 id="sceneCaptureBtn" 
                                 class="btn btn-outline-secondary" 
                                 title="Capture Scene (Image)"
-                                style="display: none; border: none;"
+                                style="display: none;"
                                 disabled
                             >
                                 <i class="bi bi-camera-fill"></i>
                             </button>
+                            
                             <!-- Video Scene Capture Button -->
                             <button 
                                 type="button" 
                                 id="videoSceneCaptureBtn" 
                                 class="btn btn-outline-secondary" 
                                 title="Capture Scene (Video)"
-                                style="display: none; border: none;"
+                                style="display: none;"
                                 disabled
                             >
                                 <i class="bi bi-camera-video-fill"></i>
                             </button>
+                            
+                            <!-- Send Button -->
                             <button 
                                 type="submit" 
                                 id="sendBtn" 
-                                class="btn btn-primary" 
+                                class="btn-send btn btn-primary" 
                                 disabled
                             >
-                                <i class="bi bi-send-fill"></i> Send
+                                <i class="bi bi-send-fill"></i>
                             </button>
                         </div>
                     </form>
+                </div>
+                
+                <!-- Drop Zone Overlay (shown during drag) -->
+                <div id="dropZoneOverlay" class="drop-zone-overlay" style="display: none;">
+                    <div class="drop-zone-content">
+                        <svg class="icon-upload" width="64" height="64" viewBox="0 0 64 64" fill="currentColor">
+                            <path d="M32 8c-1.1 0-2 .9-2 2v28.6l-9.3-9.3c-.8-.8-2-.8-2.8 0s-.8 2 0 2.8l13 13c.8.8 2 .8 2.8 0l13-13c.8-.8.8-2 0-2.8s-2-.8-2.8 0L34 38.6V10c0-1.1-.9-2-2-2z"/>
+                            <path d="M52 48H12c-1.1 0-2 .9-2 2s.9 2 2 2h40c1.1 0 2-.9 2-2s-.9-2-2-2z"/>
+                        </svg>
+                        <p>Drop image here to attach</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -735,6 +780,183 @@
                                             <input type="number" class="form-control bg-dark text-light border-secondary" id="document_analysis_document_budget_ratio" min="0.05" max="0.5" step="0.05" placeholder="0.15">
                                             <div class="form-text text-secondary">% of context for documents (0.15 = 15%).</div>
                                         </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Vision Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-eye me-2"></i>Vision System Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="vision_enabled">
+                                            <label class="form-check-label text-light" for="vision_enabled">
+                                                Enable Vision System <span class="badge bg-success">NEW</span>
+                                            </label>
+                                            <div class="form-text text-secondary">Allow characters to analyze and interpret uploaded images.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="vision_settings" style="display: none;">
+                                    <!-- Model Configuration -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-cpu me-2"></i>Model Settings</h6>
+                                    <div class="row">
+                                        <div class="col-md-8 mb-3">
+                                            <label class="form-label text-light">Model Name</label>
+                                            <input type="text" class="form-control bg-dark text-light border-secondary" id="vision_model_name" placeholder="qwen3-vl:4b">
+                                            <div class="form-text text-secondary">Vision model identifier. Backend automatically matches LLM provider setting.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Load Timeout (s)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_model_load_timeout_seconds" min="10" max="300" placeholder="60">
+                                            <div class="form-text text-secondary">Time to wait for model to load.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Processing Settings -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-gear me-2"></i>Processing Settings</h6>
+                                    <div class="row">
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Timeout (s)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_processing_timeout_seconds" min="10" max="180" placeholder="30">
+                                            <div class="form-text text-secondary">Analysis timeout per image.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Max Retries</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_processing_max_retries" min="0" max="5" placeholder="2">
+                                            <div class="form-text text-secondary">Retry failed analyses.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Resize Target (px)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_processing_resize_target" min="512" max="2048" step="128" placeholder="1024">
+                                            <div class="form-text text-secondary">Max dimension for processing.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Max File Size (MB)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_processing_max_file_size_mb" min="1" max="50" placeholder="10">
+                                            <div class="form-text text-secondary">Upload size limit.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Output Configuration -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-list-check me-2"></i>Output Configuration</h6>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label text-light">Output Format</label>
+                                            <select class="form-select bg-dark text-light border-secondary" id="vision_output_format">
+                                                <option value="structured">Structured (Recommended)</option>
+                                                <option value="minimal">Minimal</option>
+                                            </select>
+                                            <div class="form-text text-secondary">Level of detail in observations.</div>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label text-light">Include Confidence Score</label>
+                                            <div class="form-check form-switch mt-2">
+                                                <input class="form-check-input" type="checkbox" id="vision_output_include_confidence" checked>
+                                                <label class="form-check-label text-light" for="vision_output_include_confidence">Show confidence in results</label>
+                                            </div>
+                                            <div class="form-text text-secondary">Include confidence score in vision analysis.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Memory Integration -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-brain me-2"></i>Memory Integration</h6>
+                                    <div class="row">
+                                        <div class="col-md-3 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_memory_auto_create" checked>
+                                                <label class="form-check-label text-light" for="vision_memory_auto_create">
+                                                    Auto-create Memories
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Automatically save visual memories.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Min Confidence</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_memory_min_confidence" min="0" max="1" step="0.05" placeholder="0.6">
+                                            <div class="form-text text-secondary">Minimum confidence for memory (0.0-1.0).</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Category</label>
+                                            <input type="text" class="form-control bg-dark text-light border-secondary" id="vision_memory_category" placeholder="visual">
+                                            <div class="form-text text-secondary">Memory category tag.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Default Priority</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_memory_default_priority" min="0" max="100" placeholder="70">
+                                            <div class="form-text text-secondary">Memory importance (0-100).</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Intent Detection -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-search me-2"></i>Intent Detection (Bridges)</h6>
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_intent_web_ui_always_analyze" checked>
+                                                <label class="form-check-label text-light" for="vision_intent_web_ui_always_analyze">
+                                                    Web UI: Always Analyze
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Analyze all web UI uploads.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_intent_bridge_always_analyze">
+                                                <label class="form-check-label text-light" for="vision_intent_bridge_always_analyze">
+                                                    Bridge: Always Analyze
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Analyze all Discord/Slack images.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_intent_bridge_never_analyze">
+                                                <label class="form-check-label text-light" for="vision_intent_bridge_never_analyze">
+                                                    Bridge: Never Analyze
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Disable bridge vision entirely.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Cache Settings -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-hdd me-2"></i>Cache Settings</h6>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_cache_enabled" checked>
+                                                <label class="form-check-label text-light" for="vision_cache_enabled">
+                                                    Enable Result Caching
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Cache analysis results in database.</div>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="vision_cache_allow_reanalysis" checked>
+                                                <label class="form-check-label text-light" for="vision_cache_allow_reanalysis">
+                                                    Allow Re-analysis
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Allow users to re-analyze with different model.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- VRAM Note -->
+                                    <div class="alert alert-info mt-3">
+                                        <i class="bi bi-info-circle me-2"></i>
+                                        <strong>Backend Selection:</strong> Vision system automatically uses your configured LLM provider 
+                                        (Ollama, LM Studio, or KoboldCpp). The vision model will be loaded through the same backend as your main LLM.
+                                        <br><br>
+                                        <strong>VRAM Management:</strong> The backend automatically handles model swapping. 
+                                        Vision models load on-demand and unload after processing. The "Unload during image/video generation" 
+                                        setting in LLM Configuration also applies to vision models during ComfyUI workflows.
                                     </div>
                                 </div>
                             </div>
@@ -3011,6 +3233,7 @@
     <script src="js/user.js?v=1"></script>
     <script src="js/api.js?v=11"></script>
     <script src="js/ui.js?v=8"></script>
+    <script src="js/message-input.js?v=1"></script>
     <script src="js/character-management.js?v=7"></script>
     <script src="js/character-cards.js?v=12"></script>
     <script src="js/character-restore.js?v=1"></script>
@@ -3090,8 +3313,77 @@
             }
         });
     </script>
+    
+    <!-- Task 1.9: Image Modal -->
+    <div id="imageModal" class="image-modal">
+        <div class="image-modal-content">
+            <div class="image-modal-header">
+                <h3 class="image-modal-title" id="imageModalTitle">Image</h3>
+                <button class="image-modal-close" onclick="UI.closeImageModal()" title="Close">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+            <div class="image-modal-body">
+                <div class="modal-image-section">
+                    <img id="modalImage" src="" alt="Full size image">
+                </div>
+                <div class="modal-vision-section" id="modalVisionSection">
+                    <!-- Observation -->
+                    <div class="vision-detail-group">
+                        <h4>Vision Observation</h4>
+                        <p class="vision-observation" id="modalObservation">Loading...</p>
+                    </div>
+                    
+                    <!-- Analysis Details -->
+                    <div class="vision-detail-group">
+                        <h4>Analysis Details</h4>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Confidence:</span>
+                            <span class="vision-detail-value" id="modalConfidence">-</span>
+                        </div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" id="modalConfidenceBar" style="width: 0%"></div>
+                        </div>
+                        <div class="vision-detail-row mt-2">
+                            <span class="vision-detail-label">Model:</span>
+                            <span class="vision-detail-value" id="modalModel">-</span>
+                        </div>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Backend:</span>
+                            <span class="vision-detail-value" id="modalBackend">-</span>
+                        </div>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Processing Time:</span>
+                            <span class="vision-detail-value" id="modalProcessingTime">-</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Tags -->
+                    <div class="vision-detail-group" id="modalTagsGroup" style="display: none;">
+                        <h4>Detected Tags</h4>
+                        <div class="vision-tags" id="modalTags"></div>
+                    </div>
+                    
+                    <!-- File Info -->
+                    <div class="vision-detail-group">
+                        <h4>File Information</h4>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Filename:</span>
+                            <span class="vision-detail-value" id="modalFilename">-</span>
+                        </div>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Size:</span>
+                            <span class="vision-detail-value" id="modalFileSize">-</span>
+                        </div>
+                        <div class="vision-detail-row">
+                            <span class="vision-detail-label">Dimensions:</span>
+                            <span class="vision-detail-value" id="modalDimensions">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
-
-
 

@@ -2,7 +2,7 @@
 
 from .conversation import (
     Conversation, Thread, Message, Memory, MessageRole, MemoryType, 
-    ConversationSummary, GeneratedImage, GeneratedVideo
+    ConversationSummary, GeneratedImage, GeneratedVideo, ImageAttachment
 )
 from .workflow import Workflow
 from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
@@ -18,6 +18,7 @@ __all__ = [
     "ConversationSummary",
     "GeneratedImage",
     "GeneratedVideo",
+    "ImageAttachment",
     "Workflow",
     "Document",
     "DocumentChunk",

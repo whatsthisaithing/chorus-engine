@@ -680,21 +680,37 @@ window.App = {
             return;
         }
         
-        // Clear input
+        // Task 1.8: Check if there's an image attachment
+        let attachmentId = null;
+        if (window.messageInput && window.messageInput.getAttachment()) {
+            // Step 1: Upload image first
+            attachmentId = await window.messageInput.uploadAttachment();
+            
+            if (!attachmentId) {
+                // Upload failed (error already shown in uploadAttachment)
+                return;
+            }
+        }
+        
+        // Clear input and attachment
         input.value = '';
+        if (window.messageInput) {
+            window.messageInput.clearAttachment();
+            window.messageInput.resetHeight();
+        }
         
         // Disable input temporarily
         input.disabled = true;
         document.getElementById('sendBtn').disabled = true;
         
         try {
-            // Add user message immediately
+            // Add user message immediately (without attachments initially)
             const userMsg = {
                 role: 'user',
                 content: message,
                 created_at: new Date().toISOString()
             };
-            UI.appendMessage(userMsg);
+            const userMessageElement = UI.appendMessage(userMsg);
             this.state.messages.push(userMsg);
             
             // Show typing indicator
@@ -745,6 +761,51 @@ window.App = {
                 this.updateConversationTitle(this.state.selectedConversationId, newTitle);
             };
             
+            // Task 1.9: Add user message callback to update with attachment data
+            onChunk.userMessageCallback = (userData) => {
+                if (userData.attachments && userData.attachments.length > 0 && userMessageElement) {
+                    // Update the user message in state
+                    const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
+                    if (msgIndex !== -1) {
+                        this.state.messages[msgIndex].attachments = userData.attachments;
+                    }
+                    
+                    // Re-render the user message element with attachments
+                    const updatedMsg = {
+                        role: 'user',
+                        content: message,
+                        created_at: userMsg.created_at,
+                        id: userData.id,
+                        attachments: userData.attachments
+                    };
+                    
+                    // Replace the message element content
+                    const contentDiv = userMessageElement.querySelector('.message-content');
+                    if (contentDiv) {
+                        contentDiv.innerHTML = UI.renderMarkdown(message);
+                        
+                        // Add attachments section (without badge - cleaner immediate feedback)
+                        if (userData.attachments && userData.attachments.length > 0) {
+                            const attachmentsHtml = userData.attachments.map(attachment => {
+                                return `
+                                    <div class="image-attachment" 
+                                         data-attachment-id="${attachment.id}"
+                                         onclick="UI.showImageModal('${attachment.id}')">
+                                        <img src="/api/attachments/${attachment.id}/file" 
+                                             alt="${UI.escapeHtml(attachment.file_name || 'Uploaded image')}" 
+                                             loading="lazy"
+                                             class="attachment-thumbnail">
+                                    </div>
+                                `;
+                            }).join('');
+                            
+                            contentDiv.insertAdjacentHTML('afterend', `<div class="message-attachments">${attachmentsHtml}</div>`);
+                        }
+                    }
+                }
+            };
+            
+            // Task 1.8: Include attachment_id in message if present
             await API.sendMessageStream(
                 this.state.selectedThreadId,
                 message,
@@ -795,7 +856,9 @@ window.App = {
                     console.error('Streaming error:', error);
                     UI.hideTypingIndicator();
                     UI.showToast('Failed to send message: ' + error.message, 'error');
-                }
+                },
+                // Pass attachment_id if present
+                attachmentId
             );
             
         } catch (error) {

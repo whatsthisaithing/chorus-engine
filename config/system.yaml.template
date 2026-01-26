@@ -67,6 +67,84 @@ tts:
   default_provider: chatterbox  # Options: chatterbox (embedded, fast) or comfyui (workflow-based)
                                 # Characters can override this in their voice config
 
+# Vision System Configuration
+# Enables characters to "see" and analyze images uploaded by users
+# Uses vision-language models (VLMs) through your configured LLM provider
+# Backend automatically matches llm.provider (ollama, lmstudio, etc.)
+vision:
+  enabled: true  # Enable/disable vision capability system-wide
+  
+  # Model Configuration
+  model:
+    name: qwen3-vl:4b  # Vision model to use (loaded via llm.provider backend)
+                       # Ollama: Download with: ollama pull qwen3-vl:4b
+                       # LM Studio: Use model search to download qwen2-vl models
+                       # Options: qwen3-vl:2b (fastest), qwen3-vl:4b (balanced), 
+                       #          qwen3-vl:8b (higher quality), qwen3-vl:30b (best)
+                       # Recommendation: 4b for most users (5-12s processing, excellent quality)
+    load_timeout_seconds: 60  # Time to wait for vision model to load
+  
+  # Image Processing Settings
+  processing:
+    max_retries: 2  # Number of retries if vision analysis fails
+    timeout_seconds: 30  # Timeout for vision analysis (per attempt)
+    resize_target: 1024  # Max dimension (width or height) for processing
+                         # Images larger than this are resized to reduce processing time
+    supported_formats:  # Allowed image file types
+      - jpg
+      - jpeg
+      - png
+      - webp
+      - gif
+    max_file_size_mb: 10  # Maximum upload size (MB)
+  
+  # Output Configuration
+  output:
+    format: structured  # Output format: structured (JSON with details) or minimal
+    include_confidence: true  # Include confidence score in vision results
+  
+  # Memory Integration
+  # Visual memories allow characters to recall images shown to them
+  memory:
+    auto_create: true  # Automatically create memories for analyzed images
+    category: visual  # Memory category for visual observations
+    default_priority: 70  # Priority level for visual memories (0-100)
+    min_confidence: 0.6  # Minimum vision confidence to create memory
+  
+  # Intent Detection (for bridges like Discord/Slack)
+  intent:
+    bridge_always_analyze: false  # If true, analyze ALL images from bridges
+    bridge_never_analyze: false  # If true, NEVER analyze bridge images
+    web_ui_always_analyze: true  # Web UI always analyzes (explicit upload)
+    use_semantic_detection: false  # Use semantic intent detection (Phase 3-4)
+    confidence_threshold: 0.45  # Threshold for semantic intent detection
+    
+    # Phrases that trigger vision analysis in bridge messages
+    # If user message contains these, image will be analyzed
+    trigger_phrases:
+      - what do you see
+      - look at
+      - what's in
+      - describe
+      - check this
+      - what does this
+      - can you see
+      - tell me about
+      - what is this
+      - help with this
+      - analyze
+      - show me
+  
+  # Performance & Caching
+  cache:
+    enabled: true  # Cache vision analysis results in database
+    allow_reanalysis: true  # Allow re-analyzing images with different models
+  
+  # VRAM Management
+  # Note: Ollama and LM Studio automatically handle VRAM allocation between models
+  # The vision model will be unloaded when ComfyUI workflows run (see llm.unload_during_image_generation)
+  # No manual VRAM management needed - the backends handle this intelligently
+
 # Document Analysis System
 document_analysis:
   enabled: true

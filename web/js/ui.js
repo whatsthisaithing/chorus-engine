@@ -280,6 +280,34 @@ const UI = {
             }
         }
         
+        // Task 1.9: Display image attachments for USER messages
+        if (message.attachments && message.attachments.length > 0) {
+            contentHtml += '<div class="message-attachments">';
+            
+            for (const attachment of message.attachments) {
+                const imageUrl = `/api/attachments/${attachment.id}/file`;
+                const hasVision = attachment.vision_processed === 'true';
+                const confidence = attachment.vision_confidence ? (attachment.vision_confidence * 100).toFixed(0) : null;
+                
+                contentHtml += `
+                    <div class="image-attachment ${hasVision ? 'has-vision' : ''}" 
+                         data-attachment-id="${attachment.id}"
+                         onclick="UI.showImageModal('${attachment.id}')">
+                        <img src="${imageUrl}" 
+                             alt="${this.escapeHtml(attachment.original_filename || 'Uploaded image')}" 
+                             loading="lazy"
+                             class="attachment-thumbnail">
+                        ${hasVision && confidence ? `
+                            <div class="vision-badge" title="Vision analyzed with ${confidence}% confidence">
+                                <i class="bi bi-eye-fill"></i> ${confidence}%
+                            </div>
+                        ` : ''}
+                    </div>`;
+            }
+            
+            contentHtml += '</div>';
+        }
+        
         // Add timestamp
         contentHtml += `<div class="message-timestamp">${this.formatTime(message.created_at)}</div>`;
         
@@ -566,6 +594,11 @@ const UI = {
         document.getElementById('messageInput').disabled = !enabled;
         document.getElementById('sendBtn').disabled = !enabled;
         document.getElementById('actionsMenuBtn').disabled = !enabled;
+        // Task 1.8: Enable/disable attach image button
+        const attachBtn = document.getElementById('attachImageBtn');
+        if (attachBtn) {
+            attachBtn.disabled = !enabled;
+        }
     },
     
     /**
@@ -1222,5 +1255,131 @@ const UI = {
         modal.addEventListener('hidden.bs.modal', () => {
             modal.remove();
         });
+    },
+    
+    /**
+     * Task 1.9: Show image with vision details in modal
+     */
+    async showImageModal(attachmentId) {
+        try {
+            // Fetch attachment details
+            const response = await fetch(`/api/attachments/${attachmentId}`);
+            if (!response.ok) {
+                throw new Error('Failed to load image details');
+            }
+            
+            const attachment = await response.json();
+            
+            // Show modal
+            const modal = document.getElementById('imageModal');
+            modal.classList.add('active');
+            
+            // Set image
+            const modalImage = document.getElementById('modalImage');
+            modalImage.src = `/api/attachments/${attachmentId}/file`;
+            
+            // Set title
+            document.getElementById('imageModalTitle').textContent = attachment.original_filename || 'Image';
+            
+            // Set observation
+            const observation = attachment.vision_observation || 'No vision analysis available';
+            document.getElementById('modalObservation').textContent = observation;
+            
+            // Set confidence
+            const confidence = attachment.vision_confidence;
+            if (confidence !== null && confidence !== undefined) {
+                const confidencePercent = (confidence * 100).toFixed(1);
+                document.getElementById('modalConfidence').textContent = `${confidencePercent}%`;
+                document.getElementById('modalConfidenceBar').style.width = `${confidencePercent}%`;
+            } else {
+                document.getElementById('modalConfidence').textContent = 'N/A';
+                document.getElementById('modalConfidenceBar').style.width = '0%';
+            }
+            
+            // Set model and backend
+            document.getElementById('modalModel').textContent = attachment.vision_model || 'N/A';
+            document.getElementById('modalBackend').textContent = attachment.vision_backend || 'N/A';
+            
+            // Set processing time
+            const processingTime = attachment.vision_processing_time_ms;
+            if (processingTime) {
+                const seconds = (processingTime / 1000).toFixed(2);
+                document.getElementById('modalProcessingTime').textContent = `${seconds}s`;
+            } else {
+                document.getElementById('modalProcessingTime').textContent = 'N/A';
+            }
+            
+            // Set tags
+            const tagsContainer = document.getElementById('modalTags');
+            const tagsGroup = document.getElementById('modalTagsGroup');
+            if (attachment.vision_tags) {
+                const tags = attachment.vision_tags.split(',').filter(t => t.trim());
+                if (tags.length > 0) {
+                    tagsContainer.innerHTML = tags.map(tag => 
+                        `<span class="vision-tag">${this.escapeHtml(tag.trim())}</span>`
+                    ).join('');
+                    tagsGroup.style.display = 'block';
+                } else {
+                    tagsGroup.style.display = 'none';
+                }
+            } else {
+                tagsGroup.style.display = 'none';
+            }
+            
+            // Set file info
+            document.getElementById('modalFilename').textContent = attachment.original_filename || 'Unknown';
+            
+            // Format file size
+            if (attachment.file_size) {
+                const size = attachment.file_size;
+                const formatted = size < 1024 ? `${size} B` :
+                    size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` :
+                    `${(size / (1024 * 1024)).toFixed(2)} MB`;
+                document.getElementById('modalFileSize').textContent = formatted;
+            } else {
+                document.getElementById('modalFileSize').textContent = 'Unknown';
+            }
+            
+            // Set dimensions
+            if (attachment.width && attachment.height) {
+                document.getElementById('modalDimensions').textContent = 
+                    `${attachment.width} × ${attachment.height}`;
+            } else {
+                document.getElementById('modalDimensions').textContent = 'Unknown';
+            }
+            
+        } catch (error) {
+            console.error('Error showing image modal:', error);
+            this.showToast('Failed to load image details', 'error');
+        }
+    },
+    
+    /**
+     * Task 1.9: Close image modal
+     */
+    closeImageModal() {
+        const modal = document.getElementById('imageModal');
+        modal.classList.remove('active');
     }
-}
+};
+
+// Task 1.9: Close modal with Escape key or click outside
+document.addEventListener('DOMContentLoaded', () => {
+    const imageModal = document.getElementById('imageModal');
+    
+    if (imageModal) {
+        // Close on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && imageModal.classList.contains('active')) {
+                UI.closeImageModal();
+            }
+        });
+        
+        // Close on click outside modal content
+        imageModal.addEventListener('click', (e) => {
+            if (e.target === imageModal) {
+                UI.closeImageModal();
+            }
+        });
+    }
+});
