@@ -87,7 +87,7 @@ class VisionService:
         self.base_url = llm_config.get("base_url", "http://localhost:11434")
         
         # Validate backend support
-        supported_backends = ["ollama"]  # LM Studio support coming soon
+        supported_backends = ["ollama", "lmstudio"]
         if self.backend not in supported_backends:
             logger.warning(
                 f"Vision backend '{self.backend}' not yet supported. "
@@ -289,7 +289,7 @@ Be specific, factual, and objective. Focus on what is visibly present."""
                 if self.backend == "ollama":
                     return await self._ollama_vision_inference(image_path, prompt)
                 elif self.backend == "lmstudio":
-                    raise NotImplementedError("LM Studio backend not yet implemented")
+                    return await self._lmstudio_vision_inference(image_path, prompt)
                 else:
                     raise VisionModelError(f"Unsupported backend: {self.backend}")
                     
@@ -363,6 +363,78 @@ Be specific, factual, and objective. Focus on what is visibly present."""
             raise VisionModelError(f"Ollama API request failed: {e}") from e
         except Exception as e:
             raise VisionModelError(f"Ollama vision inference failed: {e}") from e
+    
+    async def _lmstudio_vision_inference(
+        self,
+        image_path: Path,
+        prompt: str
+    ) -> str:
+        """
+        Call LM Studio API with vision model.
+        
+        LM Studio uses OpenAI-compatible API format with content array:
+        - Text parts: {"type": "text", "text": "..."}
+        - Image parts: {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+        
+        Args:
+            image_path: Path to processed image
+            prompt: Vision prompt
+            
+        Returns:
+            Raw vision model response
+            
+        Raises:
+            VisionModelError: If API call fails
+        """
+        try:
+            # Convert image to base64
+            with open(image_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Detect image format for MIME type
+            img = Image.open(image_path)
+            mime_type = f"image/{img.format.lower()}" if img.format else "image/jpeg"
+            
+            # Build request payload with OpenAI-compatible format
+            payload = {
+                "model": self.model_name,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}}
+                    ]
+                }],
+                "max_tokens": 1000,
+                "temperature": 0.1  # Low temperature for consistent structured output
+            }
+            
+            # Make API request to LM Studio
+            url = f"{self.base_url}/v1/chat/completions"
+            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise VisionModelError(
+                            f"LM Studio API error (status {response.status}): {error_text}"
+                        )
+                    
+                    result = await response.json()
+                    
+                    # Extract message content from OpenAI format
+                    if "choices" in result and len(result["choices"]) > 0:
+                        choice = result["choices"][0]
+                        if "message" in choice and "content" in choice["message"]:
+                            return choice["message"]["content"]
+                    
+                    raise VisionModelError(f"Unexpected LM Studio response format: {result}")
+            
+        except aiohttp.ClientError as e:
+            raise VisionModelError(f"LM Studio API request failed: {e}") from e
+        except Exception as e:
+            raise VisionModelError(f"LM Studio vision inference failed: {e}") from e
     
     def _parse_vision_output(self, raw_output: str) -> VisionAnalysisResult:
         """
