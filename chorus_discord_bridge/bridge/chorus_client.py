@@ -209,7 +209,8 @@ class ChorusClient:
         user_name: str = "Discord User",
         metadata: Optional[Dict[str, Any]] = None,
         primary_user: Optional[str] = None,
-        conversation_source: str = 'discord'
+        conversation_source: str = 'discord',
+        image_attachment_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Send a message to an existing conversation.
@@ -222,6 +223,7 @@ class ChorusClient:
             metadata: Optional metadata to attach to the message
             primary_user: Name of the user who invoked the bot (for multi-user contexts)
             conversation_source: Platform source (default: 'discord')
+            image_attachment_ids: List of Chorus attachment IDs to link (Phase 3)
             
         Returns:
             Response including assistant's reply
@@ -240,6 +242,10 @@ class ChorusClient:
         
         if primary_user:
             payload['primary_user'] = primary_user
+        
+        if image_attachment_ids:
+            payload['image_attachment_ids'] = image_attachment_ids
+            logger.info(f"Including {len(image_attachment_ids)} image attachment(s)")
         
         endpoint = f'/threads/{thread_id}/messages'
         return self._request('POST', endpoint, json=payload)
@@ -359,7 +365,8 @@ class ChorusClient:
         thread_id: int,
         message: str,
         user_name: str,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        image_attachment_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Add a user message to a thread without generating a response.
@@ -373,6 +380,7 @@ class ChorusClient:
             message: Message content
             user_name: Name of the user
             metadata: Optional metadata (should include discord_message_id)
+            image_attachment_ids: List of Chorus attachment IDs to link (Phase 3)
             
         Returns:
             Response from API
@@ -388,6 +396,11 @@ class ChorusClient:
         # Add username to metadata if not already present
         if 'username' not in payload['metadata']:
             payload['metadata']['username'] = user_name
+        
+        # Add image attachments if present (Phase 3)
+        if image_attachment_ids:
+            payload['image_attachment_ids'] = image_attachment_ids
+            logger.debug(f"Including {len(image_attachment_ids)} image attachment(s) in history")
         
         endpoint = f'/threads/{thread_id}/messages/add'
         return self._request('POST', endpoint, json=payload)
@@ -424,6 +437,71 @@ class ChorusClient:
         
         endpoint = f'/threads/{thread_id}/messages/add'
         return self._request('POST', endpoint, json=payload)
+    
+    async def upload_image(self, file_path, filename: str) -> Optional[str]:
+        """
+        Upload an image to Chorus Engine (Phase 3 - Vision System).
+        
+        Uses the two-step upload process:
+        1. Upload file to /api/attachments/upload
+        2. Returns attachment_id for linking to messages
+        
+        Args:
+            file_path: Path to image file
+            filename: Original filename
+            
+        Returns:
+            Attachment ID if successful, None otherwise
+        """
+        try:
+            logger.debug(f"Uploading image {filename} to Chorus API")
+            
+            # Read file content first
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            # Detect MIME type from filename
+            mime_type = 'image/jpeg'
+            if filename.lower().endswith('.png'):
+                mime_type = 'image/png'
+            elif filename.lower().endswith('.webp'):
+                mime_type = 'image/webp'
+            elif filename.lower().endswith('.gif'):
+                mime_type = 'image/gif'
+            
+            # Upload with files parameter - requests will handle multipart/form-data
+            files = {'file': (filename, file_content, mime_type)}
+            
+            # Use requests.post directly (not session) to avoid Content-Type: application/json header
+            # The session has 'Content-Type': 'application/json' which breaks multipart uploads
+            headers = {'User-Agent': 'ChorusDiscordBridge/0.1.0'}
+            if self.api_key:
+                headers['Authorization'] = f'Bearer {self.api_key}'
+            
+            response = requests.post(
+                f"{self.api_url}/api/attachments/upload",
+                files=files,
+                headers=headers,
+                timeout=self.timeout
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Upload failed: {response.status_code} {response.text}")
+                return None
+            
+            data = response.json()
+            attachment_id = data.get('attachment_id')
+            
+            if not attachment_id:
+                logger.error(f"No attachment_id in response: {data}")
+                return None
+            
+            logger.info(f"Successfully uploaded image: {attachment_id}")
+            return attachment_id
+            
+        except Exception as e:
+            logger.error(f"Failed to upload image {filename}: {e}", exc_info=True)
+            return None
     
     def health_check(self) -> bool:
         """

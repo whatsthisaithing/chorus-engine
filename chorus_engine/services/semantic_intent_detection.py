@@ -71,7 +71,7 @@ INTENT_PROTOTYPES = {
 # sentence-level analysis provides better specificity but may score lower)
 THRESHOLDS = {
     "set_reminder": 0.50,  # Confirmable action with user review
-    "send_image": 0.45,    # Lowered to accommodate sentence-level detection
+    "send_image": 0.60,    # Higher threshold to avoid false positives on "can you see this image?"
     "send_video": 0.45,    # Lowered to accommodate sentence-level detection
     "default": 0.50
 }

@@ -88,7 +88,7 @@ vision:
   processing:
     max_retries: 2  # Number of retries if vision analysis fails
     timeout_seconds: 30  # Timeout for vision analysis (per attempt)
-    resize_target: 1024  # Max dimension (width or height) for processing
+    resize_target: 768  # Max dimension (width or height) for processing
                          # Images larger than this are resized to reduce processing time
     supported_formats:  # Allowed image file types
       - jpg

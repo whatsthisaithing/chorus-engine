@@ -857,7 +857,7 @@ class ChatInThreadRequest(BaseModel):
     metadata: Optional[dict] = None
     primary_user: Optional[str] = None  # Name of user who invoked the bot (for multi-user contexts)
     conversation_source: Optional[str] = None  # Platform source: 'web', 'discord', 'slack', etc.
-    image_attachment_id: Optional[str] = None  # ID of pre-uploaded image attachment to link to this message
+    image_attachment_ids: Optional[List[str]] = None  # Array of pre-uploaded image attachment IDs to link to this message
 
 
 class ChatInThreadResponse(BaseModel):
@@ -3066,22 +3066,27 @@ async def send_message(
     # Commit the user message so we have an ID
     db.flush()
     
-    # Phase 1.5: Link and analyze pre-uploaded image attachment if provided
-    vision_observation = None
+    # Phase 1.5 & 3.1: Link and analyze pre-uploaded image attachments (supports multiple images)
+    vision_observations = []
     
-    if request.image_attachment_id:
+    if request.image_attachment_ids:
         try:
             from chorus_engine.models import ImageAttachment
             from pathlib import Path
             
-            logger.info(f"[VISION] Linking attachment {request.image_attachment_id} to message {user_message.id}")
+            logger.info(f"[VISION] Linking {len(request.image_attachment_ids)} attachment(s) to message {user_message.id}")
             
-            # Get the pre-uploaded attachment
-            attachment = db.query(ImageAttachment).filter(
-                ImageAttachment.id == request.image_attachment_id
-            ).first()
-            
-            if attachment:
+            # Process each attachment
+            for attachment_id in request.image_attachment_ids:
+                # Get the pre-uploaded attachment
+                attachment = db.query(ImageAttachment).filter(
+                    ImageAttachment.id == attachment_id
+                ).first()
+                
+                if not attachment:
+                    logger.warning(f"[VISION] Attachment {attachment_id} not found")
+                    continue
+                
                 # Link attachment to message and set conversation/character context
                 attachment.message_id = user_message.id
                 attachment.conversation_id = conversation.id
@@ -3113,7 +3118,7 @@ async def send_message(
                             attachment.vision_confidence = result.confidence
                             attachment.vision_tags = json.dumps(result.tags) if result.tags else None
                             
-                            vision_observation = result.observation
+                            vision_observations.append(result.observation)
                             db.flush()
                             
                             logger.info(
@@ -3131,7 +3136,16 @@ async def send_message(
                                         memory_repo = MemoryRepository(db)
                                         
                                         # Parse vision data for memory content
-                                        vision_data = json.loads(result.observation) if isinstance(result.observation, str) else result.observation
+                                        vision_data = None
+                                        if result.observation:
+                                            try:
+                                                vision_data = json.loads(result.observation) if isinstance(result.observation, str) else result.observation
+                                            except (json.JSONDecodeError, ValueError) as parse_error:
+                                                logger.warning(f"[VISION] Could not parse observation as JSON: {parse_error}. Using raw text instead.")
+                                                vision_data = {"description": result.observation if result.observation else "No description available"}
+                                        else:
+                                            logger.warning(f"[VISION] No observation data returned from vision analysis")
+                                            vision_data = {"description": "Image analyzed but no details available"}
                                         
                                         # Build natural language description
                                         parts = []
@@ -3179,13 +3193,13 @@ async def send_message(
                             attachment.vision_skip_reason = f"analysis_failed: {str(e)[:80]}"
                             db.flush()
                 else:
-                    vision_observation = attachment.vision_observation
-                    logger.info(f"[VISION] Using cached vision analysis")
-            else:
-                logger.warning(f"[VISION] Attachment {request.image_attachment_id} not found")
+                    # Use cached vision analysis
+                    if attachment.vision_observation:
+                        vision_observations.append(attachment.vision_observation)
+                    logger.info(f"[VISION] Using cached vision analysis for {attachment.id}")
         
         except Exception as e:
-            logger.error(f"[VISION] Failed to link image attachment: {e}", exc_info=True)
+            logger.error(f"[VISION] Failed to link image attachments: {e}", exc_info=True)
             # Don't fail the entire request if vision processing fails
     
     # Phase 6.5: Semantic intent detection (embedding-based)
@@ -3352,7 +3366,7 @@ async def send_message(
                 
                 # Log to image_prompts.jsonl
                 try:
-                    conv_dir = Path("data/debug_logs/conversations") / conversation.id
+                    from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
                     conv_dir.mkdir(parents=True, exist_ok=True)
                     log_file = conv_dir / "image_prompts.jsonl"
                     
@@ -3938,19 +3952,26 @@ async def send_message_stream(
         is_private=(conversation.is_private == "true")
     )
     
-    # Task 1.8: Handle image attachment if present (same logic as non-streaming endpoint)
-    if request.image_attachment_id:
+    # Task 1.8 & 3.1: Handle image attachments (supports multiple images)
+    if request.image_attachment_ids:
         from chorus_engine.models.conversation import ImageAttachment
         from chorus_engine.repositories.memory_repository import MemoryRepository
         
         try:
-            # Find the uploaded attachment (with "pending" placeholders)
-            attachment = db.query(ImageAttachment).filter(
-                ImageAttachment.id == request.image_attachment_id
-            ).first()
+            logger.info(f"[VISION] Processing {len(request.image_attachment_ids)} attachment(s) for message {user_message.id}")
             
-            if attachment:
-                logger.info(f"[VISION] Linking attachment {request.image_attachment_id} to message {user_message.id}")
+            # Process each attachment
+            for attachment_id in request.image_attachment_ids:
+                # Find the uploaded attachment (with "pending" placeholders)
+                attachment = db.query(ImageAttachment).filter(
+                    ImageAttachment.id == attachment_id
+                ).first()
+                
+                if not attachment:
+                    logger.warning(f"[VISION] Attachment {attachment_id} not found")
+                    continue
+                
+                logger.info(f"[VISION] Linking attachment {attachment_id} to message {user_message.id}")
                 
                 # Link attachment to message
                 attachment.message_id = user_message.id
@@ -4019,13 +4040,11 @@ async def send_message_stream(
                         attachment.vision_skip_reason = "vision_service_not_available"
                 else:
                     logger.info(f"[VISION] Attachment {attachment.id} already processed (using cached analysis)")
-                
-                db.commit()
-            else:
-                logger.warning(f"[VISION] Attachment {request.image_attachment_id} not found")
+            
+            db.commit()
                 
         except Exception as e:
-            logger.error(f"[VISION] Failed to process image attachment: {e}")
+            logger.error(f"[VISION] Failed to process image attachments: {e}")
             db.rollback()
     
     # Phase 6.5: Semantic intent detection (embedding-based, runs in parallel with keyword)
@@ -4117,7 +4136,7 @@ async def send_message_stream(
                 
                 # Log to image_prompts.jsonl
                 try:
-                    conv_dir = Path("data/debug_logs/conversations") / conversation.id
+                    from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
                     conv_dir.mkdir(parents=True, exist_ok=True)
                     log_file = conv_dir / "image_prompts.jsonl"
                     
@@ -4210,7 +4229,7 @@ async def send_message_stream(
                 
                 # Log to video_prompts.jsonl
                 try:
-                    conv_dir = Path("data/debug_logs/conversations") / conversation.id
+                    from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
                     conv_dir.mkdir(parents=True, exist_ok=True)
                     log_file = conv_dir / "video_prompts.jsonl"
                     
@@ -4310,27 +4329,28 @@ async def send_message_stream(
     character_config_for_stream = character  # Phase 8: Character config for memory profile
     title_auto_generated = conversation.title_auto_generated  # For title generation
     
-    # Task 1.9: Capture attachment data for streaming response
+    # Task 1.9 & 3.1: Capture attachment data for streaming response (supports multiple)
     user_message_attachments = []
-    if request.image_attachment_id:
+    if request.image_attachment_ids:
         from chorus_engine.models.conversation import ImageAttachment
-        attachment = db.query(ImageAttachment).filter(
-            ImageAttachment.id == request.image_attachment_id
-        ).first()
-        if attachment:
-            user_message_attachments.append({
-                'id': attachment.id,
-                'file_name': attachment.original_filename,
-                'file_size': attachment.file_size,
-                'mime_type': attachment.mime_type,
-                'vision_processed': attachment.vision_processed,
-                'vision_observation': attachment.vision_observation,
-                'vision_confidence': attachment.vision_confidence,
-                'vision_tags': attachment.vision_tags,
-                'vision_model': attachment.vision_model,
-                'vision_backend': attachment.vision_backend,
-                'vision_processing_time_ms': attachment.vision_processing_time_ms
-            })
+        for attachment_id in request.image_attachment_ids:
+            attachment = db.query(ImageAttachment).filter(
+                ImageAttachment.id == attachment_id
+            ).first()
+            if attachment:
+                user_message_attachments.append({
+                    'id': attachment.id,
+                    'file_name': attachment.original_filename,
+                    'file_size': attachment.file_size,
+                    'mime_type': attachment.mime_type,
+                    'vision_processed': attachment.vision_processed,
+                    'vision_observation': attachment.vision_observation,
+                    'vision_confidence': attachment.vision_confidence,
+                    'vision_tags': attachment.vision_tags,
+                    'vision_model': attachment.vision_model,
+                    'vision_backend': attachment.vision_backend,
+                    'vision_processing_time_ms': attachment.vision_processing_time_ms
+                })
     
     async def generate_stream():
         """Stream generator that yields SSE-formatted chunks."""
@@ -4621,7 +4641,7 @@ async def generate_scene_capture_prompt(
         
         # Log the preview generation to image_prompts.jsonl
         try:
-            conv_dir = Path("data/debug_logs/conversations") / conversation.id
+            from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
             conv_dir.mkdir(parents=True, exist_ok=True)
             log_file = conv_dir / "image_prompts.jsonl"
             
@@ -4786,7 +4806,7 @@ async def capture_scene(
             
             # Log image request to image_prompts.jsonl
             try:
-                conv_dir = Path("data/debug_logs/conversations") / conversation.id
+                from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
                 conv_dir.mkdir(parents=True, exist_ok=True)
                 log_file = conv_dir / "image_prompts.jsonl"
                 
@@ -4828,7 +4848,7 @@ async def capture_scene(
         
         # Log user-provided prompt to image_prompts.jsonl
         try:
-            conv_dir = Path("data/debug_logs/conversations") / conversation.id
+            from pathlib import Path as PathImport; conv_dir = PathImport("data/debug_logs/conversations") / conversation.id
             conv_dir.mkdir(parents=True, exist_ok=True)
             log_file = conv_dir / "image_prompts.jsonl"
             
@@ -8190,3 +8210,4 @@ if character_images_dir.exists():
 web_dir = Path(__file__).parent.parent.parent / "web"
 if web_dir.exists():
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+

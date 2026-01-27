@@ -56,3 +56,28 @@ CREATE TABLE IF NOT EXISTS discord_users (
 -- Index for username lookups
 CREATE INDEX IF NOT EXISTS idx_username ON discord_users(username);
 CREATE INDEX IF NOT EXISTS idx_last_seen ON discord_users(last_seen DESC);
+
+-- Phase 3: Discord Attachment Cache (Vision System)
+-- Shared cache to prevent duplicate uploads/analysis across multiple bots
+CREATE TABLE IF NOT EXISTS discord_attachments (
+    discord_attachment_id TEXT PRIMARY KEY,    -- Discord's unique attachment ID
+    discord_message_id TEXT NOT NULL,          -- Message it came from
+    chorus_attachment_id TEXT NOT NULL,        -- Chorus's attachment ID (reusable)
+    filename TEXT,
+    file_size INTEGER,
+    content_type TEXT,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    uploaded_by_bot TEXT,                      -- Which bot uploaded it first (character_id)
+    analysis_status TEXT DEFAULT 'pending',    -- 'pending', 'completed', 'failed', 'skipped'
+    analysis_error TEXT,
+    UNIQUE(discord_attachment_id)
+);
+
+-- Indexes for efficient lookups
+CREATE INDEX IF NOT EXISTS idx_discord_attachments_message ON discord_attachments(discord_message_id);
+CREATE INDEX IF NOT EXISTS idx_discord_attachments_chorus ON discord_attachments(chorus_attachment_id);
+CREATE INDEX IF NOT EXISTS idx_discord_attachments_status ON discord_attachments(analysis_status);
+
+-- Schema version for Phase 3
+INSERT OR IGNORE INTO schema_version (version, description) 
+VALUES (3, 'Phase 3: Discord attachment cache for vision system');

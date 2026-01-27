@@ -265,6 +265,22 @@ class BridgeConfig:
         """Get number of messages to fetch for history sync (Phase 3)."""
         return self._config['bridge'].get('history_limit', 10)
     
+    @property
+    def vision(self) -> Dict[str, Any]:
+        """Get vision configuration (Phase 3)."""
+        return self._config.get('vision', {
+            'enabled': True,
+            'max_file_size_mb': 10,
+            'max_images_per_message': 5,
+            'allowed_types': [
+                'image/jpeg',
+                'image/jpg',
+                'image/png',
+                'image/webp',
+                'image/gif'
+            ]
+        })
+    
     def reload(self):
         """Reload configuration from file."""
         self._load_config()

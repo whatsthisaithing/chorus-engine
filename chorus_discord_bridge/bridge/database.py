@@ -121,7 +121,7 @@ class Database:
         current_version = self.get_schema_version()
         
         if target_version is None:
-            target_version = 2  # Current latest version (added character_id)
+            target_version = 3  # Current latest version (Phase 3: attachment cache)
         
         if current_version >= target_version:
             logger.info(f"Database already at version {current_version}")
@@ -206,6 +206,113 @@ class Database:
         """Commit current transaction."""
         if self._connection:
             self._connection.commit()
+    
+    # Phase 3: Discord Attachment Cache Methods
+    
+    def get_cached_attachment(self, discord_attachment_id: str) -> Optional[dict]:
+        """Get cached attachment by Discord attachment ID.
+        
+        Args:
+            discord_attachment_id: Discord's unique attachment ID
+            
+        Returns:
+            Dictionary with cache data, or None if not found
+        """
+        try:
+            cursor = self.execute(
+                "SELECT * FROM discord_attachments WHERE discord_attachment_id = ?",
+                (discord_attachment_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Failed to get cached attachment: {e}")
+            return None
+    
+    def cache_attachment(
+        self,
+        discord_attachment_id: str,
+        discord_message_id: str,
+        chorus_attachment_id: str,
+        filename: str,
+        file_size: int,
+        content_type: str,
+        uploaded_by_bot: str
+    ) -> bool:
+        """Cache an attachment upload.
+        
+        Args:
+            discord_attachment_id: Discord's unique attachment ID
+            discord_message_id: Discord message ID
+            chorus_attachment_id: Chorus attachment ID (reusable)
+            filename: Original filename
+            file_size: File size in bytes
+            content_type: MIME type
+            uploaded_by_bot: Character ID of bot that uploaded
+            
+        Returns:
+            True if successful
+        """
+        try:
+            self.execute(
+                """
+                INSERT INTO discord_attachments (
+                    discord_attachment_id,
+                    discord_message_id,
+                    chorus_attachment_id,
+                    filename,
+                    file_size,
+                    content_type,
+                    uploaded_by_bot,
+                    analysis_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    discord_attachment_id,
+                    discord_message_id,
+                    chorus_attachment_id,
+                    filename,
+                    file_size,
+                    content_type,
+                    uploaded_by_bot
+                )
+            )
+            self.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cache attachment: {e}")
+            return False
+    
+    def update_attachment_status(
+        self,
+        discord_attachment_id: str,
+        status: str,
+        error: Optional[str] = None
+    ) -> bool:
+        """Update attachment analysis status.
+        
+        Args:
+            discord_attachment_id: Discord attachment ID
+            status: New status ('pending', 'completed', 'failed', 'skipped')
+            error: Error message if failed
+            
+        Returns:
+            True if successful
+        """
+        try:
+            self.execute(
+                """
+                UPDATE discord_attachments 
+                SET analysis_status = ?, analysis_error = ?
+                WHERE discord_attachment_id = ?
+                """,
+                (status, error, discord_attachment_id)
+            )
+            self.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update attachment status: {e}")
+            return False
 
 
 # Global database instance

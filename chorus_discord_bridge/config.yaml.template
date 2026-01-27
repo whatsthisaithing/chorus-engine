@@ -55,3 +55,17 @@ bridge:
   enable_typing_indicator: true
   enable_rate_limiting: true
   enable_dm_support: true
+
+# Vision System Settings (Phase 3)
+vision:
+  enabled: true              # Enable image processing
+  max_file_size_mb: 50       # Maximum image file size in MB (before download - safety net, images are auto-resized)
+  max_images_per_message: 5  # Maximum number of images per message
+  
+  # Supported image types
+  allowed_types:
+    - "image/jpeg"
+    - "image/jpg"
+    - "image/png"
+    - "image/webp"
+    - "image/gif"

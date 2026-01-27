@@ -256,9 +256,10 @@ class API {
         // Build payload with user metadata
         const payload = { message };
         
-        // Task 1.8: Add attachment_id if present
+        // Task 1.8 & 3.1: Add attachment_ids array if present (backward compatible with single ID)
         if (attachmentId) {
-            payload.image_attachment_id = attachmentId;
+            // Always send as array for consistency with backend
+            payload.image_attachment_ids = Array.isArray(attachmentId) ? attachmentId : [attachmentId];
         }
         
         if (typeof userManager !== 'undefined') {

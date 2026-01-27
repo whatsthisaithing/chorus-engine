@@ -12,9 +12,10 @@ from .config import BridgeConfig
 from .chorus_client import ChorusClient, ChorusAPIError, ConversationNotFoundError
 from .conversation_mapper import ConversationMapper
 from .user_tracker import UserTracker
-from .database import init_database
+from .database import init_database, get_database
 from .message_processor import MessageProcessor
 from .response_formatter import ResponseFormatter
+from .image_handler import ImageHandler  # Phase 3: Vision support
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ class ChorusBot(commands.Bot):
         if not init_database(db_path):
             logger.error("Failed to initialize state database!")
         
+        # Get database instance for shared use
+        self.database = get_database(db_path)
+        
         self.conversation_mapper = ConversationMapper(db_path)
         self.user_tracker = UserTracker(db_path)
         
@@ -76,6 +80,15 @@ class ChorusBot(commands.Bot):
         
         # Initialize response formatter (Phase 3, Task 3.3)
         self.response_formatter = ResponseFormatter()
+        
+        # Initialize image handler (Phase 3: Vision support)
+        vision_config = getattr(config, 'vision', {})
+        self.image_handler = ImageHandler(
+            chorus_client=self.chorus_client,
+            database=self.database,
+            max_file_size_mb=vision_config.get('max_file_size_mb', 10),
+            max_images_per_message=vision_config.get('max_images_per_message', 5)
+        )
         
         # Rate limiting: Per-user cooldowns (Phase 4, Task 4.2)
         self.user_cooldowns = {}  # user_id -> last_message_timestamp
@@ -195,6 +208,38 @@ class ChorusBot(commands.Bot):
                     await message.channel.send("I need some text to respond to!")
                     return
                 
+                # Phase 3: Process images in current message (if any)
+                image_attachment_ids = []
+                if message.attachments:
+                    try:
+                        logger.debug(f"Processing {len(message.attachments)} attachment(s) from current message")
+                        image_attachment_ids = await self.image_handler.process_message_images(
+                            message=message,
+                            character_id=self.character_id
+                        )
+                        if image_attachment_ids:
+                            logger.info(
+                                f"Processed {len(image_attachment_ids)} image(s) from current message"
+                            )
+                        elif any(att.content_type and att.content_type.startswith('image/') for att in message.attachments):
+                            # Had images but none were processed - notify user
+                            await message.channel.send(
+                                f"*{message.author.mention}, I had trouble processing the image(s) in your message. "
+                                f"The message text will still be processed, but I won't be able to see the images.*",
+                                reference=message
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to process images in current message: {e}", exc_info=True)
+                        # Notify user of failure
+                        try:
+                            await message.channel.send(
+                                f"*{message.author.mention}, I encountered an error processing your image(s). "
+                                f"I'll continue with the text message only.*",
+                                reference=message
+                            )
+                        except:
+                            pass  # Don't let notification failure block the main flow
+                
                 # Prepare metadata (for future deduplication)
                 metadata = {
                     'discord_message_id': str(message.id),
@@ -217,7 +262,8 @@ class ChorusBot(commands.Bot):
                         user_name=message.author.name,
                         metadata=metadata,
                         primary_user=message.author.name,
-                        conversation_source='discord'
+                        conversation_source='discord',
+                        image_attachment_ids=image_attachment_ids if image_attachment_ids else None
                     )
                 
                 # Update conversation activity (Phase 2)
@@ -641,8 +687,8 @@ class ChorusBot(commands.Bot):
             thread_id: Chorus thread ID
         """
         try:
-            # Configuration
-            history_limit = self.config.bridge_history_limit or 10
+            # Configuration (Phase 3: Reduced to 5 for VRAM efficiency with vision)
+            history_limit = 5
             
             logger.debug(f"Syncing last {history_limit} messages for context...")
             
@@ -776,6 +822,21 @@ class ChorusBot(commands.Bot):
                 'is_history_sync': True  # Mark as history (not live message)
             }
             
+            # Phase 3: Process images in historical message (if any)
+            image_attachment_ids = []
+            if not is_bot_message and message.attachments:
+                try:
+                    image_attachment_ids = await self.image_handler.process_message_images(
+                        message=message,
+                        character_id=self.character_id
+                    )
+                    if image_attachment_ids:
+                        logger.info(
+                            f"Processed {len(image_attachment_ids)} image(s) from history message {str(message.id)[:8]}"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to process images in history message: {e}", exc_info=True)
+            
             # Send to Chorus based on message type
             if is_bot_message:
                 # This is the bot's own response - add as assistant message
@@ -793,9 +854,13 @@ class ChorusBot(commands.Bot):
                     thread_id=thread_id,
                     message=clean_content,
                     user_name=message.author.name,
-                    metadata=metadata
+                    metadata=metadata,
+                    image_attachment_ids=image_attachment_ids if image_attachment_ids else None
                 )
-                logger.debug(f"Synced USER message {str(message.id)[:8]}... from {message.author.name}")
+                logger.debug(
+                    f"Synced USER message {str(message.id)[:8]}... from {message.author.name}"
+                    f"{f' with {len(image_attachment_ids)} image(s)' if image_attachment_ids else ''}"
+                )
             
         except ChorusAPIError as e:
             logger.warning(f"Failed to sync message {message.id}: {e}")
