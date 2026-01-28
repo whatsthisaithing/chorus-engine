@@ -4,7 +4,7 @@ import sys
 import logging
 import asyncio
 from pathlib import Path
-from logging.handlers import RotatingFileHandler
+from datetime import datetime
 
 # Add parent directory to path for imports when run as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,14 +16,21 @@ from bridge.chorus_client import ChorusClient
 
 def setup_logging(config: BridgeConfig):
     """
-    Setup logging configuration.
+    Setup logging configuration with timestamped log files.
     
     Args:
         config: Bridge configuration
+    
+    Returns:
+        Path: The log file path that was created
     """
-    # Create logs directory if it doesn't exist
-    log_file = Path(config.bridge_log_file)
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    # Create logs directory (use storage/logs instead of just storage)
+    logs_dir = Path(__file__).parent.parent / "storage" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create timestamped log file (new file for each session)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = logs_dir / f"bridge_{timestamp}.log"
     
     # Configure logging format
     log_format = logging.Formatter(
@@ -40,26 +47,19 @@ def setup_logging(config: BridgeConfig):
     console_handler.setFormatter(log_format)
     root_logger.addHandler(console_handler)
     
-    # File handler with rotation
-    if config.bridge_log_rotation:
-        file_handler = RotatingFileHandler(
-            config.bridge_log_file,
-            maxBytes=config.bridge_log_max_bytes,
-            backupCount=config.bridge_log_backup_count,
-            encoding='utf-8'
-        )
-    else:
-        file_handler = logging.FileHandler(
-            config.bridge_log_file,
-            encoding='utf-8'
-        )
-    
+    # File handler (new file for each session)
+    file_handler = logging.FileHandler(
+        log_file,
+        encoding='utf-8'
+    )
     file_handler.setFormatter(log_format)
     root_logger.addHandler(file_handler)
     
     # Reduce noise from discord.py
     logging.getLogger('discord').setLevel(logging.WARNING)
     logging.getLogger('discord.http').setLevel(logging.WARNING)
+    
+    return log_file
 
 
 def main():
@@ -74,12 +74,13 @@ def main():
         config_path = Path(__file__).parent.parent / "config.yaml"
         config = BridgeConfig(str(config_path))
         
-        # Setup logging
-        setup_logging(config)
+        # Setup logging with timestamped file
+        log_file = setup_logging(config)
         logger = logging.getLogger(__name__)
         logger.info("=" * 60)
         logger.info("Chorus Discord Bridge Starting - Multi-Bot Mode")
         logger.info("=" * 60)
+        logger.info(f"Log file: {log_file}")
         logger.info(f"Chorus API: {config.chorus_api_url}")
         logger.info(f"Log Level: {config.bridge_log_level}")
         
@@ -105,17 +106,6 @@ def main():
             retry_delay=config.chorus_retry_delay
         )
         
-        # Verify Chorus Engine connection
-        if not shared_chorus_client.health_check():
-            logger.warning("Cannot connect to Chorus Engine API!")
-            logger.warning(f"Attempted URL: {config.chorus_api_url}")
-            print(f"\n Cannot connect to Chorus Engine at {config.chorus_api_url}")
-            print("  Make sure Chorus Engine is running and CHORUS_API_URL is correct in .env")
-            sys.exit(1)
-        else:
-            logger.info(" Connected to Chorus Engine")
-            print(f" Connected to Chorus Engine: {config.chorus_api_url}")
-        
         # Create bot instances
         print(f"\nInitializing {len(enabled_bots)} bot(s)...")
         bots = []
@@ -138,6 +128,18 @@ def main():
         
         # Run all bots concurrently
         async def run_all_bots():
+            # Verify Chorus Engine connection (do this in async context)
+            logger.info("Verifying Chorus Engine connection...")
+            if not await shared_chorus_client.health_check():
+                logger.warning("Cannot connect to Chorus Engine API!")
+                logger.warning(f"Attempted URL: {config.chorus_api_url}")
+                print(f"\n Cannot connect to Chorus Engine at {config.chorus_api_url}")
+                print("  Make sure Chorus Engine is running and CHORUS_API_URL is correct in .env")
+                sys.exit(1)
+            else:
+                logger.info(" Connected to Chorus Engine")
+                print(f" Connected to Chorus Engine: {config.chorus_api_url}\n")
+            
             tasks = []
             for bot, token in bots:
                 # Each bot.start() is a coroutine that runs the bot

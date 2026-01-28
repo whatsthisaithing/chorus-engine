@@ -3170,7 +3170,7 @@ async def send_message(
                                             character_id=character_id,
                                             conversation_id=conversation.id,
                                             content=content,
-                                            type=MemoryType.EXPLICIT,
+                                            memory_type=MemoryType.EXPLICIT,
                                             category="visual",
                                             priority=memory_config.get("default_priority", 70),
                                             confidence=result.confidence,
@@ -3773,7 +3773,8 @@ async def add_message_without_response(
     {
         "content": "message text",
         "role": "user" or "assistant",
-        "metadata": {...}
+        "metadata": {...},
+        "image_attachment_ids": ["uuid1", "uuid2"]  # Optional, Phase 3
     }
     """
     # Verify thread exists
@@ -3782,10 +3783,19 @@ async def add_message_without_response(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
+    # Get conversation for character context
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(thread.conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    character_id = conversation.character_id
+    
     # Extract message data
     content = message.get('content')
     role = message.get('role', 'user')
     metadata = message.get('metadata', {})
+    image_attachment_ids = message.get('image_attachment_ids', [])
     
     if not content:
         raise HTTPException(status_code=400, detail="Message content required")
@@ -3801,6 +3811,131 @@ async def add_message_without_response(
         content=content,
         metadata=metadata or None
     )
+    
+    # Commit the message so we have an ID
+    db.flush()
+    
+    # Handle image attachments if present (Phase 3 - Vision System)
+    if image_attachment_ids:
+        from chorus_engine.models.conversation import ImageAttachment
+        from chorus_engine.repositories.memory_repository import MemoryRepository
+        from pathlib import Path
+        from datetime import datetime
+        
+        try:
+            logger.info(f"[VISION] Linking {len(image_attachment_ids)} attachment(s) to message {new_message.id}")
+            
+            # Process each attachment
+            for attachment_id in image_attachment_ids:
+                # Get the pre-uploaded attachment
+                attachment = db.query(ImageAttachment).filter(
+                    ImageAttachment.id == attachment_id
+                ).first()
+                
+                if not attachment:
+                    logger.warning(f"[VISION] Attachment {attachment_id} not found")
+                    continue
+                
+                # Link attachment to message and set conversation/character context
+                attachment.message_id = new_message.id
+                attachment.conversation_id = conversation.id
+                attachment.character_id = character_id
+                db.flush()
+                
+                # Trigger vision analysis if not already processed
+                if attachment.vision_processed != "true":
+                    vision_service = app_state.get("vision_service")
+                    if vision_service:
+                        try:
+                            logger.info(f"[VISION] Analyzing image {attachment.id}...")
+                            
+                            # Analyze the image
+                            result = await vision_service.analyze_image(
+                                image_path=Path(attachment.original_path),
+                                context=content,
+                                character_id=character_id
+                            )
+                            
+                            # Update attachment with vision results
+                            attachment.vision_processed = "true"
+                            attachment.vision_model = result.model
+                            attachment.vision_backend = result.backend
+                            attachment.vision_processed_at = datetime.now()
+                            attachment.vision_processing_time_ms = result.processing_time_ms
+                            attachment.vision_observation = result.observation
+                            attachment.vision_confidence = result.confidence
+                            attachment.vision_tags = json.dumps(result.tags) if result.tags else None
+                            
+                            logger.info(f"[VISION] Image analyzed: confidence={result.confidence}, time={result.processing_time_ms}ms")
+                            
+                            # Create visual memory if confidence is high enough
+                            memory_config = vision_service.config.get("memory", {})
+                            if memory_config.get("auto_create", True):
+                                min_confidence = memory_config.get("min_confidence", 0.6)
+                                if result.confidence >= min_confidence:
+                                    try:
+                                        # Parse vision data for memory content
+                                        vision_data = None
+                                        if result.observation:
+                                            try:
+                                                vision_data = json.loads(result.observation) if isinstance(result.observation, str) else result.observation
+                                            except (json.JSONDecodeError, ValueError) as parse_error:
+                                                logger.warning(f"[VISION] Could not parse observation as JSON: {parse_error}. Using raw text instead.")
+                                                vision_data = {"description": result.observation if result.observation else "No description available"}
+                                        else:
+                                            vision_data = {"description": "Image analyzed but no details available"}
+                                        
+                                        # Build natural language description
+                                        parts = []
+                                        if vision_data.get("main_subject"):
+                                            parts.append(f"an image of {vision_data['main_subject']}")
+                                        
+                                        details = []
+                                        if vision_data.get("people") and isinstance(vision_data["people"], dict):
+                                            count = vision_data["people"].get("count", 0)
+                                            if count > 0:
+                                                details.append(f"{count} person" if count == 1 else f"{count} people")
+                                        if vision_data.get("mood"):
+                                            details.append(f"conveying a {vision_data['mood']} mood")
+                                        
+                                        memory_content = f"User showed me {parts[0] if parts else 'an image'}"
+                                        if details:
+                                            memory_content += f". The image with {', '.join(details)}"
+                                        memory_content += "."
+                                        
+                                        # Create memory
+                                        from chorus_engine.models.conversation import MemoryType
+                                        memory = memory_repo.create(
+                                            character_id=character_id,
+                                            conversation_id=conversation.id,
+                                            content=memory_content,
+                                            memory_type=MemoryType.EXPLICIT,
+                                            category="visual",
+                                            priority=memory_config.get("default_priority", 70),
+                                            confidence=result.confidence,
+                                            status="auto_approved",
+                                            metadata={
+                                                "source_messages": [new_message.id],
+                                                "image_attachment_id": attachment.id,
+                                                "vision_model": result.model,
+                                                "vision_backend": result.backend
+                                            }
+                                        )
+                                        db.flush()
+                                        logger.info(f"[VISION] Created visual memory: {memory.id}")
+                                    except Exception as e:
+                                        logger.error(f"[VISION] Failed to create visual memory: {e}", exc_info=True)
+                            
+                        except Exception as e:
+                            logger.error(f"[VISION] Failed to analyze image {attachment.id}: {e}")
+                            logger.exception("Full traceback:")
+                
+            db.commit()
+            
+        except Exception as e:
+            logger.error(f"[VISION] Failed to process image attachments: {e}")
+            logger.exception("Full traceback:")
+            db.rollback()
     
     return {
         "id": new_message.id,

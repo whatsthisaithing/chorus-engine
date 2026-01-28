@@ -663,6 +663,39 @@ class PromptAssemblyService:
             
             content = msg.content
             
+            # Filter out error messages from assistant responses to prevent LLM pattern learning
+            # Error messages like "Sorry, I encountered an error..." were being echoed by the LLM
+            # because it learned them as response patterns from conversation history
+            if msg.role == MessageRole.ASSISTANT:
+                # Remove common error message patterns that shouldn't be in training context
+                error_patterns = [
+                    "Sorry, I encountered an error communicating with my brain:",
+                    "Sorry, I encountered an error rebuilding my memory.",
+                    "Sorry, something went wrong",
+                    "Connection error: HTTPConnectionPool",
+                ]
+                
+                # Check if message is primarily an error message
+                content_stripped = content.strip()
+                is_error_message = any(
+                    content_stripped.startswith(pattern) or content_stripped.endswith(pattern)
+                    for pattern in error_patterns
+                )
+                
+                if is_error_message:
+                    # Skip this message entirely - it's just error noise
+                    logger.debug(f"Filtering out error message from history: {content[:100]}...")
+                    continue
+                
+                # Also clean error suffixes from otherwise valid responses
+                # (in case error was appended to a good response)
+                for pattern in error_patterns:
+                    if pattern in content:
+                        # Split on the error pattern and keep only the part before it
+                        content = content.split(pattern)[0].strip()
+                        if content:  # Only log if there's actual content remaining
+                            logger.debug(f"Removed error suffix from response, keeping: {content[:100]}...")
+            
             # For multi-user contexts, prepend username to user messages
             if is_multi_user and msg.role == MessageRole.USER:
                 # Extract username from metadata
@@ -675,10 +708,12 @@ class PromptAssemblyService:
                     platform_display = conversation_source.capitalize() if conversation_source else 'Platform'
                     content = f"{username} ({platform_display}): {content}"
             
-            formatted.append({
-                "role": msg.role.value,
-                "content": content,
-            })
+            # Only add message if it has content after error filtering
+            if content.strip():
+                formatted.append({
+                    "role": msg.role.value,
+                    "content": content,
+                })
         
         return formatted
     

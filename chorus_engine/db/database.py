@@ -13,10 +13,13 @@ DATABASE_DIR = Path(__file__).parent.parent.parent / "data"
 DATABASE_PATH = DATABASE_DIR / "chorus.db"
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
-# Create engine
+# Create engine with WAL mode for better concurrency
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},  # Needed for SQLite
+    connect_args={
+        "check_same_thread": False,  # Needed for SQLite
+        "timeout": 30  # Wait up to 30 seconds for locks
+    },
     echo=False  # Set to True for SQL debugging
 )
 
@@ -60,6 +63,13 @@ def init_db():
     # Create all tables
     Base.metadata.create_all(bind=engine)
     
+    # Enable WAL mode for better concurrency (allows readers during writes)
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.execute(text("PRAGMA synchronous=NORMAL"))  # Faster, still safe in WAL mode
+        conn.commit()
+    
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"Database initialized at: {DATABASE_PATH}")
+    logger.info(f"Database initialized at: {DATABASE_PATH} (WAL mode enabled)")

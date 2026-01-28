@@ -103,7 +103,7 @@ class ChorusBot(commands.Bot):
         logger.info("Setting up bot...")
         
         # Verify Chorus Engine connection
-        if not self.chorus_client.health_check():
+        if not await self.chorus_client.health_check():
             logger.warning("Cannot connect to Chorus Engine API!")
             logger.warning(f"Attempted URL: {self.config.chorus_api_url}")
         else:
@@ -111,7 +111,7 @@ class ChorusBot(commands.Bot):
         
         # Verify character exists
         try:
-            character_info = self.chorus_client.get_character_info(self.character_id)
+            character_info = await self.chorus_client.get_character_info(self.character_id)
             character_name = character_info.get('name', self.character_id)
             logger.info(f"✓ Active character: {character_name}")
         except ChorusAPIError as e:
@@ -255,7 +255,7 @@ class ChorusBot(commands.Bot):
                 
                 # Show typing indicator while processing (Phase 3, Task 3.3)
                 async with message.channel.typing():
-                    response = self.chorus_client.send_message(
+                    response = await self.chorus_client.send_message(
                         conversation_id=conversation_id,
                         thread_id=thread_id,
                         message=clean_content,
@@ -286,7 +286,7 @@ class ChorusBot(commands.Bot):
                     logger.info(f"Image preview detected, triggering generation (confirmation disabled)")
                     try:
                         # Trigger image generation using the preview prompt
-                        image_result = self.chorus_client.confirm_and_generate_image(
+                        image_result = await self.chorus_client.confirm_and_generate_image(
                             thread_id=thread_id,
                             prompt=image_prompt_preview['prompt'],
                             negative_prompt=image_prompt_preview.get('negative_prompt', ''),
@@ -327,7 +327,7 @@ class ChorusBot(commands.Bot):
                             'platform': 'discord'
                         }
                         
-                        self.chorus_client.update_message_metadata(
+                        await self.chorus_client.update_message_metadata(
                             message_id=assistant_message['id'],
                             metadata=update_metadata
                         )
@@ -425,7 +425,7 @@ class ChorusBot(commands.Bot):
         # DMs are marked as private to prevent memory extraction/leakage
         logger.info(f"Creating new conversation: {title} (private={is_dm})")
         try:
-            conv_data = self.chorus_client.create_conversation(
+            conv_data = await self.chorus_client.create_conversation(
                 character_id=self.character_id,
                 title=title,
                 is_private=is_dm  # DMs are private, channels are not
@@ -764,7 +764,7 @@ class ChorusBot(commands.Bot):
         """
         try:
             # Get conversation messages from Chorus
-            messages = self.chorus_client.get_thread_messages(
+            messages = await self.chorus_client.get_thread_messages(
                 conversation_id=conversation_id,
                 thread_id=thread_id
             )
@@ -840,7 +840,7 @@ class ChorusBot(commands.Bot):
             # Send to Chorus based on message type
             if is_bot_message:
                 # This is the bot's own response - add as assistant message
-                self.chorus_client.add_assistant_message(
+                await self.chorus_client.add_assistant_message(
                     conversation_id=conversation_id,
                     thread_id=thread_id,
                     message=clean_content,
@@ -849,7 +849,7 @@ class ChorusBot(commands.Bot):
                 logger.debug(f"Synced ASSISTANT message {str(message.id)[:8]}...")
             else:
                 # This is a user message
-                self.chorus_client.add_user_message(
+                await self.chorus_client.add_user_message(
                     conversation_id=conversation_id,
                     thread_id=thread_id,
                     message=clean_content,

@@ -1,11 +1,10 @@
 """HTTP client for interacting with Chorus Engine API."""
 
-import requests
+import aiohttp
+import asyncio
 import time
 import logging
 from typing import Dict, Any, Optional, List
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ class ConversationNotFoundError(ChorusAPIError):
 
 
 class ChorusClient:
-    """Client for communicating with Chorus Engine API."""
+    """Async client for communicating with Chorus Engine API."""
     
     def __init__(
         self,
@@ -43,32 +42,33 @@ class ChorusClient:
         """
         self.api_url = api_url.rstrip('/')
         self.api_key = api_key
-        self.timeout = timeout
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
         
-        # Setup session with retry logic
-        self.session = requests.Session()
-        retry_strategy = Retry(
-            total=retry_attempts,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
-        
-        # Set headers
-        self.session.headers.update({
+        # Setup headers
+        self.headers = {
             'Content-Type': 'application/json',
             'User-Agent': 'ChorusDiscordBridge/0.1.0'
-        })
+        }
         
         if self.api_key:
-            self.session.headers['Authorization'] = f'Bearer {self.api_key}'
+            self.headers['Authorization'] = f'Bearer {self.api_key}'
+        
+        # Session will be created lazily
+        self._session: Optional[aiohttp.ClientSession] = None
     
-    def _request(
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """Get or create aiohttp session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                headers=self.headers,
+                timeout=self.timeout
+            )
+        return self._session
+    
+    async def _request(
         self,
         method: str,
         endpoint: str,
@@ -76,7 +76,7 @@ class ChorusClient:
         params: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
-        Make HTTP request to Chorus API.
+        Make async HTTP request to Chorus API with retry logic.
         
         Args:
             method: HTTP method (GET, POST, etc.)
@@ -92,50 +92,57 @@ class ChorusClient:
         """
         url = f"{self.api_url}{endpoint}"
         
-        try:
-            logger.debug(f"{method} {url}")
-            response = self.session.request(
-                method=method,
-                url=url,
-                json=json,
-                params=params,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            
-            # Parse JSON response
+        for attempt in range(self.retry_attempts):
             try:
-                return response.json()
-            except ValueError:
-                # If response is not JSON, return empty dict
-                return {}
+                logger.debug(f"{method} {url} (attempt {attempt + 1}/{self.retry_attempts})")
                 
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout calling Chorus API: {url}")
-            raise ChorusAPIError(f"Request timeout: {str(e)}")
-        
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error to Chorus API: {url}")
-            raise ChorusAPIError(f"Connection error: {str(e)}")
-        
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error from Chorus API: {e.response.status_code} - {url}")
-            try:
-                error_detail = e.response.json().get('detail', str(e))
-            except:
-                error_detail = str(e)
+                async with self.session.request(
+                    method=method,
+                    url=url,
+                    json=json,
+                    params=params
+                ) as response:
+                    # Check for HTTP errors
+                    if response.status >= 400:
+                        try:
+                            error_data = await response.json()
+                            error_detail = error_data.get('detail', await response.text())
+                        except:
+                            error_detail = await response.text()
+                        
+                        # Special handling for 404 on conversation/thread endpoints
+                        if response.status == 404 and ('/threads/' in url or '/conversations/' in url):
+                            raise ConversationNotFoundError(f"Conversation or thread not found: {error_detail}")
+                        
+                        # Retry on 5xx errors
+                        if response.status >= 500 and attempt < self.retry_attempts - 1:
+                            logger.warning(f"HTTP {response.status} error, retrying in {self.retry_delay}s...")
+                            await asyncio.sleep(self.retry_delay)
+                            continue
+                        
+                        raise ChorusAPIError(f"HTTP {response.status}: {error_detail}")
+                    
+                    # Parse JSON response
+                    try:
+                        return await response.json()
+                    except:
+                        # If response is not JSON, return empty dict
+                        return {}
+                        
+            except aiohttp.ClientError as e:
+                if attempt < self.retry_attempts - 1:
+                    logger.warning(f"Request failed: {e}, retrying in {self.retry_delay}s...")
+                    await asyncio.sleep(self.retry_delay)
+                    continue
+                logger.error(f"Request failed after {self.retry_attempts} attempts: {url}")
+                raise ChorusAPIError(f"Request failed: {str(e)}")
             
-            # Special handling for 404 on conversation/thread endpoints
-            if e.response.status_code == 404 and ('/threads/' in url or '/conversations/' in url):
-                raise ConversationNotFoundError(f"Conversation or thread not found: {error_detail}")
-            
-            raise ChorusAPIError(f"HTTP {e.response.status_code}: {error_detail}")
-        
-        except Exception as e:
-            logger.error(f"Unexpected error calling Chorus API: {str(e)}")
-            raise ChorusAPIError(f"Unexpected error: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error calling Chorus API: {str(e)}")
+                logger.exception("Full traceback:")  # This will log the full stack trace
+                raise ChorusAPIError(f"Unexpected error: {str(e)}")
     
-    def get_character_info(self, character_id: str) -> Dict[str, Any]:
+    async def get_character_info(self, character_id: str) -> Dict[str, Any]:
         """
         Get character information from Chorus Engine.
         
@@ -146,9 +153,9 @@ class ChorusClient:
             Character information dictionary
         """
         logger.info(f"Fetching character info: {character_id}")
-        return self._request('GET', f'/characters/{character_id}')
+        return await self._request('GET', f'/characters/{character_id}')
     
-    def create_conversation(
+    async def create_conversation(
         self,
         character_id: str,
         title: str,
@@ -179,11 +186,11 @@ class ChorusClient:
         }
         
         # Create conversation (automatically creates a "Main Thread")
-        conversation = self._request('POST', '/conversations', json=payload)
+        conversation = await self._request('POST', '/conversations', json=payload)
         conversation_id = conversation['id']
         
         # Fetch the auto-created thread
-        threads = self._request('GET', f'/conversations/{conversation_id}/threads')
+        threads = await self._request('GET', f'/conversations/{conversation_id}/threads')
         
         if not threads:
             raise ChorusAPIError("No threads found in newly created conversation")
@@ -201,7 +208,7 @@ class ChorusClient:
             **conversation
         }
     
-    def send_message(
+    async def send_message(
         self,
         conversation_id: str,
         thread_id: int,
@@ -248,9 +255,9 @@ class ChorusClient:
             logger.info(f"Including {len(image_attachment_ids)} image attachment(s)")
         
         endpoint = f'/threads/{thread_id}/messages'
-        return self._request('POST', endpoint, json=payload)
+        return await self._request('POST', endpoint, json=payload)
     
-    def confirm_and_generate_image(
+    async def confirm_and_generate_image(
         self,
         thread_id: int,
         prompt: str,
@@ -278,9 +285,9 @@ class ChorusClient:
         }
         
         endpoint = f'/threads/{thread_id}/generate-image'
-        return self._request('POST', endpoint, json=payload)
+        return await self._request('POST', endpoint, json=payload)
     
-    def update_message_metadata(
+    async def update_message_metadata(
         self,
         message_id: str,
         metadata: Dict[str, Any]
@@ -299,9 +306,9 @@ class ChorusClient:
         
         payload = {'metadata': metadata}
         endpoint = f'/messages/{message_id}/metadata'
-        return self._request('PATCH', endpoint, json=payload)
+        return await self._request('PATCH', endpoint, json=payload)
     
-    def get_conversation_history(
+    async def get_conversation_history(
         self,
         conversation_id: str,
         thread_id: int,
@@ -325,10 +332,10 @@ class ChorusClient:
         endpoint = f'/threads/{thread_id}/messages'
         params = {'limit': limit} if limit else None
         
-        response = self._request('GET', endpoint, params=params)
+        response = await self._request('GET', endpoint, params=params)
         return response.get('messages', [])
     
-    def get_thread_messages(
+    async def get_thread_messages(
         self,
         conversation_id: str,
         thread_id: int,
@@ -355,11 +362,11 @@ class ChorusClient:
         if limit:
             params['limit'] = limit
         
-        response = self._request('GET', endpoint, params=params)
+        response = await self._request('GET', endpoint, params=params)
         # API returns list directly, not wrapped in dict
         return response if isinstance(response, list) else response.get('messages', [])
     
-    def add_user_message(
+    async def add_user_message(
         self,
         conversation_id: str,
         thread_id: int,
@@ -403,9 +410,9 @@ class ChorusClient:
             logger.debug(f"Including {len(image_attachment_ids)} image attachment(s) in history")
         
         endpoint = f'/threads/{thread_id}/messages/add'
-        return self._request('POST', endpoint, json=payload)
+        return await self._request('POST', endpoint, json=payload)
     
-    def add_assistant_message(
+    async def add_assistant_message(
         self,
         conversation_id: str,
         thread_id: int,
@@ -436,7 +443,7 @@ class ChorusClient:
         }
         
         endpoint = f'/threads/{thread_id}/messages/add'
-        return self._request('POST', endpoint, json=payload)
+        return await self._request('POST', endpoint, json=payload)
     
     async def upload_image(self, file_path, filename: str) -> Optional[str]:
         """
@@ -456,10 +463,6 @@ class ChorusClient:
         try:
             logger.debug(f"Uploading image {filename} to Chorus API")
             
-            # Read file content first
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-            
             # Detect MIME type from filename
             mime_type = 'image/jpeg'
             if filename.lower().endswith('.png'):
@@ -469,41 +472,52 @@ class ChorusClient:
             elif filename.lower().endswith('.gif'):
                 mime_type = 'image/gif'
             
-            # Upload with files parameter - requests will handle multipart/form-data
-            files = {'file': (filename, file_content, mime_type)}
+            # Read file content into memory
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
             
-            # Use requests.post directly (not session) to avoid Content-Type: application/json header
-            # The session has 'Content-Type': 'application/json' which breaks multipart uploads
-            headers = {'User-Agent': 'ChorusDiscordBridge/0.1.0'}
-            if self.api_key:
-                headers['Authorization'] = f'Bearer {self.api_key}'
-            
-            response = requests.post(
-                f"{self.api_url}/api/attachments/upload",
-                files=files,
-                headers=headers,
-                timeout=self.timeout
+            # Create multipart form data
+            form = aiohttp.FormData()
+            form.add_field(
+                'file',
+                file_content,
+                filename=filename,
+                content_type=mime_type
             )
             
-            if response.status_code != 200:
-                logger.error(f"Upload failed: {response.status_code} {response.text}")
-                return None
+            # Upload using aiohttp
+            # Create temporary session without Content-Type header
+            upload_headers = {}
+            if self.api_key:
+                upload_headers['Authorization'] = f'Bearer {self.api_key}'
             
-            data = response.json()
-            attachment_id = data.get('attachment_id')
-            
-            if not attachment_id:
-                logger.error(f"No attachment_id in response: {data}")
-                return None
-            
-            logger.info(f"Successfully uploaded image: {attachment_id}")
-            return attachment_id
+            async with aiohttp.ClientSession() as upload_session:
+                async with upload_session.post(
+                    f"{self.api_url}/api/attachments/upload",
+                    data=form,
+                    headers=upload_headers,
+                    timeout=self.timeout
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Upload failed: {response.status} {error_text}")
+                        return None
+                    
+                    data = await response.json()
+                    attachment_id = data.get('attachment_id')
+                    
+                    if not attachment_id:
+                        logger.error(f"No attachment_id in response: {data}")
+                        return None
+                    
+                    logger.info(f"Successfully uploaded image: {attachment_id}")
+                    return attachment_id
             
         except Exception as e:
             logger.error(f"Failed to upload image {filename}: {e}", exc_info=True)
             return None
     
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """
         Check if Chorus Engine API is accessible.
         
@@ -512,23 +526,24 @@ class ChorusClient:
         """
         try:
             logger.debug("Performing health check")
-            response = self.session.get(
+            async with self.session.get(
                 f"{self.api_url}/characters",
-                timeout=5
-            )
-            return response.status_code == 200
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                return response.status == 200
         except Exception as e:
             logger.warning(f"Health check failed: {str(e)}")
             return False
     
-    def close(self):
+    async def close(self):
         """Close the HTTP session."""
-        self.session.close()
+        if self._session and not self._session.closed:
+            await self._session.close()
     
-    def __enter__(self):
-        """Context manager entry."""
+    async def __aenter__(self):
+        """Async context manager entry."""
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
