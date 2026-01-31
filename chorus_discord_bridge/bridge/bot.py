@@ -506,10 +506,10 @@ class ChorusBot(commands.Bot):
             
             # Download image using ChorusClient session
             try:
-                response = self.chorus_client.session.get(image_url, timeout=10)
-                response.raise_for_status()
-                
-                image_data = response.content
+                async with self.chorus_client.session.get(image_url, timeout=10) as response:
+                    response.raise_for_status()
+                    
+                    image_data = await response.read()
                 
                 # Get filename from path or use default
                 filename = image_path.split('/')[-1] if '/' in image_path else 'image.png'

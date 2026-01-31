@@ -375,10 +375,9 @@ class PendingMemoriesPanel {
         this.badge.textContent = count;
         this.badge.style.display = count > 0 ? 'inline' : 'none';
         
-        // Update button styling
-        if (this.button) {
-            this.button.classList.toggle('btn-warning', count > 0);
-            this.button.classList.toggle('btn-outline-secondary', count === 0);
+        // Remove sparkle if no pending memories
+        if (count === 0 && this.button) {
+            this.button.classList.remove('pending-sparkle');
         }
     }
     

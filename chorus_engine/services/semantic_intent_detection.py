@@ -71,7 +71,7 @@ INTENT_PROTOTYPES = {
 # sentence-level analysis provides better specificity but may score lower)
 THRESHOLDS = {
     "set_reminder": 0.50,  # Confirmable action with user review
-    "send_image": 0.60,    # Higher threshold to avoid false positives on "can you see this image?"
+    "send_image": 0.50,    # Balanced threshold with anchor boost for explicit requests
     "send_video": 0.45,    # Lowered to accommodate sentence-level detection
     "default": 0.50
 }
@@ -232,6 +232,17 @@ class SemanticIntentDetector:
                 return 0.05
         
         if intent_name == "send_image":
+            # Boost if explicit image request language present
+            image_request_words = [
+                "send me a photo", "send me a picture", "send me an image",
+                "show me a photo", "show me a picture", "show me an image",
+                "take a photo", "take a picture", "take a selfie",
+                "send a selfie", "selfie of", "picture of yourself",
+                "photo of yourself", "image of yourself"
+            ]
+            if any(phrase in message_lower for phrase in image_request_words):
+                return 0.05
+            
             # Penalty if talking about past images or hypothetical/future scenarios
             past_indicators = [
                 "you showed", "you sent", "you created", "you made",
@@ -419,7 +430,12 @@ class SemanticIntentDetector:
             intent_scores[intent_name] = max_similarity
             
             if debug:
-                bonus_str = f" (+{bonus:.2f} bonus)" if bonus > 0 else ""
+                if bonus > 0:
+                    bonus_str = f" (base: {max_similarity - bonus:.3f} +{bonus:.2f} boost)"
+                elif bonus < 0:
+                    bonus_str = f" (base: {max_similarity - bonus:.3f} {bonus:.2f} penalty)"
+                else:
+                    bonus_str = ""
                 print(f"  {intent_name}: {max_similarity:.3f}{bonus_str}")
         
         # Sort by confidence (highest first)

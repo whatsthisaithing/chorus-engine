@@ -121,6 +121,27 @@ Non-blocking, intelligent memory extraction that runs in the background without 
 
 ---
 
+### 6. [Vision System - Character Visual Perception](VISION_SYSTEM.md)
+
+**Phase 1-3: Vision Integration & Bridge Support**
+
+A comprehensive system enabling characters to perceive and interpret visual content naturally within conversations.
+
+**Key Features**:
+- Two-stage architecture (vision observes → character interprets)
+- Automatic VRAM management (Ollama/LM Studio handle swapping)
+- Visual memories (category="visual", semantic retrieval)
+- Multi-image support (up to 5 per message)
+- Backend flexibility (Ollama or LM Studio)
+- Discord bridge integration with shared cache
+- Web UI with drag-and-drop, image modal, settings panel
+
+**Philosophy**: Vision as perception, not interpretation. Simplicity over perfection.
+
+**Status**: Phase 1 & 1.5 complete (web UI + LM Studio), Phase 3 complete (Discord bridge code, needs testing)
+
+---
+
 ## Document Standards
 
 ### What Belongs Here

@@ -1232,6 +1232,20 @@ button:disabled {
     animation: sparkle 2s ease-in-out infinite;
 }
 
+/* Pending Memory Sparkle Effect */
+.pending-sparkle {
+    position: relative;
+}
+
+.pending-sparkle::after {
+    content: '✨';
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    font-size: 1.2rem;
+    animation: sparkle 2s ease-in-out infinite;
+}
+
 @keyframes sparkle {
     0%, 100% {
         opacity: 0;

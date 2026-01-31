@@ -571,6 +571,10 @@ async def ensure_model_loaded(model: str, character_id: str):
     last_character = app_state.get("last_character")
     intent_model = app_state.get("intent_model", "gemma2:9b")
     
+    # Get vision model name to exclude from character-switch unloading
+    vision_service = app_state.get("vision_service")
+    vision_model = vision_service.model_name if vision_service else None
+    
     logger.info(f"[MODEL TRACKING] ensure_model_loaded called: model={model}, character={character_id}, last_character={last_character}")
     
     # Check what's actually loaded using provider abstraction
@@ -588,11 +592,19 @@ async def ensure_model_loaded(model: str, character_id: str):
         # Only unload if switching characters (not for intent detection -> chat)
         character_switched = last_character and last_character != character_id
         if character_switched:
-            # Character switch: unload old character's model, keep intent model
+            # Character switch: unload old character's model, but keep intent model and vision model
             logger.info(f"[MODEL TRACKING] Character switched from {last_character} to {character_id}")
-            models_to_unload = [m for m in loaded_models if m != intent_model]
+            
+            # Build list of models to keep (don't unload)
+            models_to_keep = [intent_model]
+            if vision_model:
+                models_to_keep.append(vision_model)
+            
+            # Unload everything except kept models
+            models_to_unload = [m for m in loaded_models if m not in models_to_keep]
+            
             if models_to_unload:
-                logger.info(f"[MODEL TRACKING] Unloading old character models: {models_to_unload} (keeping intent model)")
+                logger.info(f"[MODEL TRACKING] Unloading old character models: {models_to_unload} (keeping: {models_to_keep})")
                 for model_name in models_to_unload:
                     try:
                         # Use provider's unload method
@@ -600,6 +612,8 @@ async def ensure_model_loaded(model: str, character_id: str):
                         logger.info(f"[MODEL TRACKING] Unloaded {model_name}")
                     except Exception as e:
                         logger.warning(f"[MODEL TRACKING] Failed to unload {model_name}: {e}")
+            else:
+                logger.info(f"[MODEL TRACKING] No models to unload (keeping: {models_to_keep})")
         else:
             # Same character: keep both intent model and character model loaded
             logger.info(f"[MODEL TRACKING] Same character, keeping all loaded models: {loaded_models}")
@@ -3905,6 +3919,8 @@ async def add_message_without_response(
                                         
                                         # Create memory
                                         from chorus_engine.models.conversation import MemoryType
+                                        from chorus_engine.repositories.memory_repository import MemoryRepository
+                                        memory_repo = MemoryRepository(db)
                                         memory = memory_repo.create(
                                             character_id=character_id,
                                             conversation_id=conversation.id,

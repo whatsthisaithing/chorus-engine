@@ -476,6 +476,9 @@ window.App = {
             }
         }
         
+        // Check for pending memories immediately on character selection
+        await this.checkForNewMemories();
+        
         // Check and show immersion notice if needed
         await this.checkImmersionNotice(characterId);
         
@@ -680,13 +683,13 @@ window.App = {
             return;
         }
         
-        // Task 1.8: Check if there's an image attachment
-        let attachmentId = null;
-        if (window.messageInput && window.messageInput.getAttachment()) {
-            // Step 1: Upload image first
-            attachmentId = await window.messageInput.uploadAttachment();
+        // Task 1.8 & 3.1: Check if there are image attachments (multiple support)
+        let attachmentIds = [];
+        if (window.messageInput && window.messageInput.hasAttachments()) {
+            // Step 1: Upload all images first
+            attachmentIds = await window.messageInput.uploadAttachment();
             
-            if (!attachmentId) {
+            if (!attachmentIds || attachmentIds.length === 0) {
                 // Upload failed (error already shown in uploadAttachment)
                 return;
             }
@@ -805,7 +808,7 @@ window.App = {
                 }
             };
             
-            // Task 1.8: Include attachment_id in message if present
+            // Task 1.8 & 3.1: Include attachment_ids array if present
             await API.sendMessageStream(
                 this.state.selectedThreadId,
                 message,
@@ -857,8 +860,8 @@ window.App = {
                     UI.hideTypingIndicator();
                     UI.showToast('Failed to send message: ' + error.message, 'error');
                 },
-                // Pass attachment_id if present
-                attachmentId
+                // Pass attachment_ids array if present (Phase 3.1 multi-image support)
+                attachmentIds.length > 0 ? attachmentIds : null
             );
             
         } catch (error) {
@@ -2266,25 +2269,53 @@ window.App = {
     },
     
     /**
-     * Check for new implicit memories and show sparkle effect if count increased
+     * Check for new implicit memories and pending memories, show separate indicators
      */
     async checkForNewMemories() {
         if (!this.state.selectedCharacterId) return;
         
         try {
+            // Check implicit memories (existing behavior - unchanged)
             const stats = await API.getCharacterMemoryStats(this.state.selectedCharacterId);
             
             const characterId = this.state.selectedCharacterId;
-            const previousCount = this.state.lastMemoryCount[characterId] || 0;
-            const currentCount = stats.implicit_memory_count;
+            const previousImplicitCount = this.state.lastMemoryCount[characterId] || 0;
+            const currentImplicitCount = stats.implicit_memory_count;
             
-            // Update stored count
-            this.state.lastMemoryCount[characterId] = currentCount;
+            // Update stored implicit count
+            this.state.lastMemoryCount[characterId] = currentImplicitCount;
             
-            // If count increased, show sparkle effect
-            if (currentCount > previousCount) {
+            // If implicit count increased, show sparkle on Memory button (existing)
+            if (currentImplicitCount > previousImplicitCount) {
                 this.showMemorySparkle();
-                console.log(`New implicit memory detected! Count: ${previousCount} → ${currentCount}`);
+                console.log(`New implicit memory detected! Count: ${previousImplicitCount} → ${currentImplicitCount}`);
+            }
+            
+            // Check pending memories (new behavior)
+            try {
+                const pendingResponse = await fetch(`/characters/${characterId}/pending-memories`);
+                if (pendingResponse.ok) {
+                    const pendingMemories = await pendingResponse.json();
+                    const pendingCount = pendingMemories.length;
+                    
+                    // Update badge visibility and count
+                    const badge = document.getElementById('pending-count');
+                    if (badge) {
+                        if (pendingCount > 0) {
+                            badge.textContent = pendingCount;
+                            badge.style.display = 'inline';  // Explicitly set to inline to override HTML's display:none
+                            
+                            // Show sparkle on Pending Memories button
+                            this.showPendingMemorySparkle();
+                            console.log(`Pending memories detected: ${pendingCount}`);
+                        } else {
+                            badge.style.display = 'none';
+                        }
+                    }
+                }
+            } catch (pendingError) {
+                console.warn('Failed to check pending memories:', pendingError);
+                // Don't break if pending check fails - implicit detection still works
             }
         } catch (error) {
             console.error('Failed to check memory stats:', error);
@@ -2303,6 +2334,21 @@ window.App = {
         // Remove sparkle after 8 seconds
         setTimeout(() => {
             memoryBtn.classList.remove('memory-sparkle');
+        }, 8000);
+    },
+    
+    /**
+     * Show sparkle effect on pending memories button
+     */
+    showPendingMemorySparkle() {
+        const pendingBtn = document.getElementById('pending-memories-btn');
+        
+        // Add sparkle class
+        pendingBtn.classList.add('pending-sparkle');
+        
+        // Remove sparkle after 8 seconds
+        setTimeout(() => {
+            pendingBtn.classList.remove('pending-sparkle');
         }, 8000);
     },
     

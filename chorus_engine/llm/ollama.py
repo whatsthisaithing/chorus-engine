@@ -337,17 +337,23 @@ class OllamaLLMClient(BaseLLMClient):
             logger.warning(f"Failed to get loaded models: {e}")
             return []
     
-    async def unload_model(self) -> bool:
+    async def unload_model(self, model: str = None) -> bool:
         """
-        Unload the model from VRAM (Ollama-specific keep_alive=0).
+        Unload a specific model from VRAM (Ollama-specific keep_alive=0).
+        
+        Args:
+            model: Model identifier to unload (defaults to self.model if not specified)
         
         Returns:
             True if successfully unloaded, False otherwise
         """
         try:
+            # Use specified model or fall back to self.model
+            model_to_unload = model or self.model
+            
             # For Ollama, send a request with keep_alive=0 to unload
             payload = {
-                "model": self.model,
+                "model": model_to_unload,
                 "keep_alive": 0
             }
             
@@ -356,7 +362,7 @@ class OllamaLLMClient(BaseLLMClient):
                 json=payload
             )
             response.raise_for_status()
-            logger.info(f"Unloaded model {self.model} from VRAM")
+            logger.info(f"Unloaded model {model_to_unload} from VRAM")
             return True
             
         except Exception as e:

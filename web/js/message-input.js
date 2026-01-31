@@ -15,7 +15,7 @@ window.MessageInput = class {
         this.chatInput = document.querySelector('.chat-input');
         this.sendBtn = document.getElementById('sendBtn');
         
-        this.attachment = null; // Single attachment for Phase 1
+        this.attachments = []; // Multiple attachments support (Phase 3.1)
         this.dragCounter = 0; // Track nested drag events
         
         this.init();
@@ -89,46 +89,53 @@ window.MessageInput = class {
      * Process files (from picker or drag-and-drop)
      */
     handleFiles(files) {
-        // Phase 1: Only support single image
-        if (files.length > 1) {
-            alert('Multiple images not supported yet. Only the first image will be used.');
-        }
-        
-        const file = files[0];
-        
-        // Validate file type
+        // Phase 3.1: Support multiple images
         const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-        if (!validTypes.includes(file.type)) {
-            alert('Please select an image file (JPG, PNG, WebP, or GIF).');
-            return;
-        }
-        
-        // Validate file size (10MB max from system.yaml config)
         const maxSizeMB = 10;
         const maxSizeBytes = maxSizeMB * 1024 * 1024;
-        if (file.size > maxSizeBytes) {
-            alert(`Image too large. Maximum size is ${maxSizeMB}MB.`);
-            return;
+        
+        // Validate and add each file
+        for (const file of files) {
+            // Validate file type
+            if (!validTypes.includes(file.type)) {
+                alert(`${file.name}: Please select image files only (JPG, PNG, WebP, or GIF).`);
+                continue;
+            }
+            
+            // Validate file size
+            if (file.size > maxSizeBytes) {
+                alert(`${file.name}: Image too large. Maximum size is ${maxSizeMB}MB.`);
+                continue;
+            }
+            
+            // Add to attachments
+            this.attachments.push(file);
         }
         
-        // Set attachment and render preview
-        this.setAttachment(file);
+        this.renderPreview();
+        return;
+    }
+    
+    // Keep old single-file validation for backward compatibility (not used)
+    handleFilesSingleOld(files) {
+        const file = files[0];
+        
+        // Old validation moved to handleFiles - this path shouldn't be reached
     }
     
     /**
-     * Set attachment and show preview
+     * Add attachment (kept for potential future single-add use)
      */
-    setAttachment(file) {
-        // Phase 1: Replace existing attachment
-        this.attachment = file;
+    addAttachment(file) {
+        this.attachments.push(file);
         this.renderPreview();
     }
     
     /**
-     * Render attachment preview
+     * Render attachment preview (supports multiple attachments)
      */
     renderPreview() {
-        if (!this.attachment) {
+        if (!this.attachments || this.attachments.length === 0) {
             this.previewArea.style.display = 'none';
             this.previewScroll.innerHTML = '';
             return;
@@ -137,40 +144,59 @@ window.MessageInput = class {
         // Show preview area
         this.previewArea.style.display = 'block';
         
-        // Create preview item
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            this.previewScroll.innerHTML = `
-                <div class="attachment-preview-item">
+        // Clear existing previews
+        this.previewScroll.innerHTML = '';
+        
+        // Create preview for each attachment
+        this.attachments.forEach((file, index) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const previewItem = document.createElement('div');
+                previewItem.className = 'attachment-preview-item';
+                previewItem.innerHTML = `
                     <img src="${e.target.result}" alt="Preview" class="preview-thumbnail">
-                    <span class="preview-filename" title="${this.attachment.name}">${this.attachment.name}</span>
-                    <button type="button" class="btn-remove-preview" title="Remove" onclick="window.messageInput.removeAttachment()">&times;</button>
-                </div>
-            `;
-        };
-        reader.readAsDataURL(this.attachment);
+                    <span class="preview-filename" title="${file.name}">${file.name}</span>
+                    <button type="button" class="btn-remove-preview" title="Remove" data-index="${index}">&times;</button>
+                `;
+                
+                // Add click handler for remove button
+                const removeBtn = previewItem.querySelector('.btn-remove-preview');
+                removeBtn.addEventListener('click', () => this.removeAttachment(index));
+                
+                this.previewScroll.appendChild(previewItem);
+            };
+            reader.readAsDataURL(file);
+        });
     }
     
     /**
-     * Remove attachment
+     * Remove attachment by index
      */
-    removeAttachment() {
-        this.attachment = null;
+    removeAttachment(index) {
+        this.attachments.splice(index, 1);
         this.renderPreview();
     }
     
     /**
-     * Get current attachment (for app.js)
+     * Get current attachments (for app.js)
+     * Returns array of files or empty array
      */
     getAttachment() {
-        return this.attachment;
+        return this.attachments;
     }
     
     /**
-     * Clear attachment after send
+     * Check if has attachments
+     */
+    hasAttachments() {
+        return this.attachments && this.attachments.length > 0;
+    }
+    
+    /**
+     * Clear attachments after send
      */
     clearAttachment() {
-        this.attachment = null;
+        this.attachments = [];
         this.renderPreview();
     }
     
@@ -247,42 +273,56 @@ window.MessageInput = class {
     }
     
     /**
-     * Upload attachment to server (Step 1 of two-step process)
-     * Returns attachment_id or null if no attachment
+     * Upload all attachments to server (Step 1 of two-step process)
+     * Returns array of attachment_ids or empty array if no attachments
      */
     async uploadAttachment() {
-        if (!this.attachment) {
-            return null;
+        if (!this.attachments || this.attachments.length === 0) {
+            return [];
         }
         
         try {
             // Show uploading state
             const originalBtnText = this.sendBtn.innerHTML;
-            this.sendBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Uploading...';
+            const count = this.attachments.length;
+            this.sendBtn.innerHTML = `<i class="bi bi-hourglass-split"></i> Uploading ${count} image${count > 1 ? 's' : ''}...`;
             this.sendBtn.disabled = true;
             
-            // Create FormData
-            const formData = new FormData();
-            formData.append('file', this.attachment);
+            const attachmentIds = [];
             
-            // Upload to server
-            const response = await fetch('/api/attachments/upload', {
-                method: 'POST',
-                body: formData
-            });
-            
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.detail || 'Failed to upload image');
+            // Upload each attachment
+            for (let i = 0; i < this.attachments.length; i++) {
+                const file = this.attachments[i];
+                
+                // Update progress
+                if (this.attachments.length > 1) {
+                    this.sendBtn.innerHTML = `<i class="bi bi-hourglass-split"></i> Uploading ${i + 1}/${count}...`;
+                }
+                
+                // Create FormData
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                // Upload to server
+                const response = await fetch('/api/attachments/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(`Failed to upload ${file.name}: ${error.detail || 'Unknown error'}`);
+                }
+                
+                const data = await response.json();
+                attachmentIds.push(data.attachment_id);
             }
-            
-            const data = await response.json();
             
             // Restore button
             this.sendBtn.innerHTML = originalBtnText;
             this.sendBtn.disabled = false;
             
-            return data.attachment_id;
+            return attachmentIds;
             
         } catch (error) {
             console.error('Image upload failed:', error);
@@ -293,12 +333,12 @@ window.MessageInput = class {
             
             // Show error to user
             if (typeof UI !== 'undefined' && UI.showToast) {
-                UI.showToast('Failed to upload image: ' + error.message, 'error');
+                UI.showToast('Failed to upload images: ' + error.message, 'error');
             } else {
-                alert('Failed to upload image: ' + error.message);
+                alert('Failed to upload images: ' + error.message);
             }
             
-            return null;
+            return [];
         }
     }
     
