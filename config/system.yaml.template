@@ -153,6 +153,50 @@ document_analysis:
   chunk_token_estimate: 512          # Average chunk size for calculations
   document_budget_ratio: 0.15        # 15% of available context for documents
 
+# Conversation Memory Enrichment
+# Allows characters to recall and reference relevant past conversations
+# Uses semantic search to find past conversations matching the current topic
+conversation_context:
+  enabled: true                      # Enable/disable conversation context retrieval
+  
+  # Similarity thresholds (0.0-1.0, higher = more strict matching)
+  passive_threshold: 0.75            # Used when user doesn't explicitly ask about past
+                                     # High bar ensures only highly relevant context appears
+  triggered_threshold: 0.55          # Used when user asks "remember when..." etc.
+                                     # Lower bar since user is explicitly requesting recall
+  
+  max_summaries: 2                   # Maximum past conversations to include in context
+  token_budget_ratio: 0.05           # Portion of context window for summaries (5%)
+                                     # Unused budget cascades to memory retrieval
+
+# Background Processing (Heartbeat System)
+# Runs automatic tasks during system idle time, never interfering with user activity
+# Initial use case: Auto-analyze stale conversations for searchable summaries
+heartbeat:
+  enabled: true                      # Enable/disable background processing
+  interval_seconds: 60               # How often to check for idle state (seconds)
+  
+  # Idle Detection - when to consider system "safe" for background work
+  idle_threshold_minutes: 5          # Minutes of no activity before processing starts
+  resume_grace_seconds: 2            # Pause duration after activity resumes before
+                                     # background processing can start again
+  
+  # Conversation Analysis Settings
+  analysis_stale_hours: 24           # Hours since last activity before eligible
+  analysis_min_messages: 10          # Minimum messages required for analysis
+  analysis_batch_size: 3             # Conversations to process per batch
+  
+  # GPU Utilization Check (NVIDIA only, optional)
+  # Final safety check before background tasks - detects external GPU activity
+  # (gaming, training, external ComfyUI/Ollama, etc.)
+  gpu_check_enabled: false           # Enable GPU utilization check
+  gpu_max_utilization_percent: 15    # Skip tasks if GPU busier than this %
+
+# Startup synchronization
+startup:
+  sync_summary_vectors: true         # Auto-sync missing conversation summaries on startup
+                                     # Provides self-healing after restore, migration, or corruption
+
 paths:
   characters: characters
   workflows: workflows

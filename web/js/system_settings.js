@@ -45,6 +45,15 @@ class SystemSettingsManager {
             });
         }
         
+        // Heartbeat configuration toggle
+        const heartbeatToggle = document.getElementById('heartbeat_enabled');
+        if (heartbeatToggle) {
+            heartbeatToggle.addEventListener('change', (e) => {
+                const settings = document.getElementById('heartbeat_settings');
+                if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
+            });
+        }
+        
         // Save button
         const saveBtn = document.getElementById('saveSystemSettingsBtn');
         if (saveBtn) {
@@ -168,6 +177,20 @@ class SystemSettingsManager {
         document.getElementById('vision_cache_enabled').checked = vision.cache?.enabled !== false;
         document.getElementById('vision_cache_allow_reanalysis').checked = vision.cache?.allow_reanalysis !== false;
 
+        // Heartbeat Configuration
+        const heartbeat = config.heartbeat || {};
+        const heartbeatEnabled = heartbeat.enabled !== false;  // Default true
+        document.getElementById('heartbeat_enabled').checked = heartbeatEnabled;
+        document.getElementById('heartbeat_settings').style.display = heartbeatEnabled ? 'block' : 'none';
+        document.getElementById('heartbeat_interval_seconds').value = heartbeat.interval_seconds || 60;
+        document.getElementById('heartbeat_idle_threshold_minutes').value = heartbeat.idle_threshold_minutes || 5;
+        document.getElementById('heartbeat_resume_grace_seconds').value = heartbeat.resume_grace_seconds || 2;
+        document.getElementById('heartbeat_analysis_stale_hours').value = heartbeat.analysis_stale_hours || 24;
+        document.getElementById('heartbeat_analysis_min_messages').value = heartbeat.analysis_min_messages || 10;
+        document.getElementById('heartbeat_analysis_batch_size').value = heartbeat.analysis_batch_size || 3;
+        document.getElementById('heartbeat_gpu_check_enabled').checked = heartbeat.gpu_check_enabled || false;
+        document.getElementById('heartbeat_gpu_max_utilization_percent').value = heartbeat.gpu_max_utilization_percent || 15;
+
         // General Configuration
         document.getElementById('api_host').value = config.api_host || 'localhost';
         document.getElementById('api_port').value = config.api_port || 8080;
@@ -245,6 +268,17 @@ class SystemSettingsManager {
                     enabled: document.getElementById('vision_cache_enabled').checked,
                     allow_reanalysis: document.getElementById('vision_cache_allow_reanalysis').checked
                 }
+            },
+            heartbeat: {
+                enabled: document.getElementById('heartbeat_enabled').checked,
+                interval_seconds: parseFloat(document.getElementById('heartbeat_interval_seconds').value),
+                idle_threshold_minutes: parseFloat(document.getElementById('heartbeat_idle_threshold_minutes').value),
+                resume_grace_seconds: parseFloat(document.getElementById('heartbeat_resume_grace_seconds').value),
+                analysis_stale_hours: parseFloat(document.getElementById('heartbeat_analysis_stale_hours').value),
+                analysis_min_messages: parseInt(document.getElementById('heartbeat_analysis_min_messages').value),
+                analysis_batch_size: parseInt(document.getElementById('heartbeat_analysis_batch_size').value),
+                gpu_check_enabled: document.getElementById('heartbeat_gpu_check_enabled').checked,
+                gpu_max_utilization_percent: parseInt(document.getElementById('heartbeat_gpu_max_utilization_percent').value)
             },
             ui: {
                 color_scheme: document.getElementById('ui_color_scheme').value

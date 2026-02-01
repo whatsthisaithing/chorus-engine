@@ -48,6 +48,9 @@ window.App = {
             // Setup event listeners
             this.setupEventListeners();
             
+            // Start server status polling (Phase D)
+            this.startServerStatusPolling();
+            
             console.log('Chorus Engine initialized successfully');
             
         } catch (error) {
@@ -122,6 +125,11 @@ window.App = {
         // Character selection
         document.getElementById('characterSelect').addEventListener('change', (e) => {
             this.selectCharacter(e.target.value);
+        });
+        
+        // Server status indicator click (Phase D)
+        document.getElementById('serverStatusIndicator').addEventListener('click', () => {
+            this.showServerStatusDetails();
         });
         
         // Conversation source filter
@@ -3879,6 +3887,148 @@ window.App = {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    },
+    
+    // === Server Status Polling (Phase D) ===
+    
+    /**
+     * Start polling server status for idle/processing indicator
+     */
+    startServerStatusPolling() {
+        // Initial check
+        this.updateServerStatus();
+        
+        // Poll every 5 seconds
+        this.serverStatusTimer = setInterval(() => {
+            this.updateServerStatus();
+        }, 5000);
+    },
+    
+    /**
+     * Update server status indicator
+     */
+    async updateServerStatus() {
+        const indicator = document.getElementById('serverStatusIndicator');
+        if (!indicator) return;
+        
+        try {
+            const response = await fetch('/heartbeat/status');
+            const data = await response.json();
+            
+            // Remove all status classes
+            indicator.classList.remove('status-idle', 'status-active', 'status-processing', 'status-offline', 'status-error');
+            
+            if (!data.enabled && data.enabled !== undefined) {
+                // Heartbeat disabled but server is up - check idle status from basic info
+                indicator.classList.add('status-idle');
+                indicator.title = 'Server: Online (Heartbeat disabled)';
+                return;
+            }
+            
+            const idleStatus = data.idle_status || {};
+            const isIdle = idleStatus.is_idle;
+            const activeLLM = idleStatus.active_llm_calls || 0;
+            const activeComfy = idleStatus.active_comfy_jobs || 0;
+            const queueLength = data.queue_length || 0;
+            const currentTask = data.current_task_type;
+            
+            // Determine status
+            if (activeLLM > 0 || activeComfy > 0) {
+                // Active user operations
+                indicator.classList.add('status-active');
+                let activeItems = [];
+                if (activeLLM > 0) activeItems.push(`${activeLLM} LLM call${activeLLM > 1 ? 's' : ''}`);
+                if (activeComfy > 0) activeItems.push(`${activeComfy} ComfyUI job${activeComfy > 1 ? 's' : ''}`);
+                indicator.title = `Server: Active\n${activeItems.join(', ')}`;
+            } else if (currentTask) {
+                // Background processing
+                indicator.classList.add('status-processing');
+                indicator.title = `Server: Background Processing\nTask: ${currentTask}\nQueue: ${queueLength} remaining`;
+            } else if (isIdle) {
+                // Idle
+                indicator.classList.add('status-idle');
+                const queueInfo = queueLength > 0 ? `\nQueued tasks: ${queueLength}` : '';
+                indicator.title = `Server: Idle${queueInfo}`;
+            } else {
+                // Not idle but not actively processing
+                indicator.classList.add('status-active');
+                const lastActivity = idleStatus.seconds_since_activity;
+                const timeInfo = lastActivity ? `\nLast activity: ${Math.round(lastActivity)}s ago` : '';
+                indicator.title = `Server: Recently Active${timeInfo}`;
+            }
+            
+        } catch (error) {
+            // Server unreachable
+            indicator.classList.add('status-offline');
+            indicator.title = 'Server: Offline or unreachable';
+        }
+    },
+    
+    /**
+     * Stop server status polling (for cleanup)
+     */
+    stopServerStatusPolling() {
+        if (this.serverStatusTimer) {
+            clearInterval(this.serverStatusTimer);
+            this.serverStatusTimer = null;
+        }
+    },
+    
+    /**
+     * Show detailed server status in a toast or modal
+     */
+    async showServerStatusDetails() {
+        try {
+            const response = await fetch('/heartbeat/status');
+            const data = await response.json();
+            
+            const idleStatus = data.idle_status || {};
+            const stats = data.stats || {};
+            
+            // Build status message
+            let statusParts = [];
+            
+            // Current state
+            if (idleStatus.is_idle) {
+                statusParts.push('🟢 Server is idle');
+            } else {
+                const activeLLM = idleStatus.active_llm_calls || 0;
+                const activeComfy = idleStatus.active_comfy_jobs || 0;
+                if (activeLLM > 0 || activeComfy > 0) {
+                    statusParts.push(`🟡 Active: ${activeLLM} LLM, ${activeComfy} ComfyUI`);
+                } else {
+                    statusParts.push('🟡 Recently active');
+                }
+            }
+            
+            // Queue info
+            const queueLength = data.queue_length || 0;
+            if (queueLength > 0) {
+                statusParts.push(`📋 ${queueLength} tasks queued`);
+            }
+            
+            // Current task
+            if (data.current_task_type) {
+                statusParts.push(`⚙️ Processing: ${data.current_task_type}`);
+            }
+            
+            // Stats
+            if (stats.tasks_completed > 0 || stats.tasks_failed > 0) {
+                statusParts.push(`📊 Completed: ${stats.tasks_completed}, Failed: ${stats.tasks_failed}`);
+            }
+            
+            // Heartbeat status
+            if (data.paused) {
+                statusParts.push('⏸️ Background processing paused');
+            } else if (data.running) {
+                statusParts.push('▶️ Background processing active');
+            }
+            
+            UI.showToast(statusParts.join('\n'), 'info', 5000);
+            
+        } catch (error) {
+            UI.showToast('❌ Could not fetch server status', 'error');
+        }
     }
 };
 

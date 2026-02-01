@@ -259,6 +259,60 @@ class StartupConfig(BaseModel):
     )
 
 
+class HeartbeatConfig(BaseModel):
+    """Configuration for the heartbeat background processing system."""
+    
+    model_config = ConfigDict(extra='ignore')
+    
+    enabled: bool = Field(
+        default=True,
+        description="Enable heartbeat background processing system"
+    )
+    interval_seconds: float = Field(
+        default=60.0,
+        ge=10.0, le=600.0,
+        description="Seconds between heartbeat checks when idle"
+    )
+    idle_threshold_minutes: float = Field(
+        default=5.0,
+        ge=1.0, le=60.0,
+        description="Minutes of inactivity before system is considered idle"
+    )
+    resume_grace_seconds: float = Field(
+        default=2.0,
+        ge=0.5, le=10.0,
+        description="Grace period after activity before interrupting background tasks"
+    )
+    
+    # Conversation analysis settings
+    analysis_stale_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        description="Hours since last activity before conversation is eligible for analysis"
+    )
+    analysis_min_messages: int = Field(
+        default=10,
+        ge=4,
+        description="Minimum messages in conversation before eligible for analysis"
+    )
+    analysis_batch_size: int = Field(
+        default=3,
+        ge=1, le=10,
+        description="Maximum conversations to analyze per heartbeat cycle"
+    )
+    
+    # GPU utilization check (NVIDIA only)
+    gpu_check_enabled: bool = Field(
+        default=False,
+        description="Enable GPU utilization check before background tasks (NVIDIA only)"
+    )
+    gpu_max_utilization_percent: int = Field(
+        default=15,
+        ge=5, le=95,
+        description="Skip background tasks if GPU utilization exceeds this percentage"
+    )
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -272,6 +326,7 @@ class SystemConfig(BaseModel):
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     conversation_context: ConversationContextConfig = Field(default_factory=ConversationContextConfig)
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     startup: StartupConfig = Field(default_factory=StartupConfig)

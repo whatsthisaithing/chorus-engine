@@ -120,6 +120,56 @@ html, body {
     background: var(--bg-primary);
 }
 
+/* Server Status Indicator */
+.server-status-indicator {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+}
+
+.server-status-indicator:hover {
+    background-color: var(--bg-elevated);
+}
+
+.server-status-indicator .status-dot {
+    font-size: 10px;
+    transition: color 0.3s ease;
+}
+
+/* Status states */
+.server-status-indicator.status-idle .status-dot {
+    color: var(--success);
+}
+
+.server-status-indicator.status-active .status-dot {
+    color: var(--accent-primary);
+    animation: pulse-gold 1.5s infinite;
+}
+
+.server-status-indicator.status-processing .status-dot {
+    color: var(--info);
+    animation: pulse-blue 1s infinite;
+}
+
+.server-status-indicator.status-offline .status-dot {
+    color: var(--text-muted);
+}
+
+.server-status-indicator.status-error .status-dot {
+    color: var(--error);
+}
+
+@keyframes pulse-gold {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes pulse-blue {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.2); }
+}
+
 /* Character Profile Card */
 .character-profile-card {
     background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--profile-gradient-end) 100%);

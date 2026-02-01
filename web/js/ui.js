@@ -6,20 +6,31 @@
 const UI = {
     /**
      * Show a toast notification
+     * @param {string} message - Message to display (supports newlines)
+     * @param {string} type - Type: 'info', 'success', 'error', 'warning'
+     * @param {number} duration - Auto-hide delay in ms (default 3000)
      */
-    showToast(message, type = 'info') {
+    showToast(message, type = 'info', duration = 3000) {
         const toastEl = document.getElementById('notificationToast');
         const toastBody = document.getElementById('toastMessage');
         
-        toastBody.textContent = message;
+        // Support multiline messages by converting \n to <br>
+        toastBody.innerHTML = message.replace(/\n/g, '<br>');
         
-        // Add color class
+        // Reset and add color class
         toastEl.className = 'toast';
         if (type === 'error') {
             toastEl.classList.add('bg-danger', 'text-white');
         } else if (type === 'success') {
             toastEl.classList.add('bg-success', 'text-white');
+        } else if (type === 'warning') {
+            toastEl.classList.add('bg-warning', 'text-dark');
+        } else if (type === 'info') {
+            toastEl.classList.add('bg-info', 'text-dark');
         }
+        
+        // Configure delay
+        toastEl.setAttribute('data-bs-delay', duration);
         
         const toast = new bootstrap.Toast(toastEl);
         toast.show();

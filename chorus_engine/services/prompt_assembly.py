@@ -52,16 +52,24 @@ class PromptAssemblyService:
     
     Token Budget Allocation:
     - System prompt: Fixed (counted once)
-    - Memories: Configurable portion of context (default 30%)
-    - History: Configurable portion of context (default 40%)
-    - Reserve: Buffer for generation (default 30%)
+    - Conversation Context: Past conversation summaries (default 5%)
+    - Memories: Character memories from vector store (default 20%)
+    - History: Conversation messages (default 50%)
+    - Documents: Injected document chunks (default 15%)
+    - Reserve: Buffer for generation (default 10%)
+    
+    Budget Cascade:
+    Unused budget from conversation context flows to memory retrieval.
+    This ensures that when no relevant past conversations are found,
+    the character can recall more memories instead.
     
     Features:
     - Automatic memory retrieval based on last user message
+    - Past conversation context retrieval with semantic search
     - History truncation to fit token budget
     - Accurate token counting using model tokenizer
     - Priority-based memory ranking
-    - Configurable budget allocation
+    - Configurable budget allocation with cascade
     """
     
     def __init__(
@@ -73,7 +81,8 @@ class PromptAssemblyService:
         memory_budget_ratio: float = 0.20,
         history_budget_ratio: float = 0.50,
         document_budget_ratio: float = 0.15,
-        reserve_ratio: float = 0.15,
+        reserve_ratio: float = 0.10,
+        conversation_context_budget_ratio: float = 0.05,
     ):
         """
         Initialize prompt assembly service.
@@ -87,6 +96,7 @@ class PromptAssemblyService:
             history_budget_ratio: Portion of context for history (0-1)
             document_budget_ratio: Portion of context for document chunks (0-1)
             reserve_ratio: Portion reserved for generation (0-1)
+            conversation_context_budget_ratio: Portion for past conversation summaries (0-1)
         """
         self.db = db
         self.character_id = character_id
@@ -98,9 +108,11 @@ class PromptAssemblyService:
         self.history_budget_ratio = history_budget_ratio
         self.document_budget_ratio = document_budget_ratio
         self.reserve_ratio = reserve_ratio
+        self.conversation_context_budget_ratio = conversation_context_budget_ratio
         
         # Validate ratios sum to ~1.0
-        total_ratio = memory_budget_ratio + history_budget_ratio + document_budget_ratio + reserve_ratio
+        total_ratio = (memory_budget_ratio + history_budget_ratio + document_budget_ratio + 
+                      reserve_ratio + conversation_context_budget_ratio)
         if not (0.95 <= total_ratio <= 1.05):
             raise ValueError(
                 f"Budget ratios must sum to ~1.0, got {total_ratio:.2f}"
@@ -336,6 +348,7 @@ class PromptAssemblyService:
         available_tokens = self.context_window - base_system_tokens - document_tokens
         
         # Allocate budgets
+        conversation_context_budget = int(available_tokens * self.conversation_context_budget_ratio)
         memory_budget = int(available_tokens * self.memory_budget_ratio)
         history_budget = int(available_tokens * self.history_budget_ratio)
         document_budget = int(available_tokens * self.document_budget_ratio)
@@ -343,8 +356,8 @@ class PromptAssemblyService:
         
         logger.debug(
             f"Token budgets - Available: {available_tokens}, "
-            f"Memory: {memory_budget}, History: {history_budget}, "
-            f"Document: {document_budget}, Reserve: {reserve_budget}"
+            f"ConvContext: {conversation_context_budget}, Memory: {memory_budget}, "
+            f"History: {history_budget}, Document: {document_budget}, Reserve: {reserve_budget}"
         )
         
         # Determine memory query (use last user message if not provided)
@@ -356,13 +369,58 @@ class PromptAssemblyService:
             if last_user_messages:
                 memory_query = last_user_messages[0].content
         
-        # Retrieve memories if enabled
+        # Retrieve relevant past conversation summaries FIRST (budget cascade)
+        # Unused conversation context budget flows to memory retrieval
+        conversation_context_tokens = 0
+        unused_context_budget = conversation_context_budget  # Start with full allocation
+        
+        if include_conversation_context and memory_query:
+            try:
+                retrieved_contexts, context_tokens_used = self.conversation_context_service.retrieve_relevant_summaries(
+                    character_id=self.character_id,
+                    user_message=memory_query,
+                    current_conversation_id=conversation_id,
+                    token_budget=conversation_context_budget
+                )
+                
+                if retrieved_contexts:
+                    # Format and append to system prompt
+                    context_text = self.conversation_context_service.format_summaries_for_prompt(
+                        retrieved_contexts
+                    )
+                    system_prompt += f"\n\n{context_text}"
+                    conversation_context_tokens = context_tokens_used
+                    system_tokens += conversation_context_tokens
+                    unused_context_budget = conversation_context_budget - context_tokens_used
+                    
+                    logger.info(
+                        f"Added {len(retrieved_contexts)} past conversation context(s) "
+                        f"({conversation_context_tokens} tokens, {unused_context_budget} unused)"
+                    )
+                else:
+                    logger.debug(
+                        f"No relevant conversation context found, "
+                        f"cascading {unused_context_budget} tokens to memory budget"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to retrieve conversation context: {e}")
+                # Continue without conversation context if it fails
+        
+        # Cascade unused context budget to memory retrieval
+        effective_memory_budget = memory_budget + unused_context_budget
+        if unused_context_budget > 0:
+            logger.debug(
+                f"Budget cascade: memory budget {memory_budget} + {unused_context_budget} unused context "
+                f"= {effective_memory_budget} effective"
+            )
+        
+        # Retrieve memories (using effective budget with cascade from unused context)
         memory_texts = []
         if include_memories and memory_query:
             retrieved_memories = self.memory_service.retrieve_memories(
                 query=memory_query,
                 character_id=self.character_id,
-                token_budget=memory_budget,
+                token_budget=effective_memory_budget,
                 thread_id=thread_id,
                 conversation_source=conversation_source
             )
@@ -380,37 +438,6 @@ class PromptAssemblyService:
         memory_tokens = sum(
             self.token_counter.count_tokens(m) for m in memory_texts
         )
-        
-        # Retrieve relevant past conversation summaries if enabled
-        conversation_context_tokens = 0
-        if include_conversation_context and memory_query:
-            try:
-                # Calculate budget for conversation context (5% of available)
-                context_budget = int(available_tokens * 0.05)
-                
-                retrieved_contexts, context_tokens_used = self.conversation_context_service.retrieve_relevant_summaries(
-                    character_id=self.character_id,
-                    user_message=memory_query,
-                    current_conversation_id=conversation_id,
-                    token_budget=context_budget
-                )
-                
-                if retrieved_contexts:
-                    # Format and append to system prompt
-                    context_text = self.conversation_context_service.format_summaries_for_prompt(
-                        retrieved_contexts
-                    )
-                    system_prompt += f"\n\n{context_text}"
-                    conversation_context_tokens = context_tokens_used
-                    system_tokens += conversation_context_tokens
-                    
-                    logger.info(
-                        f"Added {len(retrieved_contexts)} past conversation context(s) "
-                        f"({conversation_context_tokens} tokens)"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to retrieve conversation context: {e}")
-                # Continue without conversation context if it fails
         
         # Truncate history to fit budget
         history_dicts = self._format_messages_for_llm(

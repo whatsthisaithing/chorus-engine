@@ -209,8 +209,7 @@ class ConversationAnalysisService:
                 conversation_id=conversation_id,
                 character_id=character_id,
                 summary=summary,
-                analysis=analysis,
-                manual=manual
+                analysis=analysis
             )
             
             # Update conversation last_analyzed_at

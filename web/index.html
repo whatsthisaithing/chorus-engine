@@ -20,9 +20,15 @@
         <div class="row h-100">
             <!-- Sidebar -->
             <div class="col-md-3 col-lg-2 sidebar bg-dark text-white p-3 d-flex flex-column">
-                <h4 class="mb-4 text-theme-secondary" style="white-space: nowrap;">
-                    Chorus Engine
-                </h4>
+                <div class="d-flex align-items-center justify-content-between mb-4">
+                    <h4 class="mb-0 text-theme-secondary" style="white-space: nowrap;">
+                        Chorus Engine
+                    </h4>
+                    <!-- Server Status Indicator -->
+                    <div id="serverStatusIndicator" class="server-status-indicator" title="Server Status: Checking...">
+                        <i class="bi bi-circle-fill status-dot"></i>
+                    </div>
+                </div>
                 
                 <!-- CHARACTER Section -->
                 <div class="sidebar-section mb-4">
@@ -1033,6 +1039,93 @@
                                         <strong>VRAM Management:</strong> The backend automatically handles model swapping. 
                                         Vision models load on-demand and unload after processing. The "Unload during image/video generation" 
                                         setting in LLM Configuration also applies to vision models during ComfyUI workflows.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Heartbeat Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-heart-pulse me-2"></i>Background Processing (Heartbeat)</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="heartbeat_enabled">
+                                            <label class="form-check-label text-light" for="heartbeat_enabled">
+                                                Enable Background Processing
+                                            </label>
+                                            <div class="form-text text-secondary">Process conversation analysis and other tasks during idle periods.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="heartbeat_settings" style="display: none;">
+                                    <!-- Timing Settings -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-clock me-2"></i>Timing Settings</h6>
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Check Interval (s)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_interval_seconds" min="10" max="600" placeholder="60">
+                                            <div class="form-text text-secondary">Seconds between idle checks.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Idle Threshold (min)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_idle_threshold_minutes" min="1" max="60" step="0.5" placeholder="5">
+                                            <div class="form-text text-secondary">Minutes of inactivity before processing starts.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Resume Grace (s)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_resume_grace_seconds" min="0.5" max="10" step="0.5" placeholder="2">
+                                            <div class="form-text text-secondary">Pause after activity resumes.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Analysis Settings -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-chat-left-text me-2"></i>Conversation Analysis</h6>
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Stale Hours</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_stale_hours" min="1" max="168" placeholder="24">
+                                            <div class="form-text text-secondary">Hours since activity before eligible for analysis.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Min Messages</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_min_messages" min="4" max="100" placeholder="10">
+                                            <div class="form-text text-secondary">Minimum messages required for analysis.</div>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label class="form-label text-light">Batch Size</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_batch_size" min="1" max="10" placeholder="3">
+                                            <div class="form-text text-secondary">Conversations per processing cycle.</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- GPU Check Settings -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-gpu-card me-2"></i>GPU Utilization Check <span class="badge bg-secondary">NVIDIA Only</span></h6>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="heartbeat_gpu_check_enabled">
+                                                <label class="form-check-label text-light" for="heartbeat_gpu_check_enabled">
+                                                    Enable GPU Utilization Check
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Skip background tasks if GPU is busy (gaming, training, etc).</div>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label text-light">Max GPU Utilization (%)</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_gpu_max_utilization_percent" min="5" max="95" placeholder="15">
+                                            <div class="form-text text-secondary">Skip if GPU busier than this (idle GPUs are 0-5%).</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-info mt-2">
+                                        <i class="bi bi-info-circle me-2"></i>
+                                        <strong>How it works:</strong> When the system is idle (no user activity, no LLM calls, no image generation), 
+                                        background tasks like conversation analysis run automatically. The GPU check adds a final safety gate 
+                                        to avoid interfering with external GPU workloads.
                                     </div>
                                 </div>
                             </div>

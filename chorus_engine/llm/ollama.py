@@ -79,6 +79,21 @@ class OllamaLLMClient(BaseLLMClient):
             data = response.json()
             content = data.get("message", {}).get("content", "")
             
+            # Log Ollama timing metrics for debugging
+            load_dur = data.get("load_duration", 0) / 1e9  # nanoseconds to seconds
+            prompt_eval_dur = data.get("prompt_eval_duration", 0) / 1e9
+            eval_dur = data.get("eval_duration", 0) / 1e9
+            total_dur = data.get("total_duration", 0) / 1e9
+            prompt_tokens = data.get("prompt_eval_count", 0)
+            output_tokens = data.get("eval_count", 0)
+            
+            if load_dur > 1.0 or total_dur > 30:  # Log if model loaded or took >30s
+                logger.info(
+                    f"[OLLAMA] Request completed: total={total_dur:.1f}s, "
+                    f"load={load_dur:.1f}s, prompt_eval={prompt_eval_dur:.1f}s ({prompt_tokens} tokens), "
+                    f"gen={eval_dur:.1f}s ({output_tokens} tokens)"
+                )
+            
             # Use the model from response to confirm what Ollama actually used
             used_model = data.get("model", model if model is not None else self.model)
             

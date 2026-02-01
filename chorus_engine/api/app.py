@@ -73,6 +73,9 @@ from chorus_engine.repositories.audio_repository import AudioRepository
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors
 
+# Phase D: Idle detection for background processing
+from chorus_engine.services.idle_detector import IdleDetector
+
 # Debugging imports
 from chorus_engine.utils.debug_logger import log_llm_call
 
@@ -128,6 +131,7 @@ app_state = {
     "intent_detection_service": None,  # Phase 7
     "analysis_service": None,  # Phase 8
     "document_manager": None,  # Phase 1: Document analysis
+    "idle_detector": None,  # Phase D: Activity tracking for background processing
 }
 
 
@@ -438,6 +442,94 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"⚠ Failed to sync conversation summary vectors: {e}")
         
+        # Initialize idle detector for background processing (Phase D)
+        heartbeat_config = getattr(system_config, 'heartbeat', None)
+        if heartbeat_config and getattr(heartbeat_config, 'enabled', True):
+            idle_detector = IdleDetector(
+                idle_threshold_minutes=heartbeat_config.idle_threshold_minutes,
+                resume_grace_seconds=heartbeat_config.resume_grace_seconds
+            )
+            app_state["idle_detector"] = idle_detector
+            logger.info(
+                f"✓ Idle detector initialized "
+                f"(threshold: {heartbeat_config.idle_threshold_minutes}min)"
+            )
+            
+            # Initialize HeartbeatService (Phase D)
+            from chorus_engine.services.heartbeat_service import HeartbeatService
+            from chorus_engine.services.conversation_analysis_task import (
+                ConversationAnalysisTaskHandler, StaleConversationFinder
+            )
+            
+            heartbeat_service = HeartbeatService(
+                idle_detector=idle_detector,
+                config={
+                    "enabled": heartbeat_config.enabled,
+                    "interval_seconds": heartbeat_config.interval_seconds,
+                    "idle_threshold_minutes": heartbeat_config.idle_threshold_minutes,
+                    "resume_grace_seconds": heartbeat_config.resume_grace_seconds,
+                    "analysis_batch_size": heartbeat_config.analysis_batch_size,
+                    "gpu_check_enabled": heartbeat_config.gpu_check_enabled,
+                    "gpu_max_utilization_percent": heartbeat_config.gpu_max_utilization_percent
+                }
+            )
+            
+            # Register task handlers
+            heartbeat_service.register_handler(ConversationAnalysisTaskHandler())
+            
+            # Create stale conversation finder
+            stale_finder = StaleConversationFinder(
+                stale_hours=heartbeat_config.analysis_stale_hours,
+                min_messages=heartbeat_config.analysis_min_messages
+            )
+            
+            # Register task finder to auto-discover stale conversations
+            def find_stale_conversations_task(heartbeat_svc, app_st):
+                """Task finder that queues stale conversations for analysis."""
+                from chorus_engine.services.heartbeat_service import TaskPriority
+                
+                logger.info("[TASK FINDER] Starting stale conversation discovery...")
+                
+                finder = app_st.get("stale_finder")
+                if not finder:
+                    logger.warning("[TASK FINDER] No stale_finder in app_state")
+                    return
+                
+                # Get a fresh DB session
+                db_gen = get_db()
+                db = next(db_gen)
+                try:
+                    queued = finder.queue_stale_conversations(
+                        heartbeat_service=heartbeat_svc,
+                        db=db,
+                        limit=heartbeat_config.analysis_batch_size,
+                        priority=TaskPriority.LOW
+                    )
+                    logger.info(f"[TASK FINDER] Queued {queued} conversations for analysis")
+                except Exception as e:
+                    logger.error(f"[TASK FINDER] Error finding stale conversations: {e}", exc_info=True)
+                finally:
+                    db.close()
+            
+            heartbeat_service.set_task_finder(find_stale_conversations_task)
+            
+            app_state["heartbeat_service"] = heartbeat_service
+            app_state["stale_finder"] = stale_finder
+            
+            # Start the heartbeat service
+            await heartbeat_service.start(app_state)
+            logger.info(
+                f"✓ Heartbeat service started "
+                f"(interval: {heartbeat_config.interval_seconds}s)"
+            )
+        else:
+            # Use defaults if heartbeat config not present
+            idle_detector = IdleDetector()
+            app_state["idle_detector"] = idle_detector
+            app_state["heartbeat_service"] = None
+            app_state["stale_finder"] = None
+            logger.info("✓ Idle detector initialized (heartbeat disabled)")
+        
         logger.info(f"✓ Chorus Engine ready with {len(characters)} character(s)")
         
     except Exception as e:
@@ -448,6 +540,11 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Chorus Engine...")
+    
+    # Phase D: Stop heartbeat service
+    if app_state.get("heartbeat_service"):
+        await app_state["heartbeat_service"].stop()
+        logger.info("✓ Heartbeat service stopped")
     
     # Phase 7.5: Stop background extraction worker
     if app_state.get("background_extractor"):
@@ -701,6 +798,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Activity tracking middleware (Phase D: Idle detection)
+@app.middleware("http")
+async def activity_tracking_middleware(request, call_next):
+    """Track user activity for idle detection."""
+    idle_detector = app_state.get("idle_detector")
+    if idle_detector:
+        # Record activity with request path for filtering
+        idle_detector.record_activity(path=request.url.path)
+    
+    response = await call_next(request)
+    return response
+
 
 # Include API routers
 app.include_router(model_router)  # Phase 10: Model management routes
@@ -1046,6 +1157,139 @@ async def health_check():
         llm_available=llm_available,
         characters_loaded=len(app_state["characters"]),
     )
+
+
+# === Heartbeat Control Endpoints (Phase D) ===
+
+@app.get("/heartbeat/status")
+async def get_heartbeat_status():
+    """
+    Get heartbeat service status and queue information.
+    
+    Returns:
+        Status of the heartbeat service including:
+        - running: Whether the service is active
+        - paused: Whether processing is paused
+        - queue_length: Number of pending tasks
+        - current_task: Currently executing task (if any)
+        - stats: Completion statistics
+        - idle_status: Current idle detector status
+    """
+    heartbeat = app_state.get("heartbeat_service")
+    idle_detector = app_state.get("idle_detector")
+    
+    if not heartbeat:
+        # Heartbeat not initialized, but we can still return idle status
+        return {
+            "enabled": False,
+            "message": "Heartbeat service not initialized",
+            "idle_status": idle_detector.get_status() if idle_detector else None
+        }
+    
+    # get_queue_status() already includes idle_status from the idle_detector
+    return heartbeat.get_queue_status()
+
+
+@app.post("/heartbeat/pause")
+async def pause_heartbeat():
+    """
+    Pause background processing.
+    
+    Tasks already in progress will complete, but no new tasks
+    will start until resumed.
+    """
+    heartbeat = app_state.get("heartbeat_service")
+    
+    if not heartbeat:
+        raise HTTPException(
+            status_code=503,
+            detail="Heartbeat service not initialized"
+        )
+    
+    heartbeat.pause()
+    return {
+        "success": True,
+        "message": "Heartbeat processing paused"
+    }
+
+
+@app.post("/heartbeat/resume")
+async def resume_heartbeat():
+    """Resume background processing after pause."""
+    heartbeat = app_state.get("heartbeat_service")
+    
+    if not heartbeat:
+        raise HTTPException(
+            status_code=503,
+            detail="Heartbeat service not initialized"
+        )
+    
+    heartbeat.resume()
+    return {
+        "success": True,
+        "message": "Heartbeat processing resumed"
+    }
+
+
+@app.post("/heartbeat/queue-stale")
+async def queue_stale_conversations(
+    character_id: Optional[str] = None,
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually trigger finding and queuing stale conversations for analysis.
+    
+    This is useful for initial population of the task queue or
+    forcing analysis of conversations that meet the stale criteria.
+    
+    Args:
+        character_id: Optional - only queue conversations for this character
+        limit: Maximum number of conversations to queue (default 10)
+    """
+    heartbeat = app_state.get("heartbeat_service")
+    stale_finder = app_state.get("stale_finder")
+    
+    if not heartbeat or not stale_finder:
+        raise HTTPException(
+            status_code=503,
+            detail="Heartbeat service not initialized"
+        )
+    
+    from chorus_engine.services.heartbeat_service import TaskPriority
+    
+    queued = stale_finder.queue_stale_conversations(
+        heartbeat_service=heartbeat,
+        db=db,
+        character_id=character_id,
+        limit=limit,
+        priority=TaskPriority.NORMAL
+    )
+    
+    return {
+        "success": True,
+        "queued": queued,
+        "message": f"Queued {queued} conversations for background analysis"
+    }
+
+
+@app.delete("/heartbeat/queue")
+async def clear_heartbeat_queue():
+    """Clear all pending tasks from the heartbeat queue."""
+    heartbeat = app_state.get("heartbeat_service")
+    
+    if not heartbeat:
+        raise HTTPException(
+            status_code=503,
+            detail="Heartbeat service not initialized"
+        )
+    
+    cleared = heartbeat.clear_queue()
+    return {
+        "success": True,
+        "cleared": cleared,
+        "message": f"Cleared {cleared} pending tasks"
+    }
 
 
 @app.get("/characters")
@@ -2472,7 +2716,12 @@ async def chat(request: ChatRequest):
         )
     
     # Generate response
+    idle_detector = app_state.get("idle_detector")
     try:
+        # Track LLM activity for idle detection
+        if idle_detector:
+            idle_detector.increment_llm_calls()
+            
         # Use character's preferred model
         model = character.preferred_llm.model or app_state['system_config'].llm.model
         
@@ -2490,6 +2739,9 @@ async def chat(request: ChatRequest):
     except LLMError as e:
         logger.error(f"LLM generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
+    finally:
+        if idle_detector:
+            idle_detector.decrement_llm_calls()
 
 
 # === Conversation Management Endpoints ===
@@ -3639,7 +3891,12 @@ async def send_message(
     history = msg_repo.get_thread_history(thread_id)
     
     # Generate AI response
+    idle_detector = app_state.get("idle_detector")
     try:
+        # Track LLM activity for idle detection
+        if idle_detector:
+            idle_detector.increment_llm_calls()
+            
         # Assemble prompt with memories (Phase 4.1)
         from chorus_engine.services.prompt_assembly import PromptAssemblyService
         
@@ -3934,6 +4191,9 @@ async def send_message(
     except LLMError as e:
         logger.error(f"LLM generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
+    finally:
+        if idle_detector:
+            idle_detector.decrement_llm_calls()
 
 
 @app.post("/threads/{thread_id}/messages/add")
@@ -4672,6 +4932,11 @@ async def send_message_stream(
     
     async def generate_stream():
         """Stream generator that yields SSE-formatted chunks."""
+        # Track LLM activity for idle detection
+        idle_detector = app_state.get("idle_detector")
+        if idle_detector:
+            idle_detector.increment_llm_calls()
+        
         try:
             full_content = ""
             
@@ -4847,6 +5112,10 @@ async def send_message_stream(
         except Exception as e:
             logger.error(f"Streaming error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        finally:
+            # Always decrement LLM call count when streaming ends
+            if idle_detector:
+                idle_detector.decrement_llm_calls()
     
     return StreamingResponse(
         generate_stream(),
@@ -5247,6 +5516,11 @@ async def capture_scene(
                 logger.warning(f"[SCENE CAPTURE - VRAM] Failed to unload TTS models: {e}")
             
             try:
+                # Track ComfyUI activity for idle detection
+                idle_detector = app_state.get("idle_detector")
+                if idle_detector:
+                    idle_detector.increment_comfy_jobs()
+                
                 # Create SCENE_CAPTURE message with generating status
                 msg_repo = MessageRepository(db)
                 scene_message = msg_repo.create(
@@ -5344,6 +5618,10 @@ async def capture_scene(
                 )
             
             finally:
+                # Decrement ComfyUI job count for idle detection
+                if idle_detector:
+                    idle_detector.decrement_comfy_jobs()
+                
                 # Reload models after image generation (same as normal flow)
                 if llm_client:
                     try:
@@ -5948,6 +6226,11 @@ async def generate_image(
                     logger.warning(f"[IMAGE GEN - VRAM] Failed to unload TTS models: {e}")
                 
                 try:
+                    # Track ComfyUI activity for idle detection
+                    idle_detector = app_state.get("idle_detector")
+                    if idle_detector:
+                        idle_detector.increment_comfy_jobs()
+                    
                     # Generate image
                     result = await orchestrator.generate_image(
                         db=db,
@@ -6022,6 +6305,10 @@ async def generate_image(
                     )
                 
                 finally:
+                    # Decrement ComfyUI job count for idle detection
+                    if idle_detector:
+                        idle_detector.decrement_comfy_jobs()
+                    
                     # Phase 7: Models will reload on-demand when next needed
                     # No explicit reload here - keeps VRAM free until next user message
                     logger.info(f"[IMAGE GEN - VRAM] Generation complete, models will reload on next request")
@@ -6442,6 +6729,11 @@ async def generate_video(
                     logger.warning(f"[VIDEO GEN - VRAM] Failed to unload TTS models: {e}")
             
                 try:
+                    # Track ComfyUI activity for idle detection
+                    idle_detector = app_state.get("idle_detector")
+                    if idle_detector:
+                        idle_detector.increment_comfy_jobs()
+                    
                     # Log confirmed prompt for debugging
                     logger.info(f"[VIDEO CONFIRMATION] User confirmed prompt: {request.prompt[:100] if request.prompt else 'NONE'}...")
                     
@@ -6467,6 +6759,10 @@ async def generate_video(
                     raise
                 
                 finally:
+                    # Decrement ComfyUI job count for idle detection
+                    if idle_detector:
+                        idle_detector.decrement_comfy_jobs()
+                    
                     # Models will reload on-demand when next needed
                     # No explicit reload here - keeps VRAM free until next user message
                     logger.info(f"[VIDEO GEN - VRAM] Generation complete, models will reload on next request")
@@ -6782,6 +7078,11 @@ async def capture_video_scene(
                     logger.warning(f"[VIDEO SCENE - VRAM] Failed to unload TTS models: {e}")
                 
                 try:
+                    # Track ComfyUI activity for idle detection
+                    idle_detector = app_state.get("idle_detector")
+                    if idle_detector:
+                        idle_detector.increment_comfy_jobs()
+                    
                     # Create SCENE_CAPTURE message with generating status (matches image scene capture)
                     msg_repo = MessageRepository(db)
                     scene_message = msg_repo.create(
@@ -6818,6 +7119,10 @@ async def capture_video_scene(
                     raise
                 
                 finally:
+                    # Decrement ComfyUI job count for idle detection
+                    if idle_detector:
+                        idle_detector.decrement_comfy_jobs()
+                    
                     # Models will reload on-demand when next needed
                     # No explicit reload here - keeps VRAM free until next user message
                     logger.info(f"[VIDEO SCENE - VRAM] Generation complete, models will reload on next request")
