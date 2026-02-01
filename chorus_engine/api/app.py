@@ -34,6 +34,7 @@ from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.services.system_prompt_generator import SystemPromptGenerator
 from chorus_engine.services.memory_extraction import MemoryExtractionService
 from chorus_engine.db.vector_store import VectorStore
+from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from pathlib import Path
 
 # Phase 5 imports
@@ -68,6 +69,9 @@ from chorus_engine.services.conversation_export_service import ConversationExpor
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
 from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
+
+# Startup sync utilities
+from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors
 
 # Debugging imports
 from chorus_engine.utils.debug_logger import log_llm_call
@@ -172,6 +176,10 @@ async def lifespan(app: FastAPI):
         vector_store = VectorStore(Path("data/vector_store"))
         embedding_service = EmbeddingService()
         
+        # Initialize conversation summary vector store (separate collection for conversation search)
+        summary_vector_store = ConversationSummaryVectorStore(Path("data/vector_store"))
+        logger.info("✓ Conversation summary vector store initialized")
+        
         # Phase 7.5: Fast keyword-based intent detection (no VRAM overhead)
         from chorus_engine.services.keyword_intent_detection import KeywordIntentDetector
         keyword_detector = KeywordIntentDetector()
@@ -223,7 +231,8 @@ async def lifespan(app: FastAPI):
             llm_client=llm_client,
             vector_store=vector_store,
             embedding_service=embedding_service,
-            temperature=0.1
+            temperature=0.1,
+            summary_vector_store=summary_vector_store
         )
         logger.info("✓ Conversation analysis service initialized")
         
@@ -352,6 +361,7 @@ async def lifespan(app: FastAPI):
         app_state["characters"] = characters
         app_state["llm_client"] = llm_client
         app_state["vector_store"] = vector_store
+        app_state["summary_vector_store"] = summary_vector_store  # Conversation summary search
         app_state["embedding_service"] = embedding_service
         app_state["extraction_service"] = extraction_service
         app_state["keyword_detector"] = keyword_detector  # Phase 7.5: Keyword-based intent detection
@@ -404,6 +414,29 @@ async def lifespan(app: FastAPI):
             logger.info("Vision system not configured or disabled")
             app_state["vision_service"] = None
             app_state["image_attachment_service"] = None
+        
+        # Startup sync: Ensure conversation summary vectors are in sync with SQL
+        if getattr(system_config, 'startup', None) and getattr(system_config.startup, 'sync_summary_vectors', True):
+            try:
+                sync_stats = await sync_conversation_summary_vectors(
+                    db_session=db_session,
+                    summary_vector_store=summary_vector_store,
+                    embedding_service=embedding_service
+                )
+                
+                if sync_stats["synced"] > 0:
+                    logger.info(
+                        f"✓ Synced {sync_stats['synced']} conversation summaries to vector store "
+                        f"(characters: {', '.join(sync_stats['characters'])})"
+                    )
+                else:
+                    logger.debug("✓ Conversation summary vectors in sync")
+                    
+                if sync_stats["errors"] > 0:
+                    logger.warning(f"⚠ {sync_stats['errors']} errors during summary vector sync")
+                    
+            except Exception as e:
+                logger.warning(f"⚠ Failed to sync conversation summary vectors: {e}")
         
         logger.info(f"✓ Chorus Engine ready with {len(characters)} character(s)")
         
@@ -712,6 +745,29 @@ class ConversationResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class ConversationSearchResult(BaseModel):
+    """Single conversation search result."""
+    conversation_id: str
+    title: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    message_count: int
+    themes: List[str]
+    tone: str
+    summary: str
+    similarity: float
+    source: str
+    key_topics: List[str] = []
+    participants: List[str] = []
+
+
+class ConversationSearchResponse(BaseModel):
+    """Response for conversation search endpoint."""
+    results: List[ConversationSearchResult]
+    query: str
+    total_results: int
 
 
 class ConversationUpdate(BaseModel):
@@ -2489,6 +2545,99 @@ async def list_conversations(
     return conversations
 
 
+@app.get("/conversations/search", response_model=ConversationSearchResponse)
+async def search_conversations(
+    character_id: str = Query(..., description="Character ID to search within"),
+    query: str = Query(..., min_length=1, description="Natural language search query"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum results to return"),
+    source: Optional[str] = Query(None, description="Filter by source (web, discord)")
+):
+    """
+    Semantic search across conversation summaries.
+    
+    Searches through analyzed conversation summaries using natural language queries.
+    Returns conversations with their summaries, themes, and metadata.
+    
+    Note: Only conversations that have been analyzed will appear in search results.
+    Use the "Analyze Now" button on conversations to make them searchable.
+    """
+    # Get services from app state
+    embedding_service = app_state.get("embedding_service")
+    summary_vector_store = app_state.get("summary_vector_store")
+    
+    if not embedding_service:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    
+    if not summary_vector_store:
+        raise HTTPException(status_code=503, detail="Conversation search not available")
+    
+    # Embed the query
+    try:
+        query_embedding = embedding_service.embed(query)
+    except Exception as e:
+        logger.error(f"Failed to embed search query: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process search query")
+    
+    # Build metadata filter
+    where_filter = None
+    if source:
+        where_filter = {"source": source}
+    
+    # Search conversation summaries
+    try:
+        results = summary_vector_store.search_conversations(
+            character_id=character_id,
+            query_embedding=query_embedding,
+            n_results=limit,
+            where=where_filter
+        )
+    except Exception as e:
+        logger.error(f"Conversation search failed: {e}")
+        raise HTTPException(status_code=500, detail="Search failed")
+    
+    # Format results
+    search_results = []
+    
+    if results.get('ids') and results['ids'][0]:
+        ids = results['ids'][0]
+        documents = results['documents'][0] if results.get('documents') else []
+        metadatas = results['metadatas'][0] if results.get('metadatas') else []
+        distances = results['distances'][0] if results.get('distances') else []
+        
+        for i, conv_id in enumerate(ids):
+            doc = documents[i] if i < len(documents) else ""
+            meta = metadatas[i] if i < len(metadatas) else {}
+            distance = distances[i] if i < len(distances) else 1.0
+            
+            # Convert distance to similarity (cosine distance to similarity)
+            similarity = 1 - (distance / 2)
+            
+            # Parse datetime strings
+            created_at = datetime.fromisoformat(meta.get("created_at")) if meta.get("created_at") else datetime.utcnow()
+            updated_at = datetime.fromisoformat(meta.get("updated_at")) if meta.get("updated_at") else None
+            
+            search_results.append(ConversationSearchResult(
+                conversation_id=conv_id,
+                title=meta.get("title", "Untitled"),
+                created_at=created_at,
+                updated_at=updated_at,
+                message_count=meta.get("message_count", 0),
+                themes=meta.get("themes", []),
+                tone=meta.get("tone", ""),
+                summary=doc,
+                similarity=round(similarity, 4),
+                source=meta.get("source", "web"),
+                key_topics=meta.get("key_topics", []),
+                participants=meta.get("participants", [])
+            ))
+    
+    return ConversationSearchResponse(
+        results=search_results,
+        query=query,
+        total_results=len(search_results)
+    )
+
+
 @app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(
     conversation_id: str,
@@ -2837,6 +2986,20 @@ async def delete_conversation(
         orphaned_count = mem_repo.orphan_conversation_memories(conversation_id)
         memory_action = "orphaned"
         deleted_count = orphaned_count
+    
+    # Delete conversation summary from vector store
+    if conversation.character_id:
+        try:
+            summary_vector_store = app_state.get("summary_vector_store")
+            if summary_vector_store:
+                summary_vector_store.delete_summary(
+                    character_id=conversation.character_id,
+                    conversation_id=conversation_id
+                )
+                logger.debug(f"Deleted summary vector for conversation {conversation_id[:8]}...")
+        except Exception as e:
+            logger.error(f"Failed to delete summary from vector store: {e}")
+            # Don't fail the request - conversation will still be deleted
     
     # Delete conversation
     conv_repo.delete(conversation_id)
@@ -3509,7 +3672,9 @@ async def send_message(
             video_prompt_context=video_context,
             document_context=doc_context if doc_context and doc_context.has_content() else None,
             primary_user=request.primary_user,
-            conversation_source=request.conversation_source or 'web'
+            conversation_source=request.conversation_source or 'web',
+            conversation_id=conversation.id,
+            include_conversation_context=True
         )
         
         # Format for LLM API (includes memories in system prompt)
@@ -4442,7 +4607,9 @@ async def send_message_stream(
             video_prompt_context=video_context,
             document_context=doc_context if doc_context and doc_context.has_content() else None,
             primary_user=request.primary_user,
-            conversation_source=request.conversation_source or 'web'
+            conversation_source=request.conversation_source or 'web',
+            conversation_id=conversation.id,
+            include_conversation_context=True
         )
         
         # Format for LLM API

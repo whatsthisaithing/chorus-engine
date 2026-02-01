@@ -25,8 +25,13 @@ from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.services.system_prompt_generator import SystemPromptGenerator
 from chorus_engine.services.greeting_context_service import GreetingContextService
 from chorus_engine.services.conversation_summarization_service import ConversationSummarizationService
+from chorus_engine.services.conversation_context_retrieval import (
+    ConversationContextRetrievalService,
+    ConversationContextConfig as ServiceContextConfig
+)
 from chorus_engine.repositories.memory_repository import MemoryRepository as MemRepo
 from chorus_engine.db.vector_store import VectorStore
+from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +117,10 @@ class PromptAssemblyService:
         
         # Memory retrieval (lazy init when first needed)
         self._memory_service: Optional[MemoryRetrievalService] = None
+        
+        # Conversation context retrieval (lazy init)
+        self._conversation_context_service: Optional[ConversationContextRetrievalService] = None
+        self._summary_vector_store: Optional[ConversationSummaryVectorStore] = None
     
     @property
     def summarization_service(self) -> ConversationSummarizationService:
@@ -140,6 +149,46 @@ class PromptAssemblyService:
             )
         return self._memory_service
     
+    @property
+    def conversation_context_service(self) -> ConversationContextRetrievalService:
+        """Lazy-initialize conversation context retrieval service."""
+        if self._conversation_context_service is None:
+            from pathlib import Path
+            
+            embedding_service = EmbeddingService()
+            
+            if self._summary_vector_store is None:
+                self._summary_vector_store = ConversationSummaryVectorStore(
+                    Path("data/vector_store")
+                )
+            
+            # Load config if available
+            try:
+                config_loader = ConfigLoader()
+                system_config = config_loader.load_system_config()
+                context_config = getattr(system_config, 'conversation_context', None)
+                
+                if context_config:
+                    service_config = ServiceContextConfig(
+                        enabled=context_config.enabled,
+                        passive_threshold=context_config.passive_threshold,
+                        triggered_threshold=context_config.triggered_threshold,
+                        max_summaries=context_config.max_summaries,
+                        token_budget_ratio=context_config.token_budget_ratio
+                    )
+                else:
+                    service_config = None
+            except Exception:
+                service_config = None
+            
+            self._conversation_context_service = ConversationContextRetrievalService(
+                summary_vector_store=self._summary_vector_store,
+                embedding_service=embedding_service,
+                token_counter=self.token_counter,
+                config=service_config
+            )
+        return self._conversation_context_service
+    
     def get_document_token_budget(self) -> int:
         """
         Calculate available token budget for document chunks.
@@ -164,6 +213,8 @@ class PromptAssemblyService:
         document_context: Optional[Any] = None,
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        include_conversation_context: bool = True,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -180,6 +231,8 @@ class PromptAssemblyService:
             document_context: Optional DocumentContext with retrieved document chunks
             primary_user: Name of the user who invoked the bot (for multi-user contexts)
             conversation_source: Platform source ('web', 'discord', 'slack', etc.)
+            conversation_id: Current conversation ID (for excluding from context search)
+            include_conversation_context: Whether to include relevant past conversation summaries
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -328,6 +381,37 @@ class PromptAssemblyService:
             self.token_counter.count_tokens(m) for m in memory_texts
         )
         
+        # Retrieve relevant past conversation summaries if enabled
+        conversation_context_tokens = 0
+        if include_conversation_context and memory_query:
+            try:
+                # Calculate budget for conversation context (5% of available)
+                context_budget = int(available_tokens * 0.05)
+                
+                retrieved_contexts, context_tokens_used = self.conversation_context_service.retrieve_relevant_summaries(
+                    character_id=self.character_id,
+                    user_message=memory_query,
+                    current_conversation_id=conversation_id,
+                    token_budget=context_budget
+                )
+                
+                if retrieved_contexts:
+                    # Format and append to system prompt
+                    context_text = self.conversation_context_service.format_summaries_for_prompt(
+                        retrieved_contexts
+                    )
+                    system_prompt += f"\n\n{context_text}"
+                    conversation_context_tokens = context_tokens_used
+                    system_tokens += conversation_context_tokens
+                    
+                    logger.info(
+                        f"Added {len(retrieved_contexts)} past conversation context(s) "
+                        f"({conversation_context_tokens} tokens)"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to retrieve conversation context: {e}")
+                # Continue without conversation context if it fails
+        
         # Truncate history to fit budget
         history_dicts = self._format_messages_for_llm(
             messages,
@@ -345,6 +429,7 @@ class PromptAssemblyService:
         token_breakdown = {
             "system": system_tokens,
             "memories": memory_tokens,
+            "conversation_context": conversation_context_tokens,
             "history": history_tokens,
             "total_used": total_tokens,
             "reserve": reserve_budget,
@@ -367,7 +452,8 @@ class PromptAssemblyService:
         memory_query: Optional[str] = None,
         image_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
-        conversation_source: Optional[str] = None
+        conversation_source: Optional[str] = None,
+        include_conversation_context: bool = True
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -383,6 +469,7 @@ class PromptAssemblyService:
                          (defaults to last user message)
             image_prompt_context: Optional image prompt being generated
             document_context: Optional document context to inject
+            include_conversation_context: Whether to include relevant past conversation summaries
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -399,7 +486,9 @@ class PromptAssemblyService:
                 thread_id=thread_id,
                 include_memories=include_memories,
                 memory_query=memory_query,
-                image_prompt_context=image_prompt_context
+                image_prompt_context=image_prompt_context,
+                conversation_id=conversation_id,
+                include_conversation_context=include_conversation_context
             )
         
         # Check if summarization needed
@@ -413,7 +502,9 @@ class PromptAssemblyService:
                 include_memories=include_memories,
                 memory_query=memory_query,
                 image_prompt_context=image_prompt_context,
-                document_context=document_context
+                document_context=document_context,
+                conversation_id=conversation_id,
+                include_conversation_context=include_conversation_context
             )
         
         # Long conversation - apply selective preservation

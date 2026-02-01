@@ -107,6 +107,17 @@ class API {
         return this.request(`/conversations?${params}`);
     }
     
+    static async searchConversations(characterId, query, limit = 10, source = null) {
+        const params = new URLSearchParams({
+            character_id: characterId,
+            query: query,
+            limit: limit
+        });
+        if (source) params.append('source', source);
+        
+        return this.request(`/conversations/search?${params}`);
+    }
+    
     static async getConversation(conversationId) {
         return this.request(`/conversations/${conversationId}`);
     }

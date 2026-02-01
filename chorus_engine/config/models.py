@@ -217,6 +217,48 @@ class VisionConfig(BaseModel):
     )
 
 
+class ConversationContextConfig(BaseModel):
+    """Configuration for conversation context retrieval from past conversations."""
+    
+    model_config = ConfigDict(extra='ignore')
+    
+    enabled: bool = Field(
+        default=True,
+        description="Enable automatic retrieval of relevant past conversation summaries"
+    )
+    passive_threshold: float = Field(
+        default=0.75,
+        ge=0.0, le=1.0,
+        description="Similarity threshold for passive context retrieval (higher = stricter)"
+    )
+    triggered_threshold: float = Field(
+        default=0.55,
+        ge=0.0, le=1.0,
+        description="Similarity threshold when user explicitly references past conversations"
+    )
+    max_summaries: int = Field(
+        default=2,
+        ge=1, le=5,
+        description="Maximum number of past conversation summaries to include"
+    )
+    token_budget_ratio: float = Field(
+        default=0.05,
+        ge=0.0, le=0.2,
+        description="Portion of context window allocated for conversation summaries"
+    )
+
+
+class StartupConfig(BaseModel):
+    """Startup synchronization configuration."""
+    
+    model_config = ConfigDict(extra='ignore')
+    
+    sync_summary_vectors: bool = Field(
+        default=True,
+        description="Sync missing conversation summary vectors on startup (self-healing)"
+    )
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -229,8 +271,10 @@ class SystemConfig(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
+    conversation_context: ConversationContextConfig = Field(default_factory=ConversationContextConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+    startup: StartupConfig = Field(default_factory=StartupConfig)
     debug: bool = False
     api_host: str = "localhost"
     api_port: int = Field(default=8080, gt=0, le=65535)

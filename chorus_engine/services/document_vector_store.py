@@ -40,7 +40,10 @@ class DocumentVectorStore:
         # Get or create document collection
         self.collection = self.client.get_or_create_collection(
             name=self.COLLECTION_NAME,
-            metadata={"description": "Document chunks for semantic retrieval"}
+            metadata={
+                "hnsw:space": "cosine",  # Use cosine similarity
+                "description": "Document chunks for semantic retrieval"
+            }
         )
         
         logger.info(f"DocumentVectorStore initialized: {self.persist_directory}")
@@ -414,7 +417,10 @@ class DocumentVectorStore:
         self.client.delete_collection(self.COLLECTION_NAME)
         self.collection = self.client.create_collection(
             name=self.COLLECTION_NAME,
-            metadata={"description": "Document chunks for semantic retrieval"}
+            metadata={
+                "hnsw:space": "cosine",  # Use cosine similarity
+                "description": "Document chunks for semantic retrieval"
+            }
         )
         logger.warning(f"Cleared collection '{self.COLLECTION_NAME}'")
     

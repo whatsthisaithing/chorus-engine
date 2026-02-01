@@ -410,6 +410,37 @@ window.App = {
                 this.sendMessage();
             }
         });
+        
+        // Conversation search button
+        document.getElementById('searchConversationsBtn').addEventListener('click', () => {
+            this.showConversationSearchModal();
+        });
+        
+        // Conversation search input with debounce
+        let searchTimeout = null;
+        document.getElementById('conversationSearchInput').addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const query = e.target.value.trim();
+            
+            if (query.length < 2) {
+                this.showSearchInitialState();
+                return;
+            }
+            
+            searchTimeout = setTimeout(() => {
+                this.performConversationSearch(query);
+            }, 300); // 300ms debounce
+        });
+        
+        // Keyboard shortcut for search (Ctrl+Shift+F)
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'F') {
+                e.preventDefault();
+                if (this.state.selectedCharacterId) {
+                    this.showConversationSearchModal();
+                }
+            }
+        });
     },
     
     /**
@@ -442,6 +473,7 @@ window.App = {
         document.getElementById('pending-memories-btn').disabled = false;
         document.getElementById('manageWorkflowsBtn').disabled = false;
         document.getElementById('manageVoiceSamplesBtn').disabled = false; // Phase 6
+        document.getElementById('searchConversationsBtn').disabled = false; // Conversation search
         
         // Update pending memories count
         if (window.pendingMemoriesPanel) {
@@ -3664,6 +3696,189 @@ window.App = {
             console.error('Failed to check vector health:', error);
             UI.showToast(`Error: ${error.message}`, 'error');
         }
+    },
+    
+    // === Conversation Search ===
+    
+    /**
+     * Show the conversation search modal
+     */
+    showConversationSearchModal() {
+        if (!this.state.selectedCharacterId) {
+            UI.showToast('Please select a character first', 'warning');
+            return;
+        }
+        
+        // Reset modal state
+        document.getElementById('conversationSearchInput').value = '';
+        this.showSearchInitialState();
+        
+        // Show modal and focus input
+        const modal = new bootstrap.Modal(document.getElementById('conversationSearchModal'));
+        modal.show();
+        
+        // Focus input after modal is shown
+        document.getElementById('conversationSearchModal').addEventListener('shown.bs.modal', () => {
+            document.getElementById('conversationSearchInput').focus();
+        }, { once: true });
+    },
+    
+    /**
+     * Show the initial state of the search modal
+     */
+    showSearchInitialState() {
+        document.getElementById('searchLoading').style.display = 'none';
+        document.getElementById('searchNoResults').style.display = 'none';
+        document.getElementById('searchResults').style.display = 'none';
+        document.getElementById('searchInitial').style.display = 'block';
+    },
+    
+    /**
+     * Perform conversation search
+     */
+    async performConversationSearch(query) {
+        if (!this.state.selectedCharacterId) return;
+        
+        // Show loading state
+        document.getElementById('searchInitial').style.display = 'none';
+        document.getElementById('searchNoResults').style.display = 'none';
+        document.getElementById('searchResults').style.display = 'none';
+        document.getElementById('searchLoading').style.display = 'block';
+        
+        try {
+            const response = await API.searchConversations(
+                this.state.selectedCharacterId,
+                query,
+                10
+            );
+            
+            // Hide loading
+            document.getElementById('searchLoading').style.display = 'none';
+            
+            if (response.results && response.results.length > 0) {
+                this.renderSearchResults(response.results);
+            } else {
+                document.getElementById('searchNoResults').style.display = 'block';
+            }
+            
+        } catch (error) {
+            console.error('Search failed:', error);
+            document.getElementById('searchLoading').style.display = 'none';
+            document.getElementById('searchNoResults').style.display = 'block';
+            UI.showToast('Search failed. Make sure conversations have been analyzed.', 'warning');
+        }
+    },
+    
+    /**
+     * Render search results
+     */
+    renderSearchResults(results) {
+        const container = document.getElementById('searchResultsList');
+        const countEl = document.getElementById('searchResultCount');
+        
+        countEl.textContent = `${results.length} result${results.length !== 1 ? 's' : ''}`;
+        container.innerHTML = '';
+        
+        results.forEach(result => {
+            const card = document.createElement('div');
+            card.className = 'search-result-card';
+            
+            // Format date
+            const date = new Date(result.created_at);
+            const dateStr = date.toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'short', 
+                day: 'numeric' 
+            });
+            
+            // Build themes/topics tags
+            let tagsHtml = '';
+            if (result.tone) {
+                tagsHtml += `<span class="search-result-tag tone">${this.escapeHtml(result.tone)}</span>`;
+            }
+            if (result.themes && result.themes.length > 0) {
+                result.themes.slice(0, 3).forEach(theme => {
+                    tagsHtml += `<span class="search-result-tag theme">${this.escapeHtml(theme)}</span>`;
+                });
+            }
+            
+            card.innerHTML = `
+                <div class="search-result-header">
+                    <h6 class="search-result-title">${this.escapeHtml(result.title)}</h6>
+                    <span class="search-result-date">
+                        <i class="bi bi-calendar3 me-1"></i>${dateStr}
+                    </span>
+                </div>
+                <div class="search-result-meta">
+                    ${tagsHtml}
+                    <span class="search-result-tag">
+                        <i class="bi bi-chat-dots me-1"></i>${result.message_count} messages
+                    </span>
+                </div>
+                <div class="search-result-summary truncated" id="summary-${result.conversation_id}">
+                    ${this.escapeHtml(result.summary)}
+                </div>
+                <div class="search-result-footer">
+                    <span class="search-result-similarity">
+                        Relevance: ${Math.round(result.similarity * 100)}%
+                    </span>
+                    <div class="search-result-actions">
+                        <button class="btn btn-sm btn-outline-secondary expand-btn" 
+                                onclick="App.toggleSearchResultExpand('${result.conversation_id}')">
+                            <i class="bi bi-chevron-down"></i> Expand
+                        </button>
+                        <button class="btn btn-sm btn-primary" 
+                                onclick="App.goToSearchResult('${result.conversation_id}')">
+                            <i class="bi bi-arrow-right"></i> Go to Conversation
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(card);
+        });
+        
+        document.getElementById('searchResults').style.display = 'block';
+    },
+    
+    /**
+     * Toggle expand/collapse for search result summary
+     */
+    toggleSearchResultExpand(conversationId) {
+        const summary = document.getElementById(`summary-${conversationId}`);
+        const btn = summary.closest('.search-result-card').querySelector('.expand-btn');
+        
+        if (summary.classList.contains('truncated')) {
+            summary.classList.remove('truncated');
+            summary.classList.add('expanded');
+            btn.innerHTML = '<i class="bi bi-chevron-up"></i> Collapse';
+        } else {
+            summary.classList.remove('expanded');
+            summary.classList.add('truncated');
+            btn.innerHTML = '<i class="bi bi-chevron-down"></i> Expand';
+        }
+    },
+    
+    /**
+     * Navigate to a conversation from search results
+     */
+    goToSearchResult(conversationId) {
+        // Close the search modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('conversationSearchModal'));
+        if (modal) modal.hide();
+        
+        // Navigate to the conversation
+        this.selectConversation(conversationId);
+    },
+    
+    /**
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 };
 

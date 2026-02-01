@@ -26,6 +26,7 @@ from chorus_engine.repositories.conversation_repository import ConversationRepos
 from chorus_engine.services.token_counter import TokenCounter
 from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.db.vector_store import VectorStore
+from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.config.models import CharacterConfig
 
@@ -75,13 +76,15 @@ class ConversationAnalysisService:
         llm_client: LLMClient,
         vector_store: VectorStore,
         embedding_service: EmbeddingService,
-        temperature: float = 0.1
+        temperature: float = 0.1,
+        summary_vector_store: Optional[ConversationSummaryVectorStore] = None
     ):
         self.db = db
         self.llm_client = llm_client
         self.vector_store = vector_store
         self.embedding_service = embedding_service
         self.temperature = temperature
+        self.summary_vector_store = summary_vector_store
         
         # Services
         self.token_counter = TokenCounter()
@@ -194,9 +197,18 @@ class ConversationAnalysisService:
                 memories=analysis.memories
             )
             
-            # Save conversation summary
+            # Save conversation summary to database
             summary = self._save_conversation_summary(
                 conversation_id=conversation_id,
+                analysis=analysis,
+                manual=manual
+            )
+            
+            # Save summary to vector store for semantic search
+            await self._save_summary_to_vector_store(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                summary=summary,
                 analysis=analysis,
                 manual=manual
             )
@@ -520,6 +532,85 @@ Analyze the conversation and respond with the JSON object:"""
         self.db.refresh(summary)
         
         return summary
+    
+    async def _save_summary_to_vector_store(
+        self,
+        conversation_id: str,
+        character_id: str,
+        summary: ConversationSummary,
+        analysis: ConversationAnalysis
+    ) -> bool:
+        """
+        Save conversation summary to vector store for semantic search.
+        
+        Creates an embedded representation of the summary with rich metadata
+        to enable finding relevant past conversations.
+        
+        Args:
+            conversation_id: Conversation ID
+            character_id: Character ID  
+            summary: The ConversationSummary database object
+            analysis: The ConversationAnalysis with themes and other data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.summary_vector_store is None:
+            logger.debug("No summary vector store configured, skipping vector save")
+            return True  # Not an error, just not configured
+        
+        try:
+            # Get conversation for additional metadata
+            conversation = self.conv_repo.get_by_id(conversation_id)
+            
+            # Build searchable text combining summary and key topics
+            # This becomes the embedded document for semantic search
+            searchable_text = f"{analysis.summary}"
+            if analysis.themes:
+                searchable_text += f"\nThemes: {', '.join(analysis.themes)}"
+            if analysis.key_topics:
+                searchable_text += f"\nTopics: {', '.join(analysis.key_topics)}"
+            
+            # Generate embedding
+            embedding = self.embedding_service.embed(searchable_text)
+            
+            # Build metadata
+            metadata = {
+                "conversation_id": conversation_id,
+                "character_id": character_id,
+                "title": conversation.title if conversation else "Untitled",
+                "created_at": conversation.created_at.isoformat() if conversation and conversation.created_at else "",
+                "updated_at": conversation.updated_at.isoformat() if conversation and conversation.updated_at else "",
+                "message_count": summary.message_count,
+                "themes": analysis.themes,  # Will be JSON serialized
+                "tone": analysis.tone or "",
+                "emotional_arc": analysis.emotional_arc or "",
+                "key_topics": analysis.key_topics,  # Will be JSON serialized
+                "participants": analysis.participants,  # Will be JSON serialized
+                "source": conversation.source if conversation and hasattr(conversation, 'source') else "web",
+                "analyzed_at": datetime.utcnow().isoformat(),
+                "manual_analysis": summary.manual == "true"
+            }
+            
+            # Upsert to vector store
+            success = self.summary_vector_store.add_summary(
+                character_id=character_id,
+                conversation_id=conversation_id,
+                summary_text=searchable_text,
+                embedding=embedding,
+                metadata=metadata
+            )
+            
+            if success:
+                logger.debug(f"Saved summary to vector store for conversation {conversation_id[:8]}...")
+            else:
+                logger.warning(f"Failed to save summary to vector store for {conversation_id[:8]}...")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error saving summary to vector store: {e}", exc_info=True)
+            return False
     
     def _write_debug_log(
         self,

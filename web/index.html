@@ -109,7 +109,16 @@
                     <!-- Conversation List -->
                     <div class="mb-3">
                         <div class="d-flex align-items-center justify-content-between mb-2">
-                            <h6 class="small text-theme-secondary mb-0">Recent</h6>
+                            <div class="d-flex align-items-center gap-2">
+                                <h6 class="small text-theme-secondary mb-0">Recent</h6>
+                                <button id="searchConversationsBtn" 
+                                        class="btn btn-sm btn-outline-secondary p-1" 
+                                        style="line-height: 1; font-size: 0.75rem;" 
+                                        title="Search conversations (Ctrl+Shift+F)"
+                                        disabled>
+                                    <i class="bi bi-search"></i>
+                                </button>
+                            </div>
                             <select id="conversationSourceFilter" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
                                 <option value="web">Web</option>
                                 <option value="discord">Discord</option>
@@ -544,6 +553,73 @@
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conversation Search Modal -->
+    <div class="modal fade" id="conversationSearchModal" tabindex="-1" aria-labelledby="conversationSearchModalLabel">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="conversationSearchModalLabel">
+                        <i class="bi bi-search me-2"></i>Search Conversations
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Search Input -->
+                    <div class="mb-4">
+                        <div class="input-group">
+                            <span class="input-group-text bg-secondary border-secondary text-white">
+                                <i class="bi bi-search"></i>
+                            </span>
+                            <input type="text" 
+                                   class="form-control bg-dark text-white border-secondary" 
+                                   id="conversationSearchInput" 
+                                   placeholder="Search past conversations... (e.g., 'when we talked about art')"
+                                   autocomplete="off">
+                        </div>
+                        <div class="form-text text-muted">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Search through analyzed conversations using natural language
+                        </div>
+                    </div>
+                    
+                    <!-- Loading State -->
+                    <div id="searchLoading" class="text-center py-5" style="display: none;">
+                        <div class="spinner-border text-info" role="status">
+                            <span class="visually-hidden">Searching...</span>
+                        </div>
+                        <p class="mt-3 text-muted">Searching conversations...</p>
+                    </div>
+                    
+                    <!-- No Results State -->
+                    <div id="searchNoResults" class="text-center py-5" style="display: none;">
+                        <i class="bi bi-inbox" style="font-size: 3rem; color: #6c757d;"></i>
+                        <p class="mt-3 text-muted">No matching conversations found</p>
+                        <p class="small text-muted">Try a different search query or analyze more conversations</p>
+                    </div>
+                    
+                    <!-- Initial State -->
+                    <div id="searchInitial" class="text-center py-5">
+                        <i class="bi bi-chat-square-text" style="font-size: 3rem; color: #6c757d;"></i>
+                        <p class="mt-3 text-muted">Enter a search query to find past conversations</p>
+                    </div>
+                    
+                    <!-- Search Results -->
+                    <div id="searchResults" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <span class="text-muted small" id="searchResultCount">0 results</span>
+                        </div>
+                        <div id="searchResultsList">
+                            <!-- Results populated by JS -->
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
