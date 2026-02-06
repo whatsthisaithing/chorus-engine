@@ -1446,18 +1446,41 @@ window.App = {
             // Populate summary
             document.getElementById('analysisSummary').textContent = result.summary || 'No summary available';
             
-            // Populate themes
-            const themesDiv = document.getElementById('analysisThemes');
-            if (result.themes && result.themes.length > 0) {
-                themesDiv.innerHTML = result.themes.map(theme => 
-                    `<span class="badge bg-primary me-1">${theme}</span>`
+            // Populate participants
+            const participantsDiv = document.getElementById('analysisParticipants');
+            let participants = result.participants;
+            if (typeof participants === 'string') {
+                try {
+                    participants = JSON.parse(participants);
+                } catch (e) {
+                    participants = [];
+                }
+            }
+            if (participants && participants.length > 0) {
+                participantsDiv.innerHTML = participants.map(name =>
+                    `<span class="badge bg-secondary me-1">${name}</span>`
                 ).join('');
             } else {
-                themesDiv.innerHTML = '<span class="text-muted">No themes identified</span>';
+                participantsDiv.innerHTML = '<span class="text-muted">No participants listed</span>';
             }
             
-            // Populate tone
-            document.getElementById('analysisTone').textContent = result.tone || 'No tone analysis available';
+            // Populate open questions
+            const openQuestionsList = document.getElementById('analysisOpenQuestions');
+            let openQuestions = result.open_questions;
+            if (typeof openQuestions === 'string') {
+                try {
+                    openQuestions = JSON.parse(openQuestions);
+                } catch (e) {
+                    openQuestions = [];
+                }
+            }
+            if (openQuestions && openQuestions.length > 0) {
+                openQuestionsList.innerHTML = openQuestions.map(question =>
+                    `<li>${question}</li>`
+                ).join('');
+            } else {
+                openQuestionsList.innerHTML = '<li class="text-muted">No open questions</li>';
+            }
             
             // Populate emotional arc
             const emotionalArcDiv = document.getElementById('analysisEmotionalArc');
@@ -1516,6 +1539,12 @@ window.App = {
                         'story': 'secondary'
                     }[memory.type] || 'secondary';
                     
+                    const durabilityBadge = memory.durability ? `<span class="badge bg-dark text-light ms-1">Durability: ${memory.durability}</span>` : '';
+                    const patternBadge = typeof memory.pattern_eligible === 'boolean'
+                        ? `<span class="badge bg-dark text-light ms-1">Pattern: ${memory.pattern_eligible ? 'Yes' : 'No'}</span>`
+                        : '';
+                    const reasoning = memory.reasoning ? `<div class="text-muted small mt-1">${memory.reasoning}</div>` : '';
+                    
                     return `
                         <li class="list-group-item">
                             <div class="d-flex justify-content-between align-items-start">
@@ -1523,9 +1552,12 @@ window.App = {
                                     <span class="badge bg-${badgeClass} me-2">${memory.type}</span>
                                     ${memory.emotional_weight ? `<span class="badge bg-light text-dark ms-2">Weight: ${memory.emotional_weight.toFixed(2)}</span>` : ''}
                                     ${memory.confidence ? `<span class="badge bg-warning ms-1">Confidence: ${memory.confidence.toFixed(2)}</span>` : ''}
+                                    ${durabilityBadge}
+                                    ${patternBadge}
                                 </div>
                             </div>
                             <p class="mb-0 mt-1">${memory.content}</p>
+                            ${reasoning}
                         </li>
                     `;
                 }).join('');
@@ -1602,13 +1634,21 @@ window.App = {
                     
                     const totalMemories = Object.values(analysis.memory_counts || {}).reduce((sum, count) => sum + count, 0);
                     
-                    // Parse themes if it's a string (API returns 'themes' field)
-                    let themes = analysis.themes;
-                    if (typeof themes === 'string') {
+                    // Parse participants/open questions in case they're JSON strings
+                    let participants = analysis.participants;
+                    if (typeof participants === 'string') {
                         try {
-                            themes = JSON.parse(themes);
+                            participants = JSON.parse(participants);
                         } catch (e) {
-                            themes = [];
+                            participants = [];
+                        }
+                    }
+                    let openQuestions = analysis.open_questions;
+                    if (typeof openQuestions === 'string') {
+                        try {
+                            openQuestions = JSON.parse(openQuestions);
+                        } catch (e) {
+                            openQuestions = [];
                         }
                     }
                     
@@ -1621,11 +1661,16 @@ window.App = {
                                         <span class="text-muted">${dateStr}</span>
                                     </div>
                                     <h6 class="mb-1">${analysis.summary ? analysis.summary.substring(0, 100) + '...' : 'No summary'}</h6>
-                                    ${themes && themes.length > 0 ? `
+                                    ${participants && participants.length > 0 ? `
                                         <div class="mt-1">
-                                            ${themes.map(topic => 
-                                                `<span class="badge bg-primary me-1">${topic}</span>`
+                                            ${participants.map(name => 
+                                                `<span class="badge bg-secondary me-1">${name}</span>`
                                             ).join('')}
+                                        </div>
+                                    ` : ''}
+                                    ${openQuestions && openQuestions.length > 0 ? `
+                                        <div class="mt-1 text-muted small">
+                                            Open questions: ${openQuestions.length}
                                         </div>
                                     ` : ''}
                                 </div>
@@ -1703,27 +1748,41 @@ window.App = {
             // Populate summary
             document.getElementById('analysisSummary').textContent = fullAnalysis.summary || 'No summary available';
             
-            // Populate themes
-            const themesDiv = document.getElementById('analysisThemes');
-            let themes = fullAnalysis.themes;
-            // Parse if it's a string
-            if (typeof themes === 'string') {
+            // Populate participants
+            const participantsDiv = document.getElementById('analysisParticipants');
+            let participants = fullAnalysis.participants;
+            if (typeof participants === 'string') {
                 try {
-                    themes = JSON.parse(themes);
+                    participants = JSON.parse(participants);
                 } catch (e) {
-                    themes = [];
+                    participants = [];
                 }
             }
-            if (themes && themes.length > 0) {
-                themesDiv.innerHTML = themes.map(theme => 
-                    `<span class="badge bg-primary me-1">${theme}</span>`
+            if (participants && participants.length > 0) {
+                participantsDiv.innerHTML = participants.map(name => 
+                    `<span class="badge bg-secondary me-1">${name}</span>`
                 ).join('');
             } else {
-                themesDiv.innerHTML = '<span class="text-muted">No themes identified</span>';
+                participantsDiv.innerHTML = '<span class="text-muted">No participants listed</span>';
             }
             
-            // Populate tone
-            document.getElementById('analysisTone').textContent = fullAnalysis.tone || 'No tone analysis available';
+            // Populate open questions
+            const openQuestionsList = document.getElementById('analysisOpenQuestions');
+            let openQuestions = fullAnalysis.open_questions;
+            if (typeof openQuestions === 'string') {
+                try {
+                    openQuestions = JSON.parse(openQuestions);
+                } catch (e) {
+                    openQuestions = [];
+                }
+            }
+            if (openQuestions && openQuestions.length > 0) {
+                openQuestionsList.innerHTML = openQuestions.map(question =>
+                    `<li>${question}</li>`
+                ).join('');
+            } else {
+                openQuestionsList.innerHTML = '<li class="text-muted">No open questions</li>';
+            }
             
             // Populate emotional arc
             const emotionalArcDiv = document.getElementById('analysisEmotionalArc');
@@ -1789,6 +1848,12 @@ window.App = {
                     // Display category (e.g., "personal_info", "preference") with type in parentheses
                     const displayText = category !== memType ? `${category} (${memType})` : memType;
                     
+                    const durabilityBadge = memory.durability ? `<span class="badge bg-dark text-light ms-1">Durability: ${memory.durability}</span>` : '';
+                    const patternBadge = typeof memory.pattern_eligible === 'boolean'
+                        ? `<span class="badge bg-dark text-light ms-1">Pattern: ${memory.pattern_eligible ? 'Yes' : 'No'}</span>`
+                        : '';
+                    const reasoning = memory.reasoning ? `<div class="text-muted small mt-1">${memory.reasoning}</div>` : '';
+                    
                     return `
                         <li class="list-group-item">
                             <div class="d-flex justify-content-between align-items-start">
@@ -1796,9 +1861,12 @@ window.App = {
                                     <span class="badge bg-${badgeClass} me-2">${displayText}</span>
                                     ${memory.confidence ? `<span class="badge bg-light text-dark ms-1">Conf: ${Math.round(memory.confidence * 100)}%</span>` : ''}
                                     ${memory.emotional_weight ? `<span class="badge bg-light text-dark ms-1">Weight: ${memory.emotional_weight.toFixed(1)}</span>` : ''}
+                                    ${durabilityBadge}
+                                    ${patternBadge}
                                 </div>
                             </div>
                             <p class="mb-0 mt-1">${memory.content}</p>
+                            ${reasoning}
                         </li>
                     `;
                 }).join('');
@@ -3644,19 +3712,26 @@ window.App = {
             const response = await fetch(`/characters/${characterId}/vector-health`);
             const health = await response.json();
             
+            const orphanLine = health.orphan_vectors && health.orphan_vectors > 0
+                ? `Orphaned: ${health.orphan_vectors}\n`
+                : '';
+            
             const message = health.needs_regeneration
                 ? `⚠️ Vector Health Check\n\n` +
-                  `Memories: ${health.memory_count}\n` +
+                  `Eligible memories: ${health.memory_count}\n` +
                   `Vectors: ${health.vector_count}\n` +
-                  `Missing: ${health.missing_vectors}\n\n` +
+                  `Missing: ${health.missing_vectors}\n` +
+                  orphanLine +
+                  `\n` +
+                  `Eligible = approved/auto-approved and non-ephemeral.\n\n` +
                   `This will:\n` +
                   `- Delete all existing vectors\n` +
-                  `- Regenerate ${health.memory_count} embeddings\n` +
+                  `- Regenerate ${health.memory_count} eligible embeddings\n` +
                   `- Take ~${Math.ceil(health.memory_count / 2)} seconds\n\n` +
                   `Embeddings will be slightly different from originals.\n\n` +
                   `Continue?`
                 : `✓ Vector Health Check\n\n` +
-                  `All ${health.memory_count} memories have valid vector embeddings.\n\n` +
+                  `All ${health.memory_count} eligible memories have valid vector embeddings.\n\n` +
                   `No regeneration needed.`;
             
             if (!health.needs_regeneration) {

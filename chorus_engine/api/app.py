@@ -71,7 +71,7 @@ from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
 
 # Startup sync utilities
-from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors
+from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors, sync_memory_vectors
 
 # Phase D: Idle detection for background processing
 from chorus_engine.services.idle_detector import IdleDetector
@@ -409,8 +409,8 @@ async def lifespan(app: FastAPI):
             app_state["vision_service"] = None
             app_state["image_attachment_service"] = None
         
-        # Startup sync: Ensure conversation summary vectors are in sync with SQL
-        if getattr(system_config, 'startup', None) and getattr(system_config.startup, 'sync_summary_vectors', True):
+        # Startup sync: Ensure vectors are in sync with SQL (summaries + memories)
+        if summary_vector_store and embedding_service:
             try:
                 sync_stats = await sync_conversation_summary_vectors(
                     db_session=db_session,
@@ -418,9 +418,9 @@ async def lifespan(app: FastAPI):
                     embedding_service=embedding_service
                 )
                 
-                if sync_stats["synced"] > 0:
+                if sync_stats["synced"] > 0 or sync_stats.get("deleted_orphans", 0) > 0:
                     logger.info(
-                        f"✓ Synced {sync_stats['synced']} conversation summaries to vector store "
+                        f"✓ Summary vectors synced: +{sync_stats['synced']} / -{sync_stats.get('deleted_orphans', 0)} "
                         f"(characters: {', '.join(sync_stats['characters'])})"
                     )
                 else:
@@ -431,6 +431,32 @@ async def lifespan(app: FastAPI):
                     
             except Exception as e:
                 logger.warning(f"⚠ Failed to sync conversation summary vectors: {e}")
+        else:
+            logger.debug("Summary vector sync skipped (missing vector store or embedding service)")
+        
+        if vector_store and embedding_service:
+            try:
+                memory_sync_stats = await sync_memory_vectors(
+                    db_session=db_session,
+                    vector_store=vector_store,
+                    embedding_service=embedding_service
+                )
+                
+                if memory_sync_stats["synced"] > 0 or memory_sync_stats.get("deleted_orphans", 0) > 0:
+                    logger.info(
+                        f"✓ Memory vectors synced: +{memory_sync_stats['synced']} / -{memory_sync_stats.get('deleted_orphans', 0)} "
+                        f"(characters: {', '.join(memory_sync_stats['characters'])})"
+                    )
+                else:
+                    logger.debug("✓ Memory vectors in sync")
+                    
+                if memory_sync_stats["errors"] > 0:
+                    logger.warning(f"⚠ {memory_sync_stats['errors']} errors during memory vector sync")
+                    
+            except Exception as e:
+                logger.warning(f"⚠ Failed to sync memory vectors: {e}")
+        else:
+            logger.debug("Memory vector sync skipped (missing vector store or embedding service)")
         
         # Initialize idle detector for background processing (Phase D)
         heartbeat_config = getattr(system_config, 'heartbeat', None)

@@ -224,7 +224,7 @@ class StaleConversationFinder:
         """
         from chorus_engine.repositories.conversation_repository import ConversationRepository
         from chorus_engine.repositories.message_repository import MessageRepository
-        from chorus_engine.models.conversation import Conversation
+        from chorus_engine.models.conversation import Conversation, Message, Thread
         from sqlalchemy import func
         
         conv_repo = ConversationRepository(db)
@@ -247,15 +247,10 @@ class StaleConversationFinder:
                 (Conversation.is_private.is_(None))
             )
             
-            # Get conversations that haven't been analyzed
-            # or have new messages since last analysis
-            query = query.filter(
-                (Conversation.last_analyzed_at.is_(None)) |
-                (Conversation.last_analyzed_at < Conversation.updated_at)  # New content since analysis
-            )
+            # Include all stale conversations; message-based new-content check handled below
             
             # Also filter to only stale conversations (activity before cutoff)
-            query = query.filter(Conversation.updated_at < cutoff_time)
+            # Keep DB filter broad; message-based cutoff applied below.
             
             # Order by oldest activity first (process oldest conversations first)
             query = query.order_by(Conversation.updated_at.asc())
@@ -274,12 +269,28 @@ class StaleConversationFinder:
                 message_count = 0
                 for thread in conv.threads:
                     message_count += msg_repo.count_thread_messages(thread.id)
+
+                latest_message_at = (
+                    db.query(func.max(Message.created_at))
+                    .join(Thread, Message.thread_id == Thread.id)
+                    .filter(Thread.conversation_id == conv.id)
+                    .scalar()
+                )
                 
                 logger.debug(
                     f"[STALE FINDER] Checking {conv.id[:8]}... "
                     f"msgs={message_count}, updated={conv.updated_at}, "
-                    f"analyzed={conv.last_analyzed_at}"
+                    f"latest_message={latest_message_at}, analyzed={conv.last_analyzed_at}"
                 )
+
+                if not latest_message_at:
+                    continue
+
+                if latest_message_at >= cutoff_time:
+                    continue
+
+                if conv.last_analyzed_at and latest_message_at <= conv.last_analyzed_at:
+                    continue
                 
                 if message_count >= self.min_messages:
                     # Conversation passes all filters
@@ -287,7 +298,7 @@ class StaleConversationFinder:
                         "conversation_id": conv.id,
                         "character_id": conv.character_id,
                         "message_count": message_count,
-                        "last_activity": conv.updated_at.isoformat() if conv.updated_at else None,
+                        "last_activity": latest_message_at.isoformat() if latest_message_at else None,
                         "title": conv.title
                     })
                     

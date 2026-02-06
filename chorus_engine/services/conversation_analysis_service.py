@@ -482,6 +482,17 @@ Return only valid JSON. Do not include commentary or formatting."""
             parsed = parser(response_text)
             if parsed is not None:
                 return parsed, response_text
+            try:
+                expected_root = "object" if label == "summary" else "array"
+                _, parse_mode = extract_json_block(response_text, expected_root)
+            except Exception:
+                parse_mode = "failed"
+            preview = (response_text or "")[:400]
+            logger.warning(
+                f"[ANALYSIS PARSE] {label} attempt {attempt} failed; "
+                f"model={model}, parse_mode={parse_mode}, length={len(response_text or '')}, "
+                f"preview={preview!r}"
+            )
             logger.warning(
                 f"{label.capitalize()} parsing failed on attempt {attempt}/2; retrying with fallback"
             )

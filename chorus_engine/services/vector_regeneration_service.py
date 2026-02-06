@@ -6,8 +6,9 @@ Rebuilds vector embeddings for characters when ChromaDB data is corrupted or mis
 
 import logging
 from typing import Dict, Any, Generator
-from pathlib import Path
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
+import uuid
 
 from chorus_engine.models.conversation import Memory
 from chorus_engine.db.vector_store import VectorStore
@@ -58,8 +59,15 @@ class VectorRegenerationService:
                 - missing_vectors: Number of memories without vectors
                 - needs_regeneration: Boolean flag
         """
-        # Count memories in SQL
-        memory_count = self.db.query(Memory).filter(
+        # Count eligible memories in SQL
+        eligible_query = self.db.query(Memory).filter(
+            Memory.character_id == character_id,
+            Memory.status.in_(["approved", "auto_approved"]),
+            or_(Memory.durability.is_(None), Memory.durability != "ephemeral")
+        )
+        memory_count = eligible_query.count()
+        
+        total_memory_count = self.db.query(Memory).filter(
             Memory.character_id == character_id
         ).count()
         
@@ -72,12 +80,15 @@ class VectorRegenerationService:
             vector_count = 0
         
         missing = memory_count - vector_count
+        orphaned = max(0, vector_count - memory_count)
         
         return {
             'memory_count': memory_count,
+            'total_memory_count': total_memory_count,
             'vector_count': vector_count,
             'missing_vectors': max(0, missing),
-            'needs_regeneration': missing > 0
+            'orphan_vectors': orphaned,
+            'needs_regeneration': vector_count != memory_count
         }
     
     def regenerate_vectors(
@@ -86,7 +97,7 @@ class VectorRegenerationService:
         progress_callback: Any = None
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        Regenerate all vector embeddings for a character.
+        Regenerate vector embeddings for eligible memories of a character.
         
         This is a generator that yields progress updates.
         
@@ -104,18 +115,20 @@ class VectorRegenerationService:
                 - message: Status message
         """
         try:
-            # Step 1: Fetch all memories
+            # Step 1: Fetch eligible memories
             yield {
                 'step': 'fetch',
                 'current': 0,
                 'total': 0,
                 'percent': 0,
                 'status': 'running',
-                'message': 'Fetching memories from database...'
+                'message': 'Fetching eligible memories from database...'
             }
             
             memories = self.db.query(Memory).filter(
-                Memory.character_id == character_id
+                Memory.character_id == character_id,
+                Memory.status.in_(["approved", "auto_approved"]),
+                or_(Memory.durability.is_(None), Memory.durability != "ephemeral")
             ).all()
             
             total = len(memories)
@@ -137,7 +150,7 @@ class VectorRegenerationService:
                 'total': total,
                 'percent': 10,
                 'status': 'running',
-                'message': f'Found {total} memories'
+                'message': f'Found {total} eligible memories'
             }
             
             # Step 2: Delete existing collection (full wipe)
@@ -188,18 +201,19 @@ class VectorRegenerationService:
                     # Generate embedding
                     embedding = self.embedder.embed(memory.content)
                     
-                    # Use memory ID as vector ID
-                    memory_id = str(memory.id)
+                    # Preserve vector_id when possible, otherwise assign
+                    memory_id = memory.vector_id or str(uuid.uuid4())
                     
                     ids.append(memory_id)
                     embeddings.append(embedding)
                     documents.append(memory.content)
                     metadatas.append({
                         'type': memory.memory_type.value if hasattr(memory.memory_type, 'value') else str(memory.memory_type),
-                        'character_id': character_id,
-                        'confidence': memory.confidence or 0.8,
+                        'category': memory.category or '',
+                        'confidence': memory.confidence or 0.0,
                         'status': memory.status or 'approved',
-                        'category': memory.category or ''
+                        'durability': memory.durability if hasattr(memory, "durability") else "situational",
+                        'pattern_eligible': bool(getattr(memory, "pattern_eligible", 0))
                     })
                     
                     # Update memory record with vector_id
