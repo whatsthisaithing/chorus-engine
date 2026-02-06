@@ -32,7 +32,7 @@ Image prompt generation serves multiple functions:
 ```
 1. User sends message with image request
    ↓
-2. Keyword detection (fast check)
+2. Semantic intent detection (embedding similarity)
    ↓
 3. If detected: prepare prompt preview
    ↓
@@ -55,7 +55,7 @@ Image prompt generation serves multiple functions:
 ### Processing Mode
 
 **Synchronous** (user waits for prompt preview):
-- Detection: <100ms (keyword matching)
+- Detection: semantic intent detection (embedding similarity)
 - Prompt generation: 2-5 seconds (LLM call)
 - User confirms before image generation
 - Can edit prompt before submission
@@ -64,50 +64,18 @@ Image prompt generation serves multiple functions:
 
 ## Request Detection
 
-### Keyword-Based Detection
+### Semantic Intent Detection
 
-**Method**: `detect_image_request()` - Line ~52  
-**Strategy**: Fast keyword matching (no LLM call)
+**Method**: `SemanticIntentDetector` (embedding-based)  
+**Location**: `chorus_engine/services/semantic_intent_detection.py`  
+**Integration**: API sets `semantic_has_image` and only calls the image orchestrator when the `send_image` intent is detected (`chorus_engine/api/app.py`).
 
-**Keywords**:
-```python
-image_keywords = [
-    "show me",
-    "can you show",
-    "picture",
-    "image",
-    "photo",
-    "draw",
-    "generate",
-    "create an image",
-    "what do you look like",
-    "what does",
-    "look like",
-    "appearance",
-    "visualize",
-    "illustrate"
-]
-```
+**Behavior**:
+- Uses prototype embeddings + cosine similarity (no LLM call)
+- Applies per-intent thresholds with an ambiguity margin
+- Supports sentence-level detection for long messages (hybrid mode)
 
-**Logic**:
-```python
-message_lower = message.lower()
-for keyword in image_keywords:
-    if keyword in message_lower:
-        return True
-return False
-```
-
-**Performance**: O(n) where n = number of keywords (~15)  
-**False Positives**: Rare but possible ("I like pictures of cats" might trigger)  
-**False Negatives**: Unusual phrasings might miss ("depict X", "render Y")
-
-### Why Not LLM Detection?
-
-**Speed**: Keyword matching is instant (<1ms)  
-**Cost**: No API call needed  
-**Reliability**: Deterministic, no hallucination risk  
-**User Control**: Can always skip even if detected
+**Note**: `ImagePromptService.detect_image_request()` still exists, but the production flow uses semantic intent detection rather than keyword matching.
 
 ---
 
@@ -191,7 +159,7 @@ DETAIL REQUIREMENTS:
 
 Example of detail level:
 Bad: "woman in a garden"
-Good: "A young woman with flowing auburn hair stands in an enchanted garden at golden hour, soft sunlight filtering through ancient oak trees and casting dappled shadows across her white linen dress. She holds a leather-bound book, her expression thoughtful and serene. Wildflowers in vibrant purples and yellows surround her feet, while butterflies dance in the warm, hazy air. The background shows a stone archway covered in climbing roses, slightly out of focus. Painted in the style of Pre-Raphaelite art, with rich colors, intricate details, and romantic lighting. Shot with shallow depth of field, 85mm lens, soft bokeh."
+Good: "A young woman stands in an enchanted garden at golden hour, soft sunlight filtering through ancient oak trees and casting dappled shadows across her white linen dress. Her hair flows freely in the gentle breeze. She holds a leather-bound book, her expression thoughtful and serene. Wildflowers in vibrant purples and yellows surround her feet, while butterflies dance in the warm, hazy air. The background shows a stone archway covered in climbing roses, slightly out of focus. Painted in the style of Pre-Raphaelite art, with rich colors, intricate details, and romantic lighting. Shot with shallow depth of field, 85mm lens, soft bokeh."
 
 Return ONLY valid JSON in this format:
 {
@@ -210,7 +178,7 @@ Remember: More detail = better results. Be specific, visual, and evocative!
 ### 1. Context-Aware Generation
 
 **Philosophy**: User shouldn't need to repeat details  
-**Implementation**: Pass recent conversation history (last 5 messages)  
+**Implementation**: Pass recent conversation history (last 3 messages)  
 **Benefit**: Richer, more contextual images
 
 **Example**:
@@ -263,12 +231,18 @@ image_generation:
 
 **Detection Logic** (`_should_include_trigger()` - Line ~279):
 ```
-Check if prompt contains:
-- "you" / "your" / "yourself"
-- Character's name
-- "I" / "my" / "me" (character referring to self)
+Check user request and generated prompt for:
+- "yourself"
+- "you look"
+- "your appearance"
+- "what you look like"
+- "self-portrait"
+- "selfie"
+- "picture of you"
+- "image of you"
+- Character's name (lowercase match)
 
-If yes → needs_trigger = True
+If any match → needs_trigger = True
 ```
 
 ### 4. Detail Enhancement
@@ -309,7 +283,7 @@ ASSISTANT: The way the fog rolls in creates this ethereal atmosphere
 USER: Can you show me that?
 ```
 
-**Limit**: Last 5 messages (configurable)  
+**Limit**: Last 3 messages (configurable)  
 **Purpose**: Provide visual context without overwhelming prompt
 
 ### Context Extraction Logic
@@ -416,9 +390,9 @@ if not result.get("negative_prompt") and character.image_generation.negative_pro
 
 ### Temperature
 
-**Setting**: 0.8 (configurable, default from config)  
-**Reason**: Creative enough for vivid descriptions  
-**Trade-off**: Some variability in prompt style (beneficial for images)
+**Setting**: 0.3 (configurable, default in service)  
+**Reason**: More consistent, structured prompts  
+**Trade-off**: Less stylistic variability (safer for deterministic output)
 
 ### Max Tokens
 
@@ -512,7 +486,7 @@ Request: "Show me eating ramen"
 
 ### Timing
 
-**Detection**: <100ms (keyword matching)  
+**Detection**: Semantic intent detection (embedding similarity)  
 **Prompt Generation**: 2-5 seconds (LLM call)  
 **Total Preview**: 2-5 seconds before user confirmation  
 **Image Generation**: 10-60 seconds (separate, after confirmation)
@@ -643,10 +617,10 @@ document.getElementById('imageNegativePrompt').value = promptData.negative_promp
 
 **Check**:
 1. Is `image_generation.enabled: true` in character YAML?
-2. Does message contain keywords?
+2. Did semantic intent detection trigger (`send_image`)?
 3. Is ComfyUI running and configured?
 
-**Fix**: Add more keywords or adjust detection logic
+**Fix**: Adjust intent prototypes/thresholds in `semantic_intent_detection.py`
 
 ### Poor Prompts
 

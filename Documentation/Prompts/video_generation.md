@@ -32,7 +32,7 @@ Video prompt generation serves multiple functions:
 ```
 1. User sends message with video request
    ↓
-2. Keyword detection (fast check for "video", "animation", "movie", "clip")
+2. Semantic intent detection (embedding similarity)
    ↓
 3. If detected: prepare prompt preview
    ↓
@@ -58,7 +58,7 @@ Video prompt generation serves multiple functions:
 ### Processing Mode
 
 **Synchronous** (user waits for prompt preview):
-- Detection: <100ms (keyword matching)
+- Detection: semantic intent detection (embedding similarity)
 - Prompt generation: 2-5 seconds (LLM call)
 - User confirms before video generation
 - Can edit prompt before submission
@@ -68,37 +68,16 @@ Video prompt generation serves multiple functions:
 
 ## Request Detection
 
-### Keyword-Based Detection
+### Semantic Intent Detection
 
-**Method**: `KeywordIntentDetector.detect()` - keyword_intent_detection.py  
-**Strategy**: Fast keyword matching (no LLM call)
+**Method**: `SemanticIntentDetector` (embedding-based)  
+**Location**: `chorus_engine/services/semantic_intent_detection.py`  
+**Integration**: API sets `semantic_has_video` and only calls the video orchestrator when the `send_video` intent is detected (`chorus_engine/api/app.py`).
 
-**Video Keywords**:
-```python
-VIDEO_KEYWORDS = [
-    'video',
-    'animation',
-    'movie',
-    'clip',
-    'footage',
-    'recording'
-]
-
-REQUEST_INDICATORS = [
-    'send', 'show', 'give', 'create', 'generate', 'make',
-    'can you', 'could you', 'would you',
-    'please', "i'd like", 'i want'
-]
-```
-
-**Detection Logic**:
-1. Check for video keyword in message
-2. Verify request indicator present
-3. Exclude false positives (past tense, descriptive statements)
-
-**Performance**: O(n) where n = number of keywords (~15)  
-**False Positives**: Rare ("I saw a video yesterday" filtered by past tense)  
-**False Negatives**: Unusual phrasings might miss ("animate X", "make motion for Y")
+**Behavior**:
+- Uses prototype embeddings + cosine similarity (no LLM call)
+- Applies per-intent thresholds with an ambiguity margin
+- Supports sentence-level detection for long messages (hybrid mode)
 
 ---
 
@@ -204,7 +183,7 @@ Remember: Motion and action are key! Describe what MOVES and CHANGES in the scen
 | Aspect | Image Prompt | Video Prompt |
 |--------|--------------|--------------|
 | **Focus** | Static composition, lighting, atmosphere | Dynamic action, movement, temporal flow |
-| **Length** | 100-300 words | 100-150 words (shorter for motion clarity) |
+| **Length** | 100-300 words | Max 150 words (prompt rule; schema text still says 100-300) |
 | **Verbs** | Descriptive (is, has, shows) | Action (moves, flows, transforms, drifts) |
 | **Camera** | Optional framing guidance | Essential motion guidance (pan, track, orbit) |
 | **Temperature** | 0.3 | 0.3 (same - need consistency) |

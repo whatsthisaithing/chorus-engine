@@ -166,7 +166,7 @@ class MessageRole(Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
-    SCENE_CAPTURE = "scene_capture"  # Phase 9
+    SCENE_CAPTURE = "scene_capture"  # Phase 9: User-triggered scene captures
 
 class Message:
     id: str  # UUID (VARCHAR 36)
@@ -186,7 +186,8 @@ class Message:
 ```
 
 **Key Design Choices**:
-- **role enum**: Clear distinction between message sources
+- **role enum**: Clear distinction between message sources (user, assistant, system, scene_capture)
+- **SCENE_CAPTURE role**: Phase 9 addition for user-triggered scene capture images (generated but not conversational)
 - **is_private as string**: SQLite compatibility ("true"/"false")
 - **immutable after creation**: Messages never change once sent
 - **metadata JSON**: Flexible extension point (token counts, etc.)

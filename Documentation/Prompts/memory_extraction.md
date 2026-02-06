@@ -3,7 +3,7 @@
 **Version**: 1.0  
 **Date**: December 31, 2025  
 **Component**: `MemoryExtractionService`  
-**File Location**: `chorus_engine/services/memory_extraction.py`
+**File Location**: `chorus_engine/services/background_memory_extractor.py`
 
 ---
 
@@ -175,7 +175,7 @@ RESPONSE FORMAT:
 You MUST return ONLY a valid JSON array. NO explanations, NO apologies, NO markdown formatting, NO text before or after.
 
 VALID responses:
-- Facts found: [{{"content": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}}]
+- Facts found: [{{"content": "...", "type": "...", "confidence": 0.95, "reasoning": "..."}}]
 - No facts: []
 
 INVALID responses (DO NOT use these):
@@ -244,119 +244,64 @@ This ensures Discord memories like "fitzycodesthings enjoys..." pass validation 
 
 ---
 
-## Extraction Categories
+## Memory Types
 
-### 1. `personal_info`
+### 1. `fact`
 
 **What It Captures**:
-- Names (user's name, family, pets)
-- Locations (city, country, neighborhood)
-- Age, birthday, personal milestones
-- Occupation, education
-- Living situation (apartment, house, roommates)
+- Factual information (name, location, job, preferences, opinions)
+- Stable personal details explicitly stated by the user
 
 **Examples**:
 - "User's name is Sarah"
 - "User lives in Seattle"
 - "User works as a software engineer"
-- "User has a cat named Whiskers"
-
-**Badge Color**: Primary blue
+- "User prefers tea over coffee"
 
 ---
 
-### 2. `preference`
+### 2. `project`
 
 **What It Captures**:
-- Likes and dislikes
-- Favorite things (food, music, movies, books)
-- Hobbies and interests
-- Style preferences
-- Routines and habits
+- Goals, plans, ongoing work, future intentions
 
 **Examples**:
-- "User enjoys hiking on weekends"
-- "User prefers tea over coffee"
-- "User loves sci-fi novels"
-- "User dislikes spicy food"
-
-**Badge Color**: Success green
+- "User is developing a game"
+- "User plans to start a blog"
+- "User is training for a marathon"
 
 ---
 
 ### 3. `experience`
 
 **What It Captures**:
-- Past events and memories
-- Travel experiences
-- Life events (graduation, moving, job changes)
-- Significant stories shared
-- Historical context about user
+- Shared activities, events, and interactions
 
 **Examples**:
+- "User went to the beach last summer"
 - "User visited Japan in 2023"
-- "User graduated from MIT"
-- "User broke their arm skiing"
-- "User used to live in New York"
-
-**Badge Color**: Info cyan
 
 ---
 
-### 4. `relationship`
+### 4. `story`
 
 **What It Captures**:
-- Family members
-- Friends and social connections
-- Romantic relationships
-- Professional relationships
-- Pets and companions
+- Narratives and anecdotes the user shared about their past
+
+**Examples**:
+- "User broke their arm as a child"
+- "User told a story about moving to New York"
+
+---
+
+### 5. `relationship`
+
+**What It Captures**:
+- Relationship dynamics and bonds mentioned by the user
 
 **Examples**:
 - "User has a younger sister named Emma"
-- "User is married to Alex"
-- "User's best friend is moving to Canada"
-- "User mentors junior developers at work"
-
-**Badge Color**: Warning orange
-
----
-
-### 5. `goal`
-
-**What It Captures**:
-- Future plans and aspirations
-- Things user wants to do
-- Projects in progress
-- Learning objectives
-- Life goals
-
-**Examples**:
-- "User wants to learn Spanish"
-- "User is training for a marathon"
-- "User plans to start a blog"
-- "User hopes to visit Iceland someday"
-
-**Badge Color**: Purple
-
----
-
-### 6. `skill`
-
-**What It Captures**:
-- Abilities and talents
-- Professional skills
-- Languages spoken
-- Expertise areas
-- Creative abilities
-
-**Examples**:
-- "User speaks fluent French"
-- "User is skilled at photography"
-- "User can play piano"
-- "User is learning Python programming"
-
-**Badge Color**: Dark info
+- "User feels close to their best friend"
 
 ---
 
@@ -390,19 +335,19 @@ This ensures Discord memories like "fitzycodesthings enjoys..." pass validation 
 [
   {
     "content": "User's name is Sarah",
-    "category": "personal_info",
+    "type": "fact",
     "confidence": 0.95,
     "reasoning": "User explicitly introduced themselves"
   },
   {
     "content": "User is a software engineer",
-    "category": "personal_info",
+    "type": "fact",
     "confidence": 0.9,
     "reasoning": "User mentioned their job at Google as an engineer"
   },
   {
     "content": "User is interested in machine learning",
-    "category": "preference",
+    "type": "fact",
     "confidence": 0.8,
     "reasoning": "User asked detailed questions about ML algorithms"
   }
@@ -712,7 +657,7 @@ New: "User is a teacher"
 [
   {
     "content": "string (required)",
-    "category": "personal_info | preference | experience | relationship | goal | skill (required)",
+    "type": "fact | project | experience | story | relationship (required)",
     "confidence": "float 0.0-1.0 (required)",
     "reasoning": "string (required)"
   }
@@ -834,7 +779,7 @@ RESPONSE FORMAT:
 You MUST return ONLY a valid JSON array. NO explanations, NO apologies, NO markdown formatting, NO text before or after.
 
 VALID responses:
-- Facts found: [{"content": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}]
+- Facts found: [{"content": "...", "type": "...", "confidence": 0.95, "reasoning": "..."}]
 - No facts: []
 
 INVALID responses (DO NOT use these):
@@ -976,7 +921,7 @@ RESPONSE FORMAT:
 You MUST return ONLY a valid JSON array. NO explanations, NO apologies, NO markdown formatting, NO text before or after.
 
 VALID responses:
-- Facts found: [{"content": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}]
+- Facts found: [{"content": "...", "type": "...", "confidence": 0.95, "reasoning": "..."}]
 - No facts: []
 
 INVALID responses (DO NOT use these):
@@ -990,11 +935,23 @@ If no memorable facts are present, return exactly: []
 CRITICAL: Returning an empty array [] is the CORRECT and EXPECTED response when messages contain no facts. Simple greetings like "Hello" MUST return []. Questions MUST return [].
 ```
 
-**User Content** (passed separately):
+### User Content (Passed Separately)
+
+Only the raw user message content is sent as the LLM prompt input (no extra instructions). Example:
+
 ```
 fitzycodesthings: I love sci-fi books, especially hard science fiction
 alex: I prefer fantasy novels
 ```
+
+---
+
+## Actual Prompt (As Used)
+
+`BackgroundMemoryExtractor._build_extraction_prompt()` returns:
+
+1. A **system prompt** exactly matching the “System Prompt” template above (with the `{multi_user_context}`, `{extraction_instructions}`, and `{allowed_type_names}` values filled in).
+2. A **user prompt** containing only the concatenated user message content (no role labels beyond what the message already includes in multi-user contexts).
 
 **Expected LLM Response**:
 ```json
@@ -1046,10 +1003,8 @@ alex: I prefer fantasy novels
 **Override**: Extracted memories use character-specific models
 
 **Example**:
-- Nova (qwen2.5:14b-instruct) extrbackground_memory_extractor.py`  
-**Method**: `_build_extraction_prompt()` - Line ~238
-
-**Filters**: Same file, `_parse_extraction_response()` - Lines ~404-469phin-mistral-nemo
+- Nova (qwen2.5:14b-instruct) extracts with qwen2.5
+- Sarah (dolphin-mistral-nemo:12b) extracts with dolphin-mistral-nemo
 
 ### Temperature
 
@@ -1160,16 +1115,15 @@ CREATE TABLE memories (
 
 ### Location
 
-**File**: `chorus_engine/services/memory_extraction.py`  
+**File**: `chorus_engine/services/background_memory_extractor.py`  
 **Method**: `_build_extraction_prompt()` - Line ~271
 
 ### When to Edit
 
-**Add Categories**:
-- Define new category in prompt
+**Add Memory Types**:
+- Define new type in prompt
 - Update JSON schema
 - Add to database enum
-- Update UI badge colors
 
 **Adjust Examples**:
 - Add more good/bad examples
@@ -1179,7 +1133,7 @@ CREATE TABLE memories (
 **Change Extraction Philosophy**:
 - Modify what counts as "extractable"
 - Adjust confidence thresholds
-- Change category definitions
+- Change type definitions
 
 **Improve Anti-Hallucination**:
 - Add more "DO NOT" rules

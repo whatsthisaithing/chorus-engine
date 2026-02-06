@@ -412,11 +412,13 @@ Discovers conversations needing analysis:
 ```sql
 SELECT * FROM conversations 
 WHERE (is_private != 'true' OR is_private IS NULL)
-  AND (last_analyzed_at IS NULL OR last_analyzed_at < :cutoff_time)
+  AND (last_analyzed_at IS NULL OR last_analyzed_at < updated_at)
   AND updated_at < :cutoff_time
 ORDER BY updated_at ASC
 LIMIT :batch_size * 2
 ```
+
+**Key Logic**: The condition `last_analyzed_at < updated_at` ensures conversations are only re-analyzed if they have new messages since the last analysis. This prevents redundant processing of conversations that haven't changed.
 
 Then filters in Python for `message_count >= min_messages`.
 
@@ -426,9 +428,12 @@ Then filters in Python for `message_count >= min_messages`.
 2. Calls `ConversationAnalysisService.analyze_conversation()`
 3. Calls `ConversationAnalysisService.save_analysis()` to persist:
    - Extracted memories (facts, projects, experiences, etc.)
-   - Conversation summary
-   - Vector store embeddings
+   - Conversation summary (to `conversation_summaries` SQL table)
+   - **Themes** (stored in vector store metadata, NOT in SQL table)
+   - Vector store embeddings with full metadata (themes, tone, emotional_arc, key_topics)
 4. Updates `conversation.last_analyzed_at`
+
+**Note on Themes Storage**: Themes extracted during analysis are saved to the ChromaDB vector store as metadata, not to the SQL `conversation_summaries` table. The SQL table stores `key_topics`, `tone`, and `emotional_arc`, but themes are vector-store-only. This enables semantic search over thematic content while keeping the SQL schema focused on structural data.
 
 ### Analysis Pipeline
 

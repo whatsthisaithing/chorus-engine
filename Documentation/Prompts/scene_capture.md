@@ -87,7 +87,7 @@ Scene capture is a specialized generation feature that allows users to manually 
 |---------|------------------|---------------|
 | **Trigger** | User request detected | Manual button click |
 | **Perspective** | Variable (first/third person) | Always third-person observer |
-| **Context Window** | Last 10 messages | Last 10 messages |
+| **Context Window** | Last 3 messages | Last 10 messages |
 | **Focus** | User's specific request | Current scene state |
 | **Character Depiction** | Current age (unless specified) | Current age, external view |
 | **Participants** | May exclude user | Includes all participants |
@@ -98,7 +98,7 @@ Scene capture is a specialized generation feature that allows users to manually 
 
 **Normal Generation Flow**:
 ```
-User message → Keyword detection → Prompt generation → Confirmation → Image
+User message → Semantic intent detection → Prompt generation → Confirmation → Image
 ```
 
 **Scene Capture Flow**:
@@ -116,7 +116,7 @@ Button click → Scene analysis → Prompt generation → Confirmation → Image
 
 **Root Cause Analysis**:
 
-1. **Smaller Context Window**: Scene capture used only 5 messages vs. 10 for in-conversation
+1. **Smaller Context Window**: Scene capture used only 5 messages vs. 3 for in-conversation
    - Missed recent conversation flow and buildup
    - In long conversations, 5 messages might not even include the setup for "current moment"
 
@@ -136,7 +136,7 @@ Button click → Scene analysis → Prompt generation → Confirmation → Image
 **Changes Implemented (Hybrid Approach)**:
 
 1. **Increased Context Window**: 5 → 10 messages
-   - **Rationale**: Match in-conversation generation's fuller context
+   - **Rationale**: Provide broader context than in-conversation prompts (which use last 3 messages)
    - **Benefit**: Captures complete conversation arc and scene evolution
    - **Result**: LLM sees how the scene developed, not just a snapshot
 
@@ -175,7 +175,7 @@ While now similar in context handling, scene capture maintains its unique value:
 - **In-conversation**: Responds to explicit user request ("show me X")
 - **Scene capture**: Captures implicit current state ("what's happening now")
 
-Both now use the same rich 10-message context, but interpret it differently:
+Scene capture uses a 10-message context (broader than in-conversation image prompts, which use the last 3 messages), but they interpret it differently:
 - In-conversation: "What visual does the user want?"
 - Scene capture: "What is currently happening in this scene?"
 
@@ -186,7 +186,7 @@ Both now use the same rich 10-message context, but interpret it differently:
 ### Message Window (Updated v1.1)
 
 **Size**: Last 10 messages (increased from 5)  
-**Rationale**: Matches in-conversation generation for consistent quality  
+**Rationale**: Provides broader context than in-conversation prompts (last 3 messages)  
 **Processing**: Chronological order (oldest to newest, no reversal)  
 **Weighting**: Last 2-3 messages explicitly define "current scene state"
 

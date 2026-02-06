@@ -56,8 +56,8 @@ This folder contains detailed specifications for each prompt type, including:
 **Purpose**: Extract memorable facts about user from conversations
 
 **Key Features**:
-- Automatic fact extraction
-- Category classification (6 types)
+- Automatic memory extraction
+- Memory types (fact, project, experience, story, relationship)
 - Confidence scoring (0.0-1.0)
 - Anti-hallucination safeguards
 - JSON structured output
@@ -73,7 +73,7 @@ This folder contains detailed specifications for each prompt type, including:
 - Preventing hallucination patterns
 - Adjusting confidence thresholds
 
-**Location**: `chorus_engine/services/memory_extraction.py`
+**Location**: `chorus_engine/services/background_memory_extractor.py`
 
 ---
 
@@ -102,6 +102,67 @@ This folder contains detailed specifications for each prompt type, including:
 - Refining style guidance
 
 **Location**: `chorus_engine/services/image_prompt_service.py`
+
+---
+
+### 4. Video Generation Prompts
+
+**File**: [`video_generation.md`](video_generation.md)
+
+**Purpose**: Generate motion-focused video descriptions for video workflows
+
+**Key Features**:
+- Motion/action emphasis
+- Camera movement guidance
+- Character depiction rules
+- JSON structured output
+
+**Used In**:
+- Video request detection and preparation
+- Prompt preview before generation
+- ComfyUI video workflow integration
+
+**Location**: `chorus_engine/services/video_prompt_service.py`
+
+---
+
+### 5. Scene Capture Prompts
+
+**File**: [`scene_capture.md`](scene_capture.md)
+
+**Purpose**: Third-person observer prompts for capturing the current scene
+
+**Key Features**:
+- Omniscient observer perspective
+- Multi-participant inclusion
+- Context weighting for “current moment”
+- JSON structured output
+
+**Used In**:
+- Scene capture button (manual capture)
+- Prompt preview before generation
+
+**Location**: `chorus_engine/services/scene_capture_prompt_service.py`
+
+---
+
+### 6. Conversation Analysis Prompts
+
+**File**: [`conversation_analysis.md`](conversation_analysis.md)
+
+**Purpose**: Analyze full conversations to extract memories and summaries
+
+**Key Features**:
+- Full conversation analysis
+- Memory extraction + summaries
+- Themes and emotional arc
+- JSON structured output
+
+**Used In**:
+- Manual “Analyze Now” flow
+- Conversation summaries for retrieval
+
+**Location**: `chorus_engine/services/conversation_analysis_service.py`
 
 ---
 
@@ -145,8 +206,8 @@ Different tasks require different temperatures:
 | Task | Temperature | Reason |
 |------|-------------|--------|
 | Conversation | 0.7 (Nova) / 0.5 (Alex) | Creative but coherent |
-| Memory Extraction | 0.3 | Consistent, structured output |
-| Image Prompts | 0.8 | Creative descriptions |
+| Memory Extraction | 0.1 | Consistent, structured output |
+| Image Prompts | 0.3 | Consistent, detailed descriptions |
 
 ### Length Guidelines
 
@@ -186,7 +247,7 @@ Different tasks require different temperatures:
 
 **Quick Reference**:
 - Conversation: `system_prompt_generator.py`
-- Extraction: `memory_extraction.py` → `_build_extraction_prompt()`
+- Extraction: `background_memory_extractor.py` → `_build_extraction_prompt()`
 - Images: `image_prompt_service.py` → `_build_system_prompt()`
 
 ### 3. Make Changes
@@ -224,12 +285,12 @@ Chorus Engine uses Qwen2.5:14B-Instruct (32K context):
 ```
 Total: 32,768 tokens
 
-Breakdown:
-- System Prompt: ~200-400 tokens (conversational)
-- Retrieved Memories: ~3,000-4,000 tokens (30% budget)
-- Message History: ~4,000-5,000 tokens (40% budget)
-- Reserve: ~3,000-4,000 tokens (30% for response)
-- Remaining: ~20,000+ tokens (unused buffer)
+Breakdown (after system prompt + document injection):
+- Conversation Context Summaries: ~5% of remaining budget
+- Retrieved Memories: ~20% of remaining budget
+- Message History: ~50% of remaining budget
+- Document Chunks: ~15% of remaining budget
+- Reserve: ~10% of remaining budget
 ```
 
 ### Optimization Strategies
@@ -417,7 +478,7 @@ def test_memory_extraction_flow():
 
 **Initial Documentation**:
 - Conversational system prompts (4 immersion levels)
-- Memory extraction prompts (6 categories)
+- Memory extraction prompts (fact/project/experience/story/relationship)
 - Image generation prompts (context-aware)
 - Created comprehensive specifications
 
@@ -552,16 +613,22 @@ All prompts tracked in git:
 | Prompt Type | Service File | Method | Line |
 |-------------|--------------|--------|------|
 | Conversation | `system_prompt_generator.py` | `generate()` | ~20 |
-| Extraction | `memory_extraction.py` | `_build_extraction_prompt()` | ~271 |
+| Extraction | `background_memory_extractor.py` | `_build_extraction_prompt()` | ~276 |
 | Image | `image_prompt_service.py` | `_build_system_prompt()` | ~178 |
+| Video | `video_prompt_service.py` | `_build_system_prompt()` | ~48 |
+| Scene Capture | `scene_capture_prompt_service.py` | `_build_system_prompt()` | ~160 |
+| Conversation Analysis | `conversation_analysis_service.py` | `_build_analysis_prompt()` | ~250 |
 
 ### Key Parameters
 
 | Prompt Type | Temperature | Token Budget | Output Format |
 |-------------|-------------|--------------|---------------|
 | Conversation | 0.5-0.7 | 150-400 | Natural text |
-| Extraction | 0.3 | 600-800 | JSON array |
-| Image | 0.8 | 800-1200 | JSON object |
+| Extraction | 0.1 | 600-800 | JSON array |
+| Image | 0.3 | 800-1200 | JSON object |
+| Video | 0.3 | 100-300 words (prompt rule says max 150) | JSON object |
+| Scene Capture | 0.5 | 100-300 words | JSON object |
+| Conversation Analysis | 0.1 | Up to 4000 tokens | JSON object |
 
 ### Common Issues
 

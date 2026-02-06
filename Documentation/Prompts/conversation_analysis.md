@@ -104,6 +104,57 @@ EXTRACTION GUIDELINES:
 }
 ```
 
+---
+
+## Actual Prompt (As Used)
+
+The service builds a single prompt string and sends it to the LLM. This is the exact template used in `conversation_analysis_service.py`:
+
+```
+You are analyzing a complete conversation to extract comprehensive memories and create a summary.
+
+CONVERSATION ({token_count} tokens):
+---
+{formatted_conversation_messages}
+---
+
+{type_instructions}
+
+EXTRACTION GUIDELINES:
+1. Extract ALL significant information across enabled memory types
+2. Look for patterns, themes, and relationships
+3. Identify key moments and emotional turning points
+4. Note participants and their roles
+5. Be thorough - this is a complete conversation analysis
+
+OUTPUT FORMAT (JSON):
+{
+  "memories": [
+    {
+      "content": "Clear, specific memory statement",
+      "type": "fact|project|experience|story|relationship",
+      "confidence": 0.0-1.0,
+      "reasoning": "Why this is significant",
+      "emotional_weight": 0.0-1.0 (optional),
+      "participants": ["person1", "person2"] (optional),
+      "key_moments": ["moment1", "moment2"] (optional)
+    }
+  ],
+  "summary": "2-3 sentence conversation summary",
+  "themes": ["theme1", "theme2", "theme3"],
+  "tone": "overall emotional tone",
+  "emotional_arc": ["start: emotion", "middle: emotion", "end: emotion"],
+  "participants": ["all people mentioned"],
+  "key_topics": ["topic1", "topic2", "topic3"]
+}
+
+Analyze the conversation and respond with the JSON object:
+```
+
+**Notes**:
+- `{type_instructions}` is dynamically generated based on the character’s memory profile.
+- `{formatted_conversation_messages}` is the full conversation with `USER:` / `ASSISTANT:` role labels in chronological order.
+
 ### 3. LLM Call
 
 ```python
@@ -181,9 +232,9 @@ vector_store.add_memories(
 if confidence >= 0.9:
     status = "auto_approved"
 elif confidence >= 0.7:
-    status = "approved"  
+    status = "approved"  # Approved for confident extractions
 else:
-    status = "pending"
+    status = "pending"  # Below 0.7 requires review
 
 memory = create_memory(
     character_id=character_id,
