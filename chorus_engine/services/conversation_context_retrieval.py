@@ -87,6 +87,7 @@ class RetrievedConversationContext:
     similarity: float
     tone: Optional[str] = None
     key_topics: Optional[List[str]] = None
+    open_questions: Optional[List[str]] = None
     message_count: int = 0
     created_at: Optional[str] = None
 
@@ -245,6 +246,15 @@ class ConversationContextRetrievalService:
                     except:
                         key_topics = []
                 
+                # Handle open_questions which may be a JSON string or list
+                open_questions = metadata.get('open_questions', [])
+                if isinstance(open_questions, str):
+                    import json
+                    try:
+                        open_questions = json.loads(open_questions)
+                    except:
+                        open_questions = []
+
                 retrieved.append(RetrievedConversationContext(
                     conversation_id=conv_id,
                     title=metadata.get('title', 'Untitled'),
@@ -252,6 +262,7 @@ class ConversationContextRetrievalService:
                     similarity=similarity,
                     tone=metadata.get('tone'),
                     key_topics=key_topics,
+                    open_questions=open_questions,
                     message_count=metadata.get('message_count', 0),
                     created_at=metadata.get('created_at')
                 ))
@@ -344,6 +355,8 @@ class ConversationContextRetrievalService:
                     lines.append(f"Tone: {ctx.tone}")
                 if ctx.key_topics:
                     lines.append(f"Topics: {', '.join(ctx.key_topics[:5])}")
+                if ctx.open_questions:
+                    lines.append(f"Open Questions: {', '.join(ctx.open_questions[:5])}")
             
             lines.append("")  # Blank line between summaries
         

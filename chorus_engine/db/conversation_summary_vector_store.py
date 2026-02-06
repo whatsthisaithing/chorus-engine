@@ -38,11 +38,9 @@ class ConversationSummaryVectorStore:
     - created_at: str (ISO timestamp)
     - updated_at: str (ISO timestamp)
     - message_count: int
-    - themes: str (JSON array)
-    - tone: str
     - emotional_arc: str
-    - key_topics: str (JSON array)
     - participants: str (JSON array)
+    - open_questions: str (JSON array)
     - source: str (web, discord, etc.)
     - analyzed_at: str (ISO timestamp)
     - manual_analysis: bool
@@ -426,7 +424,7 @@ class ConversationSummaryVectorStore:
         processed = {}
         
         # Fields known to be JSON-serialized lists
-        list_fields = {'themes', 'key_topics', 'participants'}
+        list_fields = {'themes', 'key_topics', 'participants', 'open_questions'}
         
         for key, value in metadata.items():
             if key in list_fields and isinstance(value, str):

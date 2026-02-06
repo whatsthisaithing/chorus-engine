@@ -28,6 +28,8 @@ class MemoryRepository:
         status: str = "approved",  # Phase 4.1: pending | approved | auto_approved
         source_messages: Optional[List[str]] = None,  # Phase 4.1: Source message IDs
         metadata: Optional[Dict[str, Any]] = None,
+        durability: Optional[str] = None,  # Phase 8+: Durability classification
+        pattern_eligible: Optional[bool] = None,  # Phase 8+: Pattern eligibility
         emotional_weight: Optional[float] = None,  # Phase 8: Emotional significance
         participants: Optional[List[str]] = None,  # Phase 8: People involved
         key_moments: Optional[List[str]] = None,  # Phase 8: Significant moments
@@ -59,6 +61,8 @@ class MemoryRepository:
             status: Memory status (pending | approved | auto_approved)
             source_messages: Optional list of source message IDs
             metadata: Optional metadata (for additional flexible storage)
+            durability: Optional durability classification
+            pattern_eligible: Optional pattern eligibility flag
             emotional_weight: Optional emotional significance (0.0-1.0)
             participants: Optional list of people involved in the memory
             key_moments: Optional list of significant moments in the memory
@@ -81,6 +85,8 @@ class MemoryRepository:
             status=status,
             source_messages=source_messages,
             meta_data=metadata or {},
+            durability=durability or "situational",
+            pattern_eligible=1 if pattern_eligible else 0,
             emotional_weight=emotional_weight,
             participants=participants,
             key_moments=key_moments,

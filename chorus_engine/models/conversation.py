@@ -129,6 +129,7 @@ class ConversationSummary(Base):
     participants = Column(JSON, nullable=True)  # List of who was involved
     emotional_arc = Column(String(200), nullable=True)  # Brief emotional progression description
     tone = Column(String(200), nullable=True)  # Overall tone of the conversation
+    open_questions = Column(JSON, nullable=True)  # Optional open questions for follow-up
     
     # Phase 8 Day 10: Track if analysis was manually triggered
     manual = Column(String(10), nullable=False, default="false")  # "true" or "false" for SQLite compatibility
@@ -249,6 +250,8 @@ class Memory(Base):
     category = Column(String(50), nullable=True)  # personal_info, preference, experience, relationship, goal, skill
     status = Column(String(20), nullable=False, default="approved")  # pending | approved | auto_approved
     source_messages = Column(JSON, nullable=True)  # List of message IDs that contributed to this memory
+    durability = Column(String(20), nullable=False, default="situational")  # ephemeral | situational | long_term | identity
+    pattern_eligible = Column(Integer, nullable=False, default=0)  # 0/1 for SQLite compatibility
     
     # Phase 8: Enhanced memory fields
     emotional_weight = Column(Float, nullable=True)  # 0.0-1.0 emotional significance

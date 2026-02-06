@@ -91,6 +91,9 @@ class ConversationExportService:
                 lines.append(f"**Key Topics:** {topics}")
             if latest_summary.emotional_arc:
                 lines.append(f"**Emotional Arc:** {latest_summary.emotional_arc}")
+            if latest_summary.open_questions:
+                questions = latest_summary.open_questions if isinstance(latest_summary.open_questions, str) else ", ".join(latest_summary.open_questions)
+                lines.append(f"**Open Questions:** {questions}")
             if latest_summary.message_count:
                 lines.append(f"**Messages Covered:** {latest_summary.message_count}")
             

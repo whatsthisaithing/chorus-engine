@@ -96,6 +96,9 @@ class SystemSettingsManager {
         document.getElementById('llm_provider').value = config.llm.provider || 'ollama';
         document.getElementById('llm_base_url').value = config.llm.base_url || '';
         document.getElementById('llm_model').value = config.llm.model || '';
+        document.getElementById('llm_archivist_model').value = config.llm.archivist_model || '';
+        document.getElementById('llm_analysis_max_tokens_summary').value = config.llm.analysis_max_tokens_summary || 4096;
+        document.getElementById('llm_analysis_max_tokens_memories').value = config.llm.analysis_max_tokens_memories || 4096;
         document.getElementById('llm_context_window').value = config.llm.context_window || 32768;
         document.getElementById('llm_max_response_tokens').value = config.llm.max_response_tokens || 4096;
         document.getElementById('llm_temperature').value = config.llm.temperature || 0.7;
@@ -206,6 +209,9 @@ class SystemSettingsManager {
                 provider: document.getElementById('llm_provider').value,
                 base_url: document.getElementById('llm_base_url').value,
                 model: document.getElementById('llm_model').value,
+                archivist_model: document.getElementById('llm_archivist_model').value,
+                analysis_max_tokens_summary: parseInt(document.getElementById('llm_analysis_max_tokens_summary').value),
+                analysis_max_tokens_memories: parseInt(document.getElementById('llm_analysis_max_tokens_memories').value),
                 context_window: parseInt(document.getElementById('llm_context_window').value),
                 max_response_tokens: parseInt(document.getElementById('llm_max_response_tokens').value),
                 temperature: parseFloat(document.getElementById('llm_temperature').value),

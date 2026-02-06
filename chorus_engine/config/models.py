@@ -12,6 +12,22 @@ class LLMConfig(BaseModel):
     provider: Literal["ollama", "lmstudio", "koboldcpp", "openai-compatible", "integrated"] = "integrated"
     base_url: str = "http://localhost:11434"
     model: str = "mistral:7b-instruct"
+    archivist_model: Optional[str] = Field(
+        default=None,
+        description="Optional dedicated model for conversation analysis (summary + archivist)."
+    )
+    analysis_max_tokens_summary: int = Field(
+        default=4096,
+        gt=0,
+        le=8192,
+        description="Max tokens for conversation summary analysis."
+    )
+    analysis_max_tokens_memories: int = Field(
+        default=4096,
+        gt=0,
+        le=8192,
+        description="Max tokens for conversation memory extraction analysis."
+    )
     context_window: int = Field(default=8192, gt=0, le=128000)
     max_response_tokens: int = Field(default=2048, gt=0, le=8192)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)

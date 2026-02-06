@@ -95,6 +95,23 @@ Performance varies significantly across different models:
 
 See [GETTING_STARTED.md](../GETTING_STARTED.md#critical-lm-studio-context-window-configuration) for detailed setup instructions.
 
+### Archivist Model (Conversation Analysis)
+
+Chorus Engine can use a **dedicated archivist model** for conversation analysis (summary + memory extraction). This is configured in `config/system.yaml` via:
+
+```yaml
+llm:
+  archivist_model: qwen3:4b
+```
+
+**Provider notes:**
+- **Ollama**: Use the Ollama model name (recommended default `qwen3:4b`)
+- **LM Studio**: Use the exact LM Studio model name
+- **KoboldCpp**: Leave blank (single-model runtime)
+
+If set, the archivist model overrides character preferences for analysis and runs at temperature **0.0** for consistency.
+You can edit this in the **System Settings** UI (Settings → System Settings → LLM Provider Configuration).
+
 ---
 
 ## Character Cards

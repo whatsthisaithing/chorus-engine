@@ -202,6 +202,7 @@ llm:
   provider: ollama
   base_url: http://localhost:11434
   model: mistral:7b-instruct
+  archivist_model: qwen3:4b  # Ollama model name for conversation analysis (summary + memories)
 ```
 
 Install and start Ollama:
@@ -236,11 +237,16 @@ llm:
   provider: lmstudio
   base_url: http://localhost:1234
   model: local-model  # Name shown in LM Studio
+  archivist_model: local-model  # Use LM Studio model name if desired
 ```
 
 **Option D: KoboldCpp (External Service)**
 - Download a model from the model library
 - Load the model in LM Studio
+- Leave `llm.archivist_model` blank (single-model runtime)
+
+**Archivist Model (Conversation Analysis)**:
+If you set `llm.archivist_model`, Chorus Engine will use it for conversation summaries and memory extraction at temperature **0.0**. This overrides character model preferences for analysis only.
 
 **Configure Chorus Engine** - Edit `config/system.yaml`:
 
@@ -264,6 +270,7 @@ llm:
   provider: lmstudio
   base_url: http://localhost:1234
   model: qwen/qwen2.5-coder-14b
+  archivist_model: qwen/qwen2.5-coder-14b  # Optional: dedicated archivist model
 ```
 
 4. **Configure HuggingFace (Required for TTS)**
@@ -733,6 +740,8 @@ Available parameters:
 - **provider**: Optional provider specification (null defaults to Ollama)
 
 Chorus Engine automatically switches models when you switch characters. The system ensures that all operations (chat, memory extraction, image prompt generation) use the character's preferred model consistently. If you notice unexpected model loading, check `log_ollama_status()` diagnostic output in the console.
+
+**Archivist Model Override**: Conversation analysis (summary + memory extraction) can use a dedicated model via `llm.archivist_model`. If set, it overrides character preferences for analysis and runs at temperature 0.0 for consistency. For KoboldCpp, leave it blank (single model runtime).
 
 ### Placeholder System
 

@@ -72,6 +72,39 @@ python utilities/reset_character.py sarah_v1
 
 **Warning:** This does NOT delete the character configuration file. It only removes conversation history and memories.
 
+### `conversation_analysis_runner/`
+
+Run the full conversation analysis (summary + archivist memory extraction)
+without persisting results to SQL or vector stores.
+
+**Usage:**
+```bash
+python utilities/conversation_analysis_runner/run_analysis.py <conversation_id>
+```
+
+**Optional Output Path:**
+```bash
+python utilities/conversation_analysis_runner/run_analysis.py <conversation_id> --output data/exports/custom_output.json
+```
+
+**Output:**
+- JSON file with summary + extracted memories (durability + pattern eligibility)
+
+### `archivist_model_harness/`
+
+Evaluate multiple LLM models on the archivist workflow (summary + memory extraction)
+across a fixed set of conversations. Outputs are written under
+`<run-folder>/results/<run_id>/`.
+
+**Usage:**
+```bash
+python utilities/archivist_model_harness/archivist_harness.py --run-folder <PATH>
+```
+
+**Output:**
+- CSV/JSONL results plus a run manifest and copies of run inputs
+ - Optional metrics: run `utilities/archivist_model_harness/compute_metrics.py`
+
 ---
 
 ## Future Scripts

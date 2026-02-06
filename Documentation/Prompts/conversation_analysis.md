@@ -1,8 +1,13 @@
-# Conversation Analysis System
+# Conversation Analysis System (Unified Archivist)
 
 ## Overview
 
-The Conversation Analysis System performs comprehensive analysis of complete conversations to extract memories, generate summaries, and identify themes. This is a **bulk analysis** system that processes entire conversations as a unit, unlike the real-time memory extraction that happens during individual messages.
+The Conversation Analysis System now runs a two-step analysis cycle:
+
+1. Conversation Summary Generation (narrative, assistant-neutral)
+2. Archivist Memory Extraction (durable, assistant-neutral memories)
+
+This is a bulk analysis pipeline that processes complete conversations. It replaces prior single-pass analysis and works only during analysis cycles (manual or scheduled), not per-message.
 
 **Location:** `chorus_engine/services/conversation_analysis_service.py`
 
@@ -11,18 +16,16 @@ The Conversation Analysis System performs comprehensive analysis of complete con
 ## When Analysis Triggers
 
 ### Manual Trigger
-- User clicks **"Analyze Now"** button in the UI
-- Soft minimums (can be bypassed with `force=true`):
-  - ≥5 messages
-  - ≥100 tokens
-- Runs synchronously and returns detailed results immediately
+- User clicks "Analyze Now" in the UI
+- Soft minimums (bypassable with `force=true`):
+  - >= 5 messages
+  - >= 100 tokens
+- Runs synchronously and returns results immediately
 
 ### Automatic Triggers (Future)
-The service is designed to support automatic analysis based on:
-- **≥10,000 tokens** - Comprehensive conversation threshold
-- **≥2,500 tokens + 24h inactive** - Shorter but complete conversation
-
-*Note: Automatic triggers are not currently implemented in app.py but the service is designed for them.*
+The service supports automatic analysis based on:
+- >= 10,000 tokens
+- >= 2,500 tokens + 24h inactive
 
 ---
 
@@ -31,326 +34,199 @@ The service is designed to support automatic analysis based on:
 ### 1. Data Collection
 ```python
 conversation = get_by_id(conversation_id)
-messages = get_all_messages(conversation_id)  # All threads
+messages = get_all_messages(conversation_id)
 token_count = count_tokens(messages)
 ```
 
-**Quality Checks:**
+**Quality Checks**:
 - Skips conversations with < 500 tokens
-- Counts tokens across all messages in all threads
 - Validates conversation exists and has messages
 
-### 2. Prompt Assembly
+### 2. Two-Step LLM Calls
 
-The analysis prompt contains:
+#### Step A: Conversation Summary
+- Purpose: narrative summary, themes, shifts, open questions
+- NOT a memory extraction task
 
-#### A. Formatted Conversation
+**Summary System Prompt (as used):**
 ```
-USER: [message content]
+You are a conversation analysis engine.
 
-ASSISTANT: [message content]
+Your task is to produce a clear, concise, narrative summary of the conversation provided.
 
-USER: [message content]
-...
-```
-- All messages across all threads
-- Chronologically ordered
-- Role labels in uppercase
+PURPOSE
+- Capture the themes, insights, tensions, and shifts that occurred in the conversation.
+- Preserve a human-readable understanding of what was explored and why it mattered.
+- Support later reflection or review.
 
-#### B. Memory Type Definitions
-Based on character's memory profile (from `MemoryProfileService`):
+SCOPE AND CONSTRAINTS
+- This is not a memory extraction task.
+- Do not output facts, preferences, or durable memories.
+- Do not speculate beyond what occurred in the conversation.
 
-```
-MEMORY TYPES:
-FACT: Factual information (name, preferences, simple statements)
-PROJECT: Goals, plans, ongoing work, future intentions  
-EXPERIENCE: Shared activities, events, interactions
-STORY: Narratives, anecdotes, personal stories
-RELATIONSHIP: Emotional bonds, dynamics, connection evolution
-```
+STYLE RULES (CRITICAL)
+- Focus on outcomes, themes, and changes, not techniques.
+- Do not foreground assistant style, rhetoric, or personality.
+- Avoid describing how the assistant responded unless it is necessary to explain an effect on the conversation.
+- The summary must remain valid if the assistant or model were replaced.
 
-Only includes types enabled for the character.
+ALLOWED CONTENT
+- Topics discussed
+- Emotional or cognitive shifts
+- Questions raised or resolved
+- Reframes or insights acknowledged by the user
+- Open threads or unresolved tensions
 
-#### C. Extraction Guidelines
-```
-EXTRACTION GUIDELINES:
-1. Extract ALL significant information across enabled memory types
-2. Look for patterns, themes, and relationships
-3. Identify key moments and emotional turning points
-4. Note participants and their roles
-5. Be thorough - this is a complete conversation analysis
-```
+DISALLOWED CONTENT
+- Assistant-specific traits or behaviors
+- Commentary on assistant strategy or skill
+- Diagnostic judgments
+- New information not present in the conversation
 
-#### D. Output Schema
-```json
+OUTPUT FORMAT
+Return a single JSON object:
+
 {
-  "memories": [
-    {
-      "content": "Clear, specific memory statement",
-      "type": "fact|project|experience|story|relationship",
-      "confidence": 0.0-1.0,
-      "reasoning": "Why this is significant",
-      "emotional_weight": 0.0-1.0 (optional),
-      "participants": ["person1", "person2"] (optional),
-      "key_moments": ["moment1", "moment2"] (optional)
-    }
-  ],
-  "summary": "2-3 sentence conversation summary",
-  "themes": ["theme1", "theme2", "theme3"],
-  "tone": "overall emotional tone",
-  "emotional_arc": ["start: emotion", "middle: emotion", "end: emotion"],
-  "participants": ["all people mentioned"],
-  "key_topics": ["topic1", "topic2", "topic3"]
+  "summary": "A concise narrative summary of the conversation",
+  "participants": ["user", "assistant"],
+  "emotional_arc": "optional brief description",
+  "open_questions": ["optional", "list"]
 }
+
+All fields except summary are optional.
+
+Return only valid JSON. Do not include commentary or formatting.
 ```
 
----
-
-## Actual Prompt (As Used)
-
-The service builds a single prompt string and sends it to the LLM. This is the exact template used in `conversation_analysis_service.py`:
-
+**User Prompt:**
 ```
-You are analyzing a complete conversation to extract comprehensive memories and create a summary.
-
 CONVERSATION ({token_count} tokens):
 ---
 {formatted_conversation_messages}
 ---
-
-{type_instructions}
-
-EXTRACTION GUIDELINES:
-1. Extract ALL significant information across enabled memory types
-2. Look for patterns, themes, and relationships
-3. Identify key moments and emotional turning points
-4. Note participants and their roles
-5. Be thorough - this is a complete conversation analysis
-
-OUTPUT FORMAT (JSON):
-{
-  "memories": [
-    {
-      "content": "Clear, specific memory statement",
-      "type": "fact|project|experience|story|relationship",
-      "confidence": 0.0-1.0,
-      "reasoning": "Why this is significant",
-      "emotional_weight": 0.0-1.0 (optional),
-      "participants": ["person1", "person2"] (optional),
-      "key_moments": ["moment1", "moment2"] (optional)
-    }
-  ],
-  "summary": "2-3 sentence conversation summary",
-  "themes": ["theme1", "theme2", "theme3"],
-  "tone": "overall emotional tone",
-  "emotional_arc": ["start: emotion", "middle: emotion", "end: emotion"],
-  "participants": ["all people mentioned"],
-  "key_topics": ["topic1", "topic2", "topic3"]
-}
-
-Analyze the conversation and respond with the JSON object:
 ```
 
-**Notes**:
-- `{type_instructions}` is dynamically generated based on the character’s memory profile.
-- `{formatted_conversation_messages}` is the full conversation with `USER:` / `ASSISTANT:` role labels in chronological order.
+#### Step B: Archivist Memory Extraction
+- Purpose: durable, assistant-neutral memory extraction
+- Output is a JSON array of memory objects
 
-### 3. LLM Call
+**Archivist System Prompt (as used):**
+```
+You are an archivist system responsible for extracting durable, assistant-neutral memories from a completed conversation.
 
-```python
-response = await llm_client.generate(
-    prompt=analysis_prompt,
-    model=character.preferred_llm.model,  # Uses character's preferred model
-    temperature=0.1,  # Low temperature for consistency
-    max_tokens=4000   # Large enough for comprehensive analysis
-)
+Your role is to identify information that may be useful in the future without freezing transient states, assistant behavior, or stylistic artifacts.
+
+CORE PRINCIPLES (MANDATORY)
+1. Assistant Neutrality
+   - All memories must remain true if the assistant or model is replaced.
+   - Do not store assistant behaviors, styles, or techniques as traits.
+   - Prefer storing effects or outcomes, not causes rooted in assistant behavior.
+
+2. Temporal Discipline
+   - Write all memories in the past tense.
+   - Avoid language that implies permanence unless explicitly justified.
+
+3. Durability Awareness
+   - Every memory must be classified by durability.
+   - Default to conservative classifications.
+
+4. Ephemeral State Exclusion
+   - Transient states (current mood, sleep, immediate plans, location) must not be persisted.
+
+5. Pattern Separation
+   - A single memory is never a pattern.
+   - Some memories may be marked as pattern-eligible, but patterns are inferred elsewhere.
+
+MEMORY TYPES
+- FACT: explicit user-stated facts or preferences
+- PROJECT: ongoing or completed projects or goals
+- EXPERIENCE: meaningful reflections, struggles, or insights
+- STORY: personal narratives shared by the user
+- RELATIONSHIP: explicitly described relationships or dynamics
+
+DURABILITY CLASSIFICATION
+- ephemeral: transient state (DO NOT PERSIST)
+- situational: context-bound or time-limited relevance
+- long_term: stable unless contradicted
+- identity: explicitly self-asserted, core to self-description
+
+RULES:
+- Default to situational unless durability is clearly signaled.
+- Use identity sparingly and only when the user explicitly self-identifies.
+- Any memory classified as ephemeral should still be output but will be excluded from persistence by the system.
+
+PATTERN-ELIGIBLE TAGGING
+- Set pattern_eligible = true only if the memory could meaningfully contribute to a future pattern hypothesis across multiple conversations.
+- Do not assert patterns or generalizations.
+
+CONFIDENCE SCORING
+- 0.9-1.0: Explicit user statement or very clear evidence
+- 0.7-0.89: Reasonable inference grounded in context
+- <0.7: Weak or speculative (avoid if possible)
+
+OUTPUT FORMAT (REQUIRED)
+Return a JSON array of memory objects:
+
+[
+  {
+    "content": "memory text written in past tense",
+    "type": "fact | project | experience | story | relationship",
+    "confidence": 0.0,
+    "durability": "ephemeral | situational | long_term | identity",
+    "pattern_eligible": true,
+    "reasoning": "brief explanation of why this was extracted"
+  }
+]
+
+If no valid durable memories are found, return an empty array.
+
+Return only valid JSON. Do not include commentary or formatting.
 ```
 
-**Configuration:**
-- **Temperature:** `0.1` (very low for consistent, structured output)
-- **Max Tokens:** `4000` (allows detailed analysis of long conversations)
-- **Model:** Uses character's preferred LLM model if specified
-
-### 4. Response Parsing
-
-```python
-# Extract JSON from response
-json_start = response.find("{")
-json_end = response.rfind("}") + 1
-json_str = response[json_start:json_end]
-data = json.loads(json_str)
+**User Prompt:**
+```
+CONVERSATION ({token_count} tokens):
+---
+{formatted_conversation_messages}
+---
 ```
 
-**Parsing Steps:**
-1. Find JSON object boundaries in response
-2. Parse JSON structure
-3. Convert memory types to `MemoryType` enum
-4. Validate confidence scores (0.0-1.0)
-5. Build `ConversationAnalysis` object
-6. Skip invalid memories with warning
+### 3. Parsing and Validation
+- Summary parser expects a JSON object with `summary` required
+- Archivist parser expects a JSON array of memory objects
+- Parsing failures trigger one retry, then fallback to the system default model
 
-**Fallback:** If JSON parsing fails, returns `None` and logs error.
+### 4. Memory Storage Rules
+- `durability=ephemeral` memories are discarded
+- Confidence thresholds:
+  - >= 0.9: `auto_approved` (saved + vectorized)
+  - >= 0.7: `pending` (saved only)
+  - < 0.7: discarded
+- Vector metadata now includes `durability` and `pattern_eligible`
 
-### 5. Memory Storage
+### 5. Summary Storage
+- Summary fields stored:
+  - `summary`
+  - `participants`
+  - `emotional_arc`
+  - `open_questions`
+- Legacy fields (`themes`, `tone`, `key_topics`) remain in the schema for older data but are no longer written for new analyses
 
-For each extracted memory:
+---
 
-#### A. Duplicate Check
-```python
-if is_duplicate_memory(character_id, content):
-    skip_memory()
-```
-- Compares against first 100 existing memories (performance optimization)
-- Case-insensitive content match
-- Skips saving if duplicate found
+## Debug Logging
 
-#### B. Embedding Generation
-```python
-embedding = embedding_service.embed(memory.content)
-vector_id = str(uuid.uuid4())
-```
-
-#### C. Vector Store
-```python
-vector_store.add_memories(
-    character_id=character_id,
-    memory_ids=[vector_id],
-    contents=[content],
-    embeddings=[embedding],
-    metadatas=[{
-        "character_id": character_id,
-        "conversation_id": conversation_id,
-        "type": memory_type,
-        "confidence": confidence
-    }]
-)
-```
-
-#### D. Database Record
-```python
-# Determine status based on confidence
-if confidence >= 0.9:
-    status = "auto_approved"
-elif confidence >= 0.7:
-    status = "approved"  # Approved for confident extractions
-else:
-    status = "pending"  # Below 0.7 requires review
-
-memory = create_memory(
-    character_id=character_id,
-    content=content,
-    memory_type=memory_type,
-    vector_id=vector_id,
-    conversation_id=conversation_id,
-    status=status,
-    confidence=confidence,
-    emotional_weight=emotional_weight,
-    participants=participants,
-    key_moments=key_moments
-)
-```
-
-**Memory Status Rules:**
-- **auto_approved:** confidence ≥ 0.9 (high confidence)
-- **approved:** confidence ≥ 0.7 (good confidence)
-- **pending:** confidence < 0.7 (needs review)
-
-### 6. Summary Storage
-
-```python
-summary = ConversationSummary(
-    conversation_id=conversation_id,
-    summary=analysis.summary,
-    message_range_start=0,
-    message_range_end=message_count - 1,
-    message_count=message_count,
-    key_topics=analysis.key_topics,
-    participants=analysis.participants,
-    emotional_arc=analysis.emotional_arc,  # JSON string
-    tone=analysis.tone,
-    manual="true" if manual else "false"
-)
-```
-
-**Summary Fields:**
-- `summary`: 2-3 sentence overview
-- `message_range_start/end`: Range of analyzed messages
-- `message_count`: Total messages analyzed
-- `key_topics`: List of main topics discussed
-- `participants`: All people mentioned in conversation
-- `emotional_arc`: JSON array of emotional progression
-- `tone`: Overall emotional tone
-- `manual`: Whether manually triggered vs automatic
-
-### 7. Conversation Update
-
-```python
-conversation.last_analyzed_at = datetime.utcnow()
-db.commit()
-```
-
-### 8. Debug Logging
-
-Creates detailed debug log at:
+Logs are written to:
 ```
 data/debug_logs/conversations/{conversation_id}/analysis_{timestamp}.jsonl
 ```
 
-**Log Entries:**
-```jsonl
-{"type": "metadata", "conversation_id": "...", "timestamp": "...", "token_count": 1234}
-{"type": "prompt", "content": "...full prompt..."}
-{"type": "response", "content": "...LLM response..."}
-{"type": "analysis", "memory_count": 5, "themes": [...], "tone": "...", "participants": [...]}
-```
-
----
-
-## Key Design Principles
-
-### 1. Completeness Over Speed
-- Analyzes **entire conversation** as one unit
-- Low temperature (0.1) for consistency
-- Large token budget (4000) for detailed output
-- Thorough extraction across all memory types
-
-### 2. Quality Control
-- Token count minimums prevent analysis of trivial conversations
-- Confidence scoring determines memory approval status
-- Duplicate detection prevents memory redundancy
-- Invalid memories skipped with warnings
-
-### 3. Character-Aware
-- Uses character's preferred LLM model
-- Respects character's memory profile (enabled types)
-- Links memories to specific character
-- Character-scoped vector store
-
-### 4. Comprehensive Data
-- Extracts multiple memory types simultaneously
-- Identifies themes, tone, emotional arc
-- Tracks participants and key topics
-- Preserves context (conversation_id linkage)
-
-### 5. Auditability
-- Debug logs capture full analysis pipeline
-- Timestamp and token count recorded
-- Manual vs automatic analysis tracked
-- Reasoning field explains why memories extracted
-
----
-
-## Differences from Real-Time Memory Extraction
-
-| Aspect | Real-Time | Conversation Analysis |
-|--------|-----------|----------------------|
-| **Scope** | Single message/exchange | Entire conversation |
-| **Timing** | During response generation | After conversation completion |
-| **Context** | Recent messages only | All messages, all threads |
-| **Volume** | 1-2 memories per exchange | Comprehensive bulk extraction |
-| **Purpose** | Immediate context capture | Holistic understanding |
-| **Temperature** | 0.7 (normal) | 0.1 (very consistent) |
-| **Output** | Quick extraction | Detailed analysis with summary |
+Entries include:
+- Summary system prompt and user prompt
+- Summary raw response
+- Archivist system prompt and user prompt
+- Archivist raw response
+- Parsed analysis metadata
 
 ---
 
@@ -361,204 +237,51 @@ data/debug_logs/conversations/{conversation_id}/analysis_{timestamp}.jsonl
 POST /conversations/{conversation_id}/analyze?force=false
 ```
 
-**Request Query Params:**
-- `force` (bool): Bypass soft minimums if true
+Response includes:
+- Summary fields (`summary`, `participants`, `emotional_arc`, `open_questions`)
+- Extracted memories with `durability` and `pattern_eligible`
 
-**Response:**
-```json
-{
-  "status": "success",
-  "analysis_type": "manual",
-  "memories_extracted": 12,
-  "memory_counts": {
-    "fact": 5,
-    "experience": 4,
-    "relationship": 3
-  },
-  "memories": [
-    {
-      "type": "fact",
-      "content": "User loves hiking",
-      "confidence": 0.95,
-      "reasoning": "Explicitly stated preference"
-    }
-  ],
-  "summary": {
-    "text": "Conversation about outdoor activities...",
-    "themes": ["nature", "exercise", "wellness"],
-    "tone": "enthusiastic",
-    "key_topics": ["hiking", "camping", "photography"]
-  }
-}
-```
+---
 
-**Warning Response (under minimums):**
-```json
-{
-  "status": "warning",
-  "message": "Conversation might be too short (4 messages, ~85 tokens)",
-  "can_force": true,
-  "message_count": 4,
-  "estimated_tokens": 85
-}
-```
+## Key Design Principles
+
+1. **Separation of Concerns**
+   - Summary and memory extraction are independent steps
+2. **Assistant Neutrality**
+   - Prompts enforce assistant-agnostic memory and summary content
+3. **Durability First**
+   - All memories carry durability, and ephemeral is excluded from persistence
+4. **Consistency and Safety**
+   - Low temperature, strict JSON, retry-on-failure
+
+---
+
+## Differences from Prior Pipeline
+
+| Aspect | Previous | Current |
+|---|---|---|
+| Prompting | Single combined prompt | Two-step summary + archivist |
+| Memory extraction | Mixed with summary | Dedicated archivist prompt |
+| Assistant-neutral | Partial | Enforced by prompt |
+| Durability | Not present | Required + persisted |
+| Pattern eligibility | Not present | Required + persisted |
+| Storage | Themes/tone/key_topics | Open questions + participants |
 
 ---
 
 ## Configuration
 
-### Service Initialization
+**Service Initialization**:
 ```python
 ConversationAnalysisService(
     db=db_session,
     llm_client=llm_client,
     vector_store=vector_store,
     embedding_service=embedding_service,
-    temperature=0.1  # Configurable but defaults to 0.1
+    temperature=0.1,
+    summary_vector_store=summary_vector_store,
+    llm_usage_lock=llm_usage_lock
 )
 ```
 
-### Character Memory Profile
-Defined in `MemoryProfileService.get_extraction_profile()`:
-```python
-{
-    "extract_facts": True,
-    "extract_projects": True, 
-    "extract_experiences": True,
-    "extract_stories": True,
-    "extract_relationships": True
-}
-```
-
-Disabled types are not included in analysis instructions.
-
 ---
-
-## Future Enhancements
-
-### Potential Automatic Triggers
-1. **Token-based:**
-   - Trigger at 10,000 tokens (comprehensive)
-   - Trigger at 2,500 tokens if 24h inactive
-
-2. **Time-based:**
-   - Daily analysis of active conversations
-   - Weekly analysis of dormant conversations
-
-3. **Event-based:**
-   - On conversation closure
-   - After significant exchanges (user-defined)
-
-### Incremental Analysis
-- Analyze conversation segments (e.g., last 5,000 tokens)
-- Update existing summaries rather than replace
-- Track analyzed ranges to avoid re-processing
-
-### Advanced Features
-- Sentiment tracking over time
-- Relationship evolution visualization
-- Topic clustering across conversations
-- Memory importance scoring refinement
-
----
-
-## Example Workflow
-
-```
-User has conversation with 50 messages (8,500 tokens)
-    ↓
-User clicks "Analyze Now" button
-    ↓
-System validates: conversation exists, has sufficient content
-    ↓
-Prompt assembled: messages + memory types + guidelines + schema
-    ↓
-LLM analyzes: extracts 15 memories, identifies 4 themes, creates summary
-    ↓
-Response parsed: validates JSON, converts types, builds analysis object
-    ↓
-Memories processed:
-  - 12 memories saved (3 were duplicates)
-  - 8 auto-approved (conf ≥ 0.9)
-  - 3 approved (conf ≥ 0.7)
-  - 1 pending review (conf < 0.7)
-    ↓
-Summary saved: overview, themes, emotional arc, participants
-    ↓
-Conversation marked: last_analyzed_at = now
-    ↓
-Debug log written: complete analysis pipeline captured
-    ↓
-API returns: success + memory counts + detailed breakdown
-```
-
----
-
-## Debugging
-
-### Debug Logs Location
-```
-data/debug_logs/conversations/{conversation_id}/analysis_{timestamp}.jsonl
-```
-
-### Log Contents
-1. **Metadata:** Conversation ID, timestamp, token count
-2. **Prompt:** Complete prompt sent to LLM
-3. **Response:** Raw LLM response
-4. **Analysis:** Parsed results summary
-
-### Common Issues
-
-**No memories extracted:**
-- Check if memory types are enabled in character profile
-- Verify conversation has meaningful content
-- Review LLM response in debug log for errors
-
-**All memories pending:**
-- LLM assigning low confidence scores
-- May need to adjust confidence thresholds
-- Check reasoning field for LLM's uncertainty
-
-**Parsing failures:**
-- LLM returned non-JSON response
-- Check temperature (should be 0.1)
-- Verify model supports structured output
-
-**Duplicate skipping:**
-- Similar memories already exist
-- Duplicate check is case-insensitive
-- Only checks first 100 memories (performance)
-
----
-
-## Best Practices
-
-1. **Wait for sufficient content** before manual analysis (>500 tokens)
-2. **Review pending memories** periodically to improve confidence thresholds
-3. **Check debug logs** when extraction yields unexpected results
-4. **Disable unused memory types** in character profile for focused extraction
-5. **Use force=true** sparingly - soft minimums exist for quality
-
----
-
-## Integration Points
-
-### Services Used
-- `LLMClient` - Analysis generation
-- `EmbeddingService` - Memory embeddings
-- `VectorStore` - Memory storage and retrieval
-- `MemoryProfileService` - Character memory configuration
-- `TokenCounter` - Token counting and validation
-
-### Repositories Used
-- `ConversationRepository` - Conversation data
-- `MessageRepository` - Message retrieval
-- `MemoryRepository` - Memory CRUD operations
-- `ThreadRepository` - Thread management
-
-### Models Used
-- `Conversation` - Conversation metadata
-- `Message` - Message content and roles
-- `Memory` - Extracted memory records
-- `ConversationSummary` - Analysis results
-- `MemoryType` - Enum for memory classification

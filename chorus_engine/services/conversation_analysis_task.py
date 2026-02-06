@@ -127,8 +127,8 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                     data={
                         "conversation_id": conversation_id,
                         "memories_extracted": len(analysis.memories),
-                        "themes": analysis.themes,
-                        "summary_length": len(analysis.summary)
+                        "summary_length": len(analysis.summary),
+                        "open_questions_count": len(analysis.open_questions)
                     }
                 )
             else:

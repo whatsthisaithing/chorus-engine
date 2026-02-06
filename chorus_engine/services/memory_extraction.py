@@ -1,7 +1,7 @@
 """Service for memory storage and persistence (Phase 4.1).
 
-NOTE: Memory extraction logic (prompt building, LLM calls, parsing) is now handled by
-BackgroundMemoryExtractor (Phase 7.5) which includes Phase 3 multi-user support.
+NOTE: LLM extraction now happens during analysis cycles. This service focuses
+on storage, deduplication, and vector store integration.
 
 This service provides:
 - Memory storage and persistence layer
@@ -45,15 +45,14 @@ class MemoryExtractionService:
     """
     Service for memory storage, persistence, and management.
     
-    Provides the storage layer for memories extracted by BackgroundMemoryExtractor.
+    Provides the storage layer for extracted memories.
     Handles:
     - Saving extracted memories with confidence-based approval
     - Duplicate detection via vector similarity
     - Vector store integration
     - Memory approval workflow
     
-    NOTE: Extraction logic (LLM calls, prompt building, parsing) is now handled
-    by BackgroundMemoryExtractor (background_memory_extractor.py).
+    NOTE: Extraction logic is handled elsewhere (analysis cycles).
     """
     
     def __init__(
@@ -63,7 +62,7 @@ class MemoryExtractionService:
         vector_store: VectorStore,
         embedding_service: EmbeddingService
     ):
-        self.llm = llm_client  # No longer used - extraction logic in BackgroundMemoryExtractor
+        self.llm = llm_client  # No longer used - kept for backward compatibility
         self.memory_repo = memory_repository
         self.vector_store = vector_store
         self.embedding_service = embedding_service
@@ -71,7 +70,8 @@ class MemoryExtractionService:
     async def check_for_duplicates(
         self,
         memory_content: str,
-        character_id: str
+        character_id: str,
+        where: Optional[Dict[str, Any]] = None
     ) -> Optional[Memory]:
         """
         Check if similar memory already exists.
@@ -92,7 +92,7 @@ class MemoryExtractionService:
                 character_id=character_id,
                 query_embedding=query_embedding,
                 n_results=1,
-                where={"type": "implicit"}
+                where=where
             )
             
             # Check if we have results and if similarity is high enough
@@ -161,24 +161,26 @@ class MemoryExtractionService:
                 status = "pending"
             
             # 4. Create memory in database with Phase 8 fields
-            memory = self.memory_repo.create(
-                content=extracted.content,
-                character_id=character_id,
-                conversation_id=conversation_id,
-                memory_type=MemoryType.IMPLICIT,  # Will be mapped to FACT in repository
-                confidence=extracted.confidence,
-                category=extracted.category,
-                status=status,
-                source_messages=extracted.source_message_ids,
-                metadata={
-                    "reasoning": extracted.reasoning,
-                    "extraction_date": str(json.dumps({}))  # Placeholder for timestamp
-                },
-                emotional_weight=extracted.emotional_weight,
-                participants=extracted.participants,
-                key_moments=extracted.key_moments,
-                source=source  # Platform source: web, discord, slack, etc.
-            )
+                memory = self.memory_repo.create(
+                    content=extracted.content,
+                    character_id=character_id,
+                    conversation_id=conversation_id,
+                    memory_type=MemoryType.IMPLICIT,  # Will be mapped to FACT in repository
+                    confidence=extracted.confidence,
+                    category=extracted.category,
+                    status=status,
+                    source_messages=extracted.source_message_ids,
+                    metadata={
+                        "reasoning": extracted.reasoning,
+                        "extraction_date": str(json.dumps({}))  # Placeholder for timestamp
+                    },
+                    durability="situational",
+                    pattern_eligible=False,
+                    emotional_weight=extracted.emotional_weight,
+                    participants=extracted.participants,
+                    key_moments=extracted.key_moments,
+                    source=source  # Platform source: web, discord, slack, etc.
+                )
             
             # 5. Add to vector store if auto-approved
             if status == "auto_approved":
@@ -257,7 +259,9 @@ class MemoryExtractionService:
                     "type": memory.memory_type.value,
                     "category": memory.category or "",
                     "confidence": memory.confidence or 0.0,
-                    "status": memory.status
+                    "status": memory.status,
+                    "durability": memory.durability if hasattr(memory, "durability") else "situational",
+                    "pattern_eligible": bool(getattr(memory, "pattern_eligible", 0))
                 }]
             )
             

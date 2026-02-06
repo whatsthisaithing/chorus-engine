@@ -216,19 +216,6 @@ async def lifespan(app: FastAPI):
         # Create LLM usage lock early for coordination between background tasks and image generation
         llm_usage_lock = asyncio.Lock()
         
-        # Phase 7.5: Background memory extraction worker (async, using character's model)
-        from chorus_engine.services.background_memory_extractor import BackgroundMemoryExtractor
-        background_extractor = BackgroundMemoryExtractor(
-            llm_client=llm_client,
-            extraction_service=extraction_service,
-            temperature=0.2,
-            llm_usage_lock=llm_usage_lock
-        )
-        
-        # Start background extraction worker
-        await background_extractor.start()
-        logger.info("✓ Background memory extraction worker started (async, uses character model)")
-        
         # Phase 8: Initialize conversation analysis service
         analysis_service = ConversationAnalysisService(
             db=db_session,
@@ -236,7 +223,11 @@ async def lifespan(app: FastAPI):
             vector_store=vector_store,
             embedding_service=embedding_service,
             temperature=0.1,
-            summary_vector_store=summary_vector_store
+            summary_vector_store=summary_vector_store,
+            llm_usage_lock=llm_usage_lock,
+            archivist_model=system_config.llm.archivist_model,
+            analysis_max_tokens_summary=system_config.llm.analysis_max_tokens_summary,
+            analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories
         )
         logger.info("✓ Conversation analysis service initialized")
         
@@ -338,7 +329,7 @@ async def lifespan(app: FastAPI):
                 # Initialize TTS provider system
                 # This supports both ComfyUI workflows and embedded Chatterbox TTS
                 comfyui_lock = asyncio.Lock()  # Lock for ComfyUI to prevent concurrent jobs
-                # Note: llm_usage_lock created earlier and passed to BackgroundMemoryExtractor
+                # Note: llm_usage_lock created earlier for coordination
                 
                 TTSProviderFactory.initialize_providers(
                     comfyui_client=comfyui_client,
@@ -369,7 +360,6 @@ async def lifespan(app: FastAPI):
         app_state["embedding_service"] = embedding_service
         app_state["extraction_service"] = extraction_service
         app_state["keyword_detector"] = keyword_detector  # Phase 7.5: Keyword-based intent detection
-        app_state["background_extractor"] = background_extractor  # Phase 7.5: Async memory extraction
         app_state["llm_usage_lock"] = llm_usage_lock  # Coordination lock for LLM access
         app_state["image_orchestrator"] = image_orchestrator
         app_state["comfyui_client"] = comfyui_client
@@ -545,11 +535,6 @@ async def lifespan(app: FastAPI):
     if app_state.get("heartbeat_service"):
         await app_state["heartbeat_service"].stop()
         logger.info("✓ Heartbeat service stopped")
-    
-    # Phase 7.5: Stop background extraction worker
-    if app_state.get("background_extractor"):
-        await app_state["background_extractor"].stop()
-        logger.info("✓ Background extraction stopped")
     
     # Close persistent database session
     if app_state.get("db_session"):
@@ -872,6 +857,7 @@ class ConversationSearchResult(BaseModel):
     source: str
     key_topics: List[str] = []
     participants: List[str] = []
+    open_questions: List[str] = []
 
 
 class ConversationSearchResponse(BaseModel):
@@ -1078,6 +1064,8 @@ class MemoryResponse(BaseModel):
     category: Optional[str] = None
     status: Optional[str] = None
     source_messages: Optional[List[str]] = None
+    durability: Optional[str] = None
+    pattern_eligible: Optional[bool] = None
     
     class Config:
         from_attributes = True
@@ -2880,7 +2868,8 @@ async def search_conversations(
                 similarity=round(similarity, 4),
                 source=meta.get("source", "web"),
                 key_topics=meta.get("key_topics", []),
-                participants=meta.get("participants", [])
+                participants=meta.get("participants", []),
+                open_questions=meta.get("open_questions", [])
             ))
     
     return ConversationSearchResponse(
@@ -3064,16 +3053,16 @@ async def analyze_conversation_now(
                     "content": m.content,
                     "confidence": m.confidence,
                     "emotional_weight": m.emotional_weight,
-                    "reasoning": m.reasoning
+                    "reasoning": m.reasoning,
+                    "durability": m.durability,
+                    "pattern_eligible": m.pattern_eligible
                 }
                 for m in analysis.memories
             ],
             "summary": analysis.summary,
-            "themes": analysis.themes,
-            "tone": analysis.tone,
             "emotional_arc": analysis.emotional_arc,
             "participants": analysis.participants,
-            "key_topics": analysis.key_topics
+            "open_questions": analysis.open_questions
         }
     except Exception as e:
         logger.exception(f"Manual analysis failed for conversation {conversation_id}")
@@ -3131,13 +3120,14 @@ async def get_analysis_history(
                     "created_at": memory.created_at.isoformat() if memory.created_at else None
                 })
         
-        # Parse emotional_arc safely
-        emotional_arc = []
-        if summary.emotional_arc:
+        # Parse emotional_arc safely (string or JSON-encoded list)
+        emotional_arc = summary.emotional_arc
+        if isinstance(summary.emotional_arc, str) and summary.emotional_arc:
             try:
-                emotional_arc = json.loads(summary.emotional_arc)
+                parsed = json.loads(summary.emotional_arc)
+                emotional_arc = parsed
             except (json.JSONDecodeError, ValueError):
-                emotional_arc = []
+                emotional_arc = summary.emotional_arc
         
         analysis = {
             "id": summary.id,
@@ -3147,6 +3137,8 @@ async def get_analysis_history(
             "themes": summary.key_topics if summary.key_topics else [],
             "tone": summary.tone,
             "emotional_arc": emotional_arc,
+            "participants": summary.participants if summary.participants else [],
+            "open_questions": summary.open_questions if summary.open_questions else [],
             "message_range": {
                 "start": summary.message_range_start,
                 "end": summary.message_range_end,
@@ -3686,64 +3678,14 @@ async def send_message(
                     "generate_image": detected_intents.generate_image,
                     "generate_video": detected_intents.generate_video,
                     "record_memory": detected_intents.record_memory,
-                    "contains_recordable_facts": detected_intents.contains_recordable_facts,
                     "query_ambient": detected_intents.query_ambient,
-                    "fact_count": len(detected_intents.extracted_facts),
                     "processing_time_ms": detected_intents.processing_time_ms
                 }
             )
             
-            # Phase 7: Handle implicit memory extraction (replaces Phase 4 background worker)
-            if detected_intents.contains_recordable_facts and detected_intents.extracted_facts:
-                # Only save if conversation is not in privacy mode
-                if conversation.is_private != "true":
-                    extraction_service = app_state.get("extraction_service")
-                    
-                    if extraction_service:
-                        for fact in detected_intents.extracted_facts:
-                            try:
-                                # Create ExtractedMemory format
-                                from chorus_engine.services.memory_extraction import ExtractedMemory
-                                extracted = ExtractedMemory(
-                                    content=fact.content,
-                                    category=fact.category,
-                                    confidence=fact.confidence,
-                                    reasoning=fact.reasoning,
-                                    source_message_ids=[]  # Intent detection doesn't track source messages
-                                )
-                                
-                                # Use extraction service which handles vector store integration
-                                memory = await extraction_service.save_extracted_memory(
-                                    extracted=extracted,
-                                    character_id=character.id,
-                                    conversation_id=conversation.id
-                                )
-                                
-                                if memory:
-                                    logger.info(
-                                        f"[IMPLICIT MEMORY] Saved fact: {memory.content[:50]}... (status={memory.status})",
-                                        extra={
-                                            "category": memory.category,
-                                            "confidence": memory.confidence,
-                                            "status": memory.status,
-                                            "indexed": memory.status == "auto_approved"
-                                        }
-                                    )
-                            except Exception as e:
-                                logger.error(f"Failed to save implicit memory: {e}", exc_info=True)
-                    else:
-                        logger.warning("[IMPLICIT MEMORY] Extraction service not available")
-                else:
-                    logger.info(f"[IMPLICIT MEMORY] Skipped {len(detected_intents.extracted_facts)} facts due to privacy mode")
-            
-            # Phase 7: Handle explicit memory requests (future - requires UI confirmation)
-            if detected_intents.record_memory and detected_intents.extracted_facts:
-                logger.info(
-                    f"[EXPLICIT MEMORY] User requested memory recording: {len(detected_intents.extracted_facts)} facts",
-                    extra={"facts": [f.content for f in detected_intents.extracted_facts]}
-                )
-                # TODO: Return facts to UI for confirmation dialog
-                # TODO: Save with high priority (95) after user confirmation
+            # Explicit memory requests can be handled by the UI when implemented.
+            if detected_intents.record_memory:
+                logger.info("[EXPLICIT MEMORY] User requested memory recording")
             
         except Exception as e:
             logger.error(f"Intent detection failed: {e}", exc_info=True)
@@ -4009,35 +3951,7 @@ async def send_message(
             }
         )
         
-        # Queue background memory extraction if conversation is not private
-        conversation_is_private = conversation.is_private
-        if conversation_is_private != "true":
-            background_extractor = app_state.get("background_extractor")
-            if background_extractor:
-                # Phase 3: Extract user context from recent messages for multi-user attribution
-                recent_message_objects = msg_repo.get_thread_history_objects(thread_id)
-                primary_user_from_request = request.primary_user if hasattr(request, 'primary_user') else None
-                primary_user, all_users = extract_user_context_from_messages(
-                    recent_message_objects,
-                    primary_user=primary_user_from_request
-                )
-                
-                logger.info(f"[BACKGROUND MEMORY] Queuing extraction for conversation {conversation.id}")
-                logger.info(f"[BACKGROUND MEMORY] User context - Primary: {primary_user}, All: {all_users}")
-                await background_extractor.queue_extraction(
-                    conversation_id=conversation.id,
-                    character_id=character_id,
-                    messages=[user_message],
-                    model=model,
-                    character_name=character.name,
-                    character=character,
-                    conversation_source=conversation.source or 'web',
-                    primary_user=primary_user,
-                    all_users=all_users
-                )
-        
-        # Phase 7: Memory extraction now handled by intent detection (above)
-        # Phase 4 background extraction worker removed
+        # Phase 7: Memory extraction now handled by analysis cycles (no per-message extraction)
         
         # Phase 6: Generate audio if TTS is enabled for this conversation
         audio_filename = None
@@ -5020,40 +4934,7 @@ async def send_message_stream(
                 # Capture assistant message ID before closing session
                 assistant_message_id = assistant_message.id
                 
-                # Phase 7.5: Queue background memory extraction (async, uses character's model)
-                # Only extract if conversation is not private
-                if conversation_is_private != "true":
-                    background_extractor = app_state.get("background_extractor")
-                    if background_extractor:
-                        # Get only the new user message for extraction
-                        new_user_message = stream_msg_repo.get_by_id(user_message_id)
-                        if new_user_message:
-                            # Phase 3: Extract user context from recent messages for multi-user attribution
-                            recent_message_objects = stream_msg_repo.get_thread_history_objects(thread_id)
-                            primary_user_from_request = request.primary_user if hasattr(request, 'primary_user') else None
-                            primary_user, all_users = extract_user_context_from_messages(
-                                recent_message_objects,
-                                primary_user=primary_user_from_request
-                            )
-                            
-                            logger.debug(f"[BACKGROUND MEMORY] User context - Primary: {primary_user}, All: {all_users}")
-                            await background_extractor.queue_extraction(
-                                conversation_id=conversation_id_for_stream,
-                                character_id=character_id_for_stream,
-                                messages=[new_user_message],  # Extract from this message
-                                model=model_for_extraction,  # Use character's model (already loaded)
-                                character_name=character_name,
-                                character=character_config_for_stream,  # Phase 8: Pass character config for memory profile
-                                conversation_source=conversation_source_for_stream or 'web',
-                                primary_user=primary_user,
-                                all_users=all_users
-                            )
-                            logger.debug(
-                                f"[BACKGROUND MEMORY] Queued extraction for message {user_message_id} "
-                                f"using model {model_for_extraction}"
-                            )
-                else:
-                    logger.debug("[BACKGROUND MEMORY] Skipping extraction for private conversation")
+                # No per-message memory extraction (handled by analysis cycles)
                     
             finally:
                 stream_db.close()
@@ -5901,19 +5782,21 @@ async def semantic_search_memories(
     results = []
     for mem in retrieved:
         results.append(SemanticSearchResult(
-            memory=MemoryResponse(
-                id=str(mem.memory.id),
-                conversation_id=mem.memory.conversation_id,
-                thread_id=mem.memory.thread_id,
-                memory_type=mem.memory.memory_type.value,
-                content=mem.memory.content,
-                created_at=mem.memory.created_at,
-                character_id=mem.memory.character_id,
-                vector_id=mem.memory.vector_id,
-                embedding_model=mem.memory.embedding_model,
-                priority=mem.memory.priority,
-                tags=mem.memory.tags,
-            ),
+                memory=MemoryResponse(
+                    id=str(mem.memory.id),
+                    conversation_id=mem.memory.conversation_id,
+                    thread_id=mem.memory.thread_id,
+                    memory_type=mem.memory.memory_type.value,
+                    content=mem.memory.content,
+                    created_at=mem.memory.created_at,
+                    character_id=mem.memory.character_id,
+                    vector_id=mem.memory.vector_id,
+                    embedding_model=mem.memory.embedding_model,
+                    priority=mem.memory.priority,
+                    tags=mem.memory.tags,
+                    durability=getattr(mem.memory, "durability", None),
+                    pattern_eligible=bool(getattr(mem.memory, "pattern_eligible", 0)),
+                ),
             similarity=mem.similarity,
             rank_score=mem.rank_score,
         ))
@@ -5981,7 +5864,9 @@ async def get_pending_memories(
         confidence=m.confidence,
         category=m.category,
         status=m.status,
-        source_messages=m.source_messages
+        source_messages=m.source_messages,
+        durability=getattr(m, "durability", None),
+        pattern_eligible=bool(getattr(m, "pattern_eligible", 0))
     ) for m in pending_memories]
 
 

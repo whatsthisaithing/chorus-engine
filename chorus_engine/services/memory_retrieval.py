@@ -7,7 +7,7 @@ and token budget management.
 Memory retrieval hierarchy (Phase 3):
 1. CORE memories (immutable character backstory) - highest priority
 2. EXPLICIT memories (user-created facts) - high priority  
-3. IMPLICIT memories (extracted context) - medium priority
+3. FACT/PROJECT/EXPERIENCE/STORY/RELATIONSHIP (archivist extraction) - medium priority
 4. EPHEMERAL memories (temporary working memory) - lowest priority
 
 Within each type, memories are ranked by:
@@ -44,7 +44,7 @@ class MemoryRetrievalService:
     Features:
     - Semantic search via vector embeddings
     - Token budget management
-    - Memory type hierarchy (core > explicit > implicit > ephemeral)
+    - Memory type hierarchy (core > explicit > fact/project/experience/story/relationship > ephemeral)
     - Similarity thresholding
     - Priority-based ranking
     """
@@ -116,7 +116,15 @@ class MemoryRetrievalService:
         
         # Default to all memory types
         if include_types is None:
-            include_types = [MemoryType.CORE, MemoryType.EXPLICIT, MemoryType.IMPLICIT, MemoryType.EPHEMERAL]
+            include_types = [
+                MemoryType.CORE,
+                MemoryType.EXPLICIT,
+                MemoryType.FACT,
+                MemoryType.PROJECT,
+                MemoryType.EXPERIENCE,
+                MemoryType.STORY,
+                MemoryType.RELATIONSHIP
+            ]
         
         # Generate query embedding
         query_embedding = self.embedder.embed(query)
@@ -162,10 +170,14 @@ class MemoryRetrievalService:
             if memory.memory_type == MemoryType.CORE and memory.character_id != character_id:
                 continue
             
-            # Phase 4.1: Skip pending implicit memories (only include approved/auto_approved)
-            if memory.memory_type == MemoryType.IMPLICIT:
+            # Skip pending memories for all non-core types
+            if memory.memory_type != MemoryType.CORE:
                 if memory.status not in ["approved", "auto_approved"]:
                     continue
+
+            # Skip ephemeral durability memories
+            if getattr(memory, "durability", None) == "ephemeral":
+                continue
             
             # Phase 3: Filter by conversation source (segregate Discord/web memories)
             if conversation_source and hasattr(memory, 'source'):
