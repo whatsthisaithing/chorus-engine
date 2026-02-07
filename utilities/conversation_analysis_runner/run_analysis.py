@@ -33,7 +33,8 @@ async def run_analysis(
     conversation_id: str,
     output_path: str | None = None,
     include_prompts: bool = False,
-    include_raw: bool = False
+    include_raw: bool = False,
+    archivist_max_tokens: int | None = None
 ) -> Path | None:
     db = SessionLocal()
     try:
@@ -62,7 +63,9 @@ async def run_analysis(
             llm_usage_lock=asyncio.Lock(),
             archivist_model=system_config.llm.archivist_model,
             analysis_max_tokens_summary=system_config.llm.analysis_max_tokens_summary,
-            analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories
+            analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories,
+            analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
+            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories
         )
 
         # Build conversation text and token count
@@ -89,13 +92,14 @@ async def run_analysis(
             parsed = None
 
             for attempt in range(1, 3):
-                response_text = await analysis_service._call_llm_with_lock(
+                response_obj = await analysis_service.llm_client.generate(
                     system_prompt=system_prompt,
-                    user_prompt=user_prompt,
+                    prompt=user_prompt,
                     model=summary_model,
                     max_tokens=max_tokens,
                     temperature=temperature
                 )
+                response_text = response_obj.content or ""
                 last_response = response_text
                 _, parse_mode = extract_json_block(
                     response_text,
@@ -106,6 +110,14 @@ async def run_analysis(
                 attempts.append({
                     "attempt": attempt,
                     "model": summary_model,
+                    "used_model": response_obj.model,
+                    "finish_reason": response_obj.finish_reason,
+                    "response_empty": response_text.strip() == "",
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "system_prompt_length": len(system_prompt or ""),
+                    "user_prompt_length": len(user_prompt or ""),
+                    "usage": response_obj.usage,
                     "parse_mode": parse_mode,
                     "success": success,
                     "response_preview": response_text[:400]
@@ -192,7 +204,7 @@ async def run_analysis(
             system_prompt=archivist_system_prompt,
             user_prompt=archivist_user_prompt,
             parser=lambda response: analysis_service._parse_archivist_response(response, character),
-            max_tokens=analysis_service.analysis_max_tokens_memories,
+            max_tokens=archivist_max_tokens or analysis_service.analysis_max_tokens_memories,
             temperature=0.0
         )
 
@@ -289,6 +301,11 @@ def main() -> None:
         action="store_true",
         help="Include raw LLM responses in the output"
     )
+    parser.add_argument(
+        "--archivist-max-tokens",
+        type=int,
+        help="Override max tokens for the archivist step only"
+    )
 
     args = parser.parse_args()
 
@@ -297,7 +314,8 @@ def main() -> None:
             args.conversation_id,
             args.output,
             include_prompts=args.include_prompts,
-            include_raw=args.include_raw
+            include_raw=args.include_raw,
+            archivist_max_tokens=args.archivist_max_tokens
         )
     )
 

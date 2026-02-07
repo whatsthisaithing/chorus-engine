@@ -75,9 +75,27 @@ class OllamaLLMClient(BaseLLMClient):
                 json=payload
             )
             response.raise_for_status()
-            
+
+            response_text = response.text
             data = response.json()
             content = data.get("message", {}).get("content", "")
+            if not content.strip():
+                options = payload.get("options", {})
+                logger.warning(
+                    f"[OLLAMA] Empty response raw preview: "
+                    f"len={len(response_text)}, "
+                    f"keys={list(data.keys())}, "
+                    f"preview={response_text[:500]!r}"
+                )
+                logger.warning(
+                    f"[OLLAMA] Empty response content: "
+                    f"model={data.get('model', model if model is not None else self.model)}, "
+                    f"done_reason={data.get('done_reason')}, "
+                    f"temperature={options.get('temperature')}, "
+                    f"num_predict={options.get('num_predict')}, "
+                    f"prompt_tokens={data.get('prompt_eval_count', 0)}, "
+                    f"output_tokens={data.get('eval_count', 0)}"
+                )
             
             # Log Ollama timing metrics for debugging
             load_dur = data.get("load_duration", 0) / 1e9  # nanoseconds to seconds
@@ -96,11 +114,21 @@ class OllamaLLMClient(BaseLLMClient):
             
             # Use the model from response to confirm what Ollama actually used
             used_model = data.get("model", model if model is not None else self.model)
+            usage = {
+                "prompt_tokens": data.get("prompt_eval_count", 0),
+                "completion_tokens": data.get("eval_count", 0),
+                "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                "load_duration_s": load_dur,
+                "prompt_eval_duration_s": prompt_eval_dur,
+                "eval_duration_s": eval_dur,
+                "total_duration_s": total_dur
+            }
             
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=data.get("done_reason")
+                finish_reason=data.get("done_reason"),
+                usage=usage
             )
         
         except httpx.HTTPError as e:
@@ -157,9 +185,27 @@ class OllamaLLMClient(BaseLLMClient):
                 json=payload
             )
             response.raise_for_status()
-            
+
+            response_text = response.text
             data = response.json()
             content = data.get("message", {}).get("content", "")
+            if not content.strip():
+                options = payload.get("options", {})
+                logger.warning(
+                    f"[OLLAMA] Empty response raw preview (history): "
+                    f"len={len(response_text)}, "
+                    f"keys={list(data.keys())}, "
+                    f"preview={response_text[:500]!r}"
+                )
+                logger.warning(
+                    f"[OLLAMA] Empty response content (history): "
+                    f"model={data.get('model', model if model is not None else self.model)}, "
+                    f"done_reason={data.get('done_reason')}, "
+                    f"temperature={options.get('temperature')}, "
+                    f"num_predict={options.get('num_predict')}, "
+                    f"prompt_tokens={data.get('prompt_eval_count', 0)}, "
+                    f"output_tokens={data.get('eval_count', 0)}"
+                )
             
             # Use the model from response to confirm what Ollama actually used
             used_model = data.get("model", model if model is not None else self.model)
@@ -169,7 +215,16 @@ class OllamaLLMClient(BaseLLMClient):
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=data.get("done_reason")
+                finish_reason=data.get("done_reason"),
+                usage={
+                    "prompt_tokens": data.get("prompt_eval_count", 0),
+                    "completion_tokens": data.get("eval_count", 0),
+                    "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                    "load_duration_s": data.get("load_duration", 0) / 1e9,
+                    "prompt_eval_duration_s": data.get("prompt_eval_duration", 0) / 1e9,
+                    "eval_duration_s": data.get("eval_duration", 0) / 1e9,
+                    "total_duration_s": data.get("total_duration", 0) / 1e9
+                }
             )
             
         except httpx.HTTPError as e:

@@ -90,6 +90,16 @@ python utilities/conversation_analysis_runner/run_analysis.py <conversation_id> 
 **Output:**
 - JSON file with summary + extracted memories (durability + pattern eligibility)
 
+### `analysis_reset/`
+
+Reset conversation summaries and extracted memories (non-CORE/EXPLICIT).
+By default, private conversations are skipped.
+
+**Usage:**
+```bash
+python utilities/analysis_reset/reset_analysis.py [--character-id <id>] [--dry-run]
+```
+
 ### `archivist_model_harness/`
 
 Evaluate multiple LLM models on the archivist workflow (summary + memory extraction)

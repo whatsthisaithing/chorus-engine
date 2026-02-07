@@ -227,7 +227,9 @@ async def lifespan(app: FastAPI):
             llm_usage_lock=llm_usage_lock,
             archivist_model=system_config.llm.archivist_model,
             analysis_max_tokens_summary=system_config.llm.analysis_max_tokens_summary,
-            analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories
+            analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories,
+            analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
+            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories
         )
         logger.info("✓ Conversation analysis service initialized")
         
@@ -477,6 +479,8 @@ async def lifespan(app: FastAPI):
                 ConversationAnalysisTaskHandler, StaleConversationFinder
             )
             
+            summary_batch_size = getattr(heartbeat_config, "analysis_summary_batch_size", heartbeat_config.analysis_batch_size)
+            memories_batch_size = getattr(heartbeat_config, "analysis_memories_batch_size", heartbeat_config.analysis_batch_size)
             heartbeat_service = HeartbeatService(
                 idle_detector=idle_detector,
                 config={
@@ -484,7 +488,7 @@ async def lifespan(app: FastAPI):
                     "interval_seconds": heartbeat_config.interval_seconds,
                     "idle_threshold_minutes": heartbeat_config.idle_threshold_minutes,
                     "resume_grace_seconds": heartbeat_config.resume_grace_seconds,
-                    "analysis_batch_size": heartbeat_config.analysis_batch_size,
+                    "analysis_batch_size": max(summary_batch_size, memories_batch_size),
                     "gpu_check_enabled": heartbeat_config.gpu_check_enabled,
                     "gpu_max_utilization_percent": heartbeat_config.gpu_max_utilization_percent
                 }
@@ -496,7 +500,11 @@ async def lifespan(app: FastAPI):
             # Create stale conversation finder
             stale_finder = StaleConversationFinder(
                 stale_hours=heartbeat_config.analysis_stale_hours,
-                min_messages=heartbeat_config.analysis_min_messages
+                min_messages=heartbeat_config.analysis_min_messages,
+                summary_stale_hours=getattr(heartbeat_config, "analysis_summary_stale_hours", None),
+                summary_min_messages=getattr(heartbeat_config, "analysis_summary_min_messages", None),
+                memories_stale_hours=getattr(heartbeat_config, "analysis_memories_stale_hours", None),
+                memories_min_messages=getattr(heartbeat_config, "analysis_memories_min_messages", None)
             )
             
             # Register task finder to auto-discover stale conversations
@@ -515,13 +523,26 @@ async def lifespan(app: FastAPI):
                 db_gen = get_db()
                 db = next(db_gen)
                 try:
-                    queued = finder.queue_stale_conversations(
+                    summary_limit = getattr(heartbeat_config, "analysis_summary_batch_size", heartbeat_config.analysis_batch_size)
+                    memories_limit = getattr(heartbeat_config, "analysis_memories_batch_size", heartbeat_config.analysis_batch_size)
+                    queued_memories = finder.queue_stale_conversations(
                         heartbeat_service=heartbeat_svc,
                         db=db,
-                        limit=heartbeat_config.analysis_batch_size,
-                        priority=TaskPriority.LOW
+                        limit=memories_limit,
+                        priority=TaskPriority.LOW,
+                        analysis_kind="memories"
                     )
-                    logger.info(f"[TASK FINDER] Queued {queued} conversations for analysis")
+                    queued_summary = finder.queue_stale_conversations(
+                        heartbeat_service=heartbeat_svc,
+                        db=db,
+                        limit=summary_limit,
+                        priority=TaskPriority.LOW,
+                        analysis_kind="summary"
+                    )
+                    logger.info(
+                        f"[TASK FINDER] Queued {queued_summary} summaries and "
+                        f"{queued_memories} memory extractions for analysis"
+                    )
                 except Exception as e:
                     logger.error(f"[TASK FINDER] Error finding stale conversations: {e}", exc_info=True)
                 finally:

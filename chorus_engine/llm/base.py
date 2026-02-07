@@ -11,6 +11,7 @@ class LLMResponse(BaseModel):
     content: str
     model: str
     finish_reason: Optional[str] = None
+    usage: Optional[dict] = None
 
 
 class LLMError(Exception):

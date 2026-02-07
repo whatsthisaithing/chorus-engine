@@ -14,13 +14,15 @@ llm:
   context_window: 8192  # Safe default - adjust based on your model's capabilities
   max_response_tokens: 4096
   temperature: 0.7
-  archivist_model: "qwen3:4b"  # Ollama model name for archivist analysis (summary + memories)
+  archivist_model: "qwen3:4b-instruct"  # Ollama model name for archivist analysis (summary + memories)
                               # LM Studio: use the exact LM Studio model name if provider=lmstudio
                               # KoboldCpp: leave blank (single-model runtime)
                               # VRAM note: set to same as llm.model for maximum VRAM management
                               # Recommended: keep qwen3:4b (tested archivist performance)
   analysis_max_tokens_summary: 4096  # Max tokens for conversation summary analysis
   analysis_max_tokens_memories: 4096  # Max tokens for memory extraction analysis
+  analysis_min_tokens_summary: 500  # Minimum tokens required for summary analysis
+  analysis_min_tokens_memories: 0  # Minimum tokens required for memory extraction analysis
   timeout_seconds: 120
   unload_during_image_generation: true
 
@@ -188,10 +190,15 @@ heartbeat:
   resume_grace_seconds: 2            # Pause duration after activity resumes before
                                      # background processing can start again
   
-  # Conversation Analysis Settings
-  analysis_stale_hours: 24           # Hours since last activity before eligible
-  analysis_min_messages: 10          # Minimum messages required for analysis
-  analysis_batch_size: 3             # Conversations to process per batch
+  # Conversation Summary Analysis Settings (stricter)
+  analysis_summary_stale_hours: 24   # Hours since last activity before eligible
+  analysis_summary_min_messages: 10  # Minimum messages required
+  analysis_summary_batch_size: 3     # Summaries to process per batch
+
+  # Conversation Memory Analysis Settings (can be more frequent)
+  analysis_memories_stale_hours: 24  # Hours since last activity before eligible
+  analysis_memories_min_messages: 10 # Minimum messages required
+  analysis_memories_batch_size: 3    # Memory extractions per batch
   
   # GPU Utilization Check (NVIDIA only, optional)
   # Final safety check before background tasks - detects external GPU activity

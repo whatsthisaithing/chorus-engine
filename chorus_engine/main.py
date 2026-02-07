@@ -56,6 +56,14 @@ def setup_logging(debug: bool = False):
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('chromadb').setLevel(logging.WARNING)
     
+    # Suppress noisy heartbeat status access logs
+    class HeartbeatStatusFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            message = record.getMessage()
+            return "/heartbeat/status" not in message
+
+    logging.getLogger("uvicorn.access").addFilter(HeartbeatStatusFilter())
+
     # Log startup info (only __main__ logger needs file handler in parent process)
     startup_logger = logging.getLogger(__name__)
     if debug:

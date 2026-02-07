@@ -186,19 +186,19 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Check which conversations are eligible for background analysis"
+        description="Check which conversations are eligible for summary analysis"
     )
     parser.add_argument(
         "--stale-hours", "-s",
         type=float,
         default=24.0,
-        help="Hours of inactivity to consider stale (default: 24)"
+        help="Hours of inactivity to consider stale for summaries (default: 24)"
     )
     parser.add_argument(
         "--min-messages", "-m",
         type=int,
         default=10,
-        help="Minimum messages required (default: 10)"
+        help="Minimum messages required for summaries (default: 10)"
     )
     parser.add_argument(
         "--all", "-a",
@@ -221,11 +221,11 @@ def main():
             loader = ConfigLoader()
             config = loader.load_system_config()
             if hasattr(config, 'heartbeat') and config.heartbeat:
-                stale_hours = config.heartbeat.analysis_stale_hours
-                min_messages = config.heartbeat.analysis_min_messages
+                stale_hours = getattr(config.heartbeat, "analysis_summary_stale_hours", config.heartbeat.analysis_stale_hours)
+                min_messages = getattr(config.heartbeat, "analysis_summary_min_messages", config.heartbeat.analysis_min_messages)
                 print(f"Using config from system.yaml:")
-                print(f"  stale_hours: {stale_hours}")
-                print(f"  min_messages: {min_messages}")
+                print(f"  summary_stale_hours: {stale_hours}")
+                print(f"  summary_min_messages: {min_messages}")
         except Exception as e:
             print(f"Warning: Could not load system config: {e}")
             print("Using default values")

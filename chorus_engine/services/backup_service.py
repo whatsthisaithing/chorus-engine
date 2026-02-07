@@ -225,6 +225,8 @@ class CharacterBackupService:
                 'video_confirmation_disabled': getattr(conv, 'video_confirmation_disabled', 'false'),
                 'title_auto_generated': conv.title_auto_generated,
                 'last_analyzed_at': conv.last_analyzed_at.isoformat() if conv.last_analyzed_at else None,
+                'last_summary_analyzed_at': conv.last_summary_analyzed_at.isoformat() if getattr(conv, 'last_summary_analyzed_at', None) else None,
+                'last_memories_analyzed_at': conv.last_memories_analyzed_at.isoformat() if getattr(conv, 'last_memories_analyzed_at', None) else None,
                 'source': getattr(conv, 'source', 'web'),  # Handle old schema
                 'threads': []
             }

@@ -751,6 +751,16 @@
                                         <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_analysis_max_tokens_memories" required min="256" max="8192" placeholder="4096">
                                         <div class="form-text text-secondary">Max tokens for memory extraction.</div>
                                     </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Summary Min Tokens</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_analysis_min_tokens_summary" required min="0" max="100000" placeholder="500">
+                                        <div class="form-text text-secondary">Minimum tokens required for summaries.</div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Memories Min Tokens</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_analysis_min_tokens_memories" required min="0" max="100000" placeholder="0">
+                                        <div class="form-text text-secondary">Minimum tokens required for memories.</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1113,20 +1123,48 @@
                                     <!-- Analysis Settings -->
                                     <h6 class="text-light mt-3 mb-2"><i class="bi bi-chat-left-text me-2"></i>Conversation Analysis</h6>
                                     <div class="row">
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-12 mb-2 text-secondary">
+                                            Summary analysis is stricter; memory extraction can be more frequent.
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-12">
+                                            <h6 class="text-light mt-2 mb-2">Summary Analysis</h6>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
                                             <label class="form-label text-light">Stale Hours</label>
-                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_stale_hours" min="1" max="168" placeholder="24">
-                                            <div class="form-text text-secondary">Hours since activity before eligible for analysis.</div>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_summary_stale_hours" min="1" max="168" placeholder="24">
+                                            <div class="form-text text-secondary">Hours since activity before summary analysis.</div>
                                         </div>
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-3 mb-3">
                                             <label class="form-label text-light">Min Messages</label>
-                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_min_messages" min="4" max="100" placeholder="10">
-                                            <div class="form-text text-secondary">Minimum messages required for analysis.</div>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_summary_min_messages" min="4" max="100" placeholder="10">
+                                            <div class="form-text text-secondary">Minimum messages required for summaries.</div>
                                         </div>
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-3 mb-3">
                                             <label class="form-label text-light">Batch Size</label>
-                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_batch_size" min="1" max="10" placeholder="3">
-                                            <div class="form-text text-secondary">Conversations per processing cycle.</div>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_summary_batch_size" min="1" max="10" placeholder="3">
+                                            <div class="form-text text-secondary">Summaries per processing cycle.</div>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-12">
+                                            <h6 class="text-light mt-2 mb-2">Memory Extraction</h6>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Stale Hours</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_memories_stale_hours" min="1" max="168" placeholder="24">
+                                            <div class="form-text text-secondary">Hours since activity before memory analysis.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Min Messages</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_memories_min_messages" min="4" max="100" placeholder="10">
+                                            <div class="form-text text-secondary">Minimum messages required for memories.</div>
+                                        </div>
+                                        <div class="col-md-3 mb-3">
+                                            <label class="form-label text-light">Batch Size</label>
+                                            <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_analysis_memories_batch_size" min="1" max="10" placeholder="3">
+                                            <div class="form-text text-secondary">Memory extractions per processing cycle.</div>
                                         </div>
                                     </div>
                                     

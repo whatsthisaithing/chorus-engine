@@ -154,10 +154,8 @@ class IdleDetector:
         # Check active workloads first (fast, no time calculation)
         with self._workload_lock:
             if self._active_llm_calls > 0:
-                logger.debug(f"Not idle: {self._active_llm_calls} active LLM calls")
                 return False
             if self._active_comfy_jobs > 0:
-                logger.debug(f"Not idle: {self._active_comfy_jobs} active ComfyUI jobs")
                 return False
         
         # Check activity threshold
@@ -166,8 +164,6 @@ class IdleDetector:
             threshold = timedelta(minutes=self.config.idle_threshold_minutes)
             
             if idle_duration < threshold:
-                remaining = (threshold - idle_duration).total_seconds()
-                logger.debug(f"Not idle: {remaining:.0f}s until threshold")
                 return False
         
         return True

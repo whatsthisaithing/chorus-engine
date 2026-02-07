@@ -84,11 +84,18 @@ class LMStudioLLMClient(BaseLLMClient):
             content = choice.get("message", {}).get("content", "")
             used_model = data.get("model", model if model is not None else self.model)
             finish_reason = choice.get("finish_reason")
+            if not content.strip():
+                logger.warning(
+                    f"[LMSTUDIO] Empty response content: model={used_model}, "
+                    f"finish_reason={finish_reason}, choices={len(data.get('choices', []))}, "
+                    f"max_tokens={payload.get('max_tokens')}, temperature={payload.get('temperature')}"
+                )
             
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=finish_reason
+                finish_reason=finish_reason,
+                usage=data.get("usage")
             )
         
         except httpx.HTTPStatusError as e:
@@ -168,11 +175,18 @@ class LMStudioLLMClient(BaseLLMClient):
             finish_reason = choice.get("finish_reason")
             
             logger.info(f"LM Studio response: {len(content)} chars, finish_reason={finish_reason}")
+            if not content.strip():
+                logger.warning(
+                    f"[LMSTUDIO] Empty response content (history): model={used_model}, "
+                    f"finish_reason={finish_reason}, choices={len(data.get('choices', []))}, "
+                    f"max_tokens={payload.get('max_tokens')}, temperature={payload.get('temperature')}"
+                )
             
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=finish_reason
+                finish_reason=finish_reason,
+                usage=data.get("usage")
             )
             
         except httpx.HTTPError as e:

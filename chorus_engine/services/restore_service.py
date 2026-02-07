@@ -560,6 +560,8 @@ class CharacterRestoreService:
                     video_confirmation_disabled=conv_data.get('video_confirmation_disabled', 'false'),
                     title_auto_generated=conv_data.get('title_auto_generated'),
                     last_analyzed_at=datetime.fromisoformat(conv_data['last_analyzed_at']) if conv_data.get('last_analyzed_at') else None,
+                    last_summary_analyzed_at=datetime.fromisoformat(conv_data['last_summary_analyzed_at']) if conv_data.get('last_summary_analyzed_at') else None,
+                    last_memories_analyzed_at=datetime.fromisoformat(conv_data['last_memories_analyzed_at']) if conv_data.get('last_memories_analyzed_at') else None,
                     source=conv_data.get('source', 'web')
                 )
                 self.db.add(conv)

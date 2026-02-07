@@ -28,6 +28,18 @@ class LLMConfig(BaseModel):
         le=8192,
         description="Max tokens for conversation memory extraction analysis."
     )
+    analysis_min_tokens_summary: int = Field(
+        default=500,
+        ge=0,
+        le=100000,
+        description="Minimum tokens required for summary analysis."
+    )
+    analysis_min_tokens_memories: int = Field(
+        default=0,
+        ge=0,
+        le=100000,
+        description="Minimum tokens required for memory extraction analysis."
+    )
     context_window: int = Field(default=8192, gt=0, le=128000)
     max_response_tokens: int = Field(default=2048, gt=0, le=8192)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
@@ -300,21 +312,55 @@ class HeartbeatConfig(BaseModel):
         description="Grace period after activity before interrupting background tasks"
     )
     
-    # Conversation analysis settings
+    # Conversation summary analysis settings
+    analysis_summary_stale_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        description="Hours since last activity before summary analysis is eligible"
+    )
+    analysis_summary_min_messages: int = Field(
+        default=10,
+        ge=4,
+        description="Minimum messages before summary analysis is eligible"
+    )
+    analysis_summary_batch_size: int = Field(
+        default=3,
+        ge=1, le=10,
+        description="Maximum summary analyses per heartbeat cycle"
+    )
+
+    # Conversation memories analysis settings
+    analysis_memories_stale_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        description="Hours since last activity before memory analysis is eligible"
+    )
+    analysis_memories_min_messages: int = Field(
+        default=10,
+        ge=4,
+        description="Minimum messages before memory analysis is eligible"
+    )
+    analysis_memories_batch_size: int = Field(
+        default=3,
+        ge=1, le=10,
+        description="Maximum memory analyses per heartbeat cycle"
+    )
+
+    # Legacy fields (deprecated; use analysis_summary_* and analysis_memories_*)
     analysis_stale_hours: float = Field(
         default=24.0,
         ge=1.0,
-        description="Hours since last activity before conversation is eligible for analysis"
+        description="Deprecated: use analysis_summary_stale_hours"
     )
     analysis_min_messages: int = Field(
         default=10,
         ge=4,
-        description="Minimum messages in conversation before eligible for analysis"
+        description="Deprecated: use analysis_summary_min_messages"
     )
     analysis_batch_size: int = Field(
         default=3,
         ge=1, le=10,
-        description="Maximum conversations to analyze per heartbeat cycle"
+        description="Deprecated: use analysis_summary_batch_size"
     )
     
     # GPU utilization check (NVIDIA only)

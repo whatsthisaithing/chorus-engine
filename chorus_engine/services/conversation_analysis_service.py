@@ -81,7 +81,9 @@ class ConversationAnalysisService:
         llm_usage_lock: Optional[Any] = None,
         archivist_model: Optional[str] = None,
         analysis_max_tokens_summary: int = 4096,
-        analysis_max_tokens_memories: int = 4096
+        analysis_max_tokens_memories: int = 4096,
+        analysis_min_tokens_summary: int = 500,
+        analysis_min_tokens_memories: int = 0
     ):
         self.db = db
         self.llm_client = llm_client
@@ -93,6 +95,8 @@ class ConversationAnalysisService:
         self.archivist_model = archivist_model
         self.analysis_max_tokens_summary = analysis_max_tokens_summary
         self.analysis_max_tokens_memories = analysis_max_tokens_memories
+        self.analysis_min_tokens_summary = analysis_min_tokens_summary
+        self.analysis_min_tokens_memories = analysis_min_tokens_memories
         
         # Services
         self.token_counter = TokenCounter()
@@ -101,6 +105,43 @@ class ConversationAnalysisService:
         self.conv_repo = ConversationRepository(db)
         self._summary_parse_mode: str = "unknown"
         self._archivist_parse_mode: str = "unknown"
+
+    def _prepare_analysis_context(
+        self,
+        conversation_id: str,
+        character: CharacterConfig,
+        min_tokens: int
+    ) -> Optional[tuple[Conversation, int, str, Optional[str]]]:
+        conversation = self.conv_repo.get_by_id(conversation_id)
+        if not conversation:
+            logger.error(f"Conversation {conversation_id} not found")
+            return None
+
+        messages = self._get_all_messages(conversation_id)
+        if not messages:
+            logger.warning(f"No messages in conversation {conversation_id}")
+            return None
+
+        token_count = self._count_tokens(messages)
+        logger.info(f"Analyzing conversation {conversation_id[:8]}... ({token_count} tokens)")
+
+        if token_count < min_tokens:
+            logger.warning(
+                f"Conversation {conversation_id[:8]}... too short ({token_count} tokens), skipping"
+            )
+            return None
+
+        conversation_text = self._format_conversation(messages)
+        model_primary, model_fallback = self._select_models(character)
+        summary_model = self.archivist_model or model_primary or model_fallback
+
+        if not summary_model:
+            logger.warning(
+                "No available model for conversation analysis; "
+                "check archivist_model, character preferred model, and system default."
+            )
+
+        return conversation, token_count, conversation_text, summary_model
     async def analyze_conversation(
         self,
         conversation_id: str,
@@ -119,39 +160,14 @@ class ConversationAnalysisService:
             ConversationAnalysis if successful, None otherwise
         """
         try:
-            # Get conversation and messages
-            conversation = self.conv_repo.get_by_id(conversation_id)
-            if not conversation:
-                logger.error(f"Conversation {conversation_id} not found")
+            prep = self._prepare_analysis_context(
+                conversation_id,
+                character,
+                self.analysis_min_tokens_summary
+            )
+            if not prep:
                 return None
-            
-            messages = self._get_all_messages(conversation_id)
-            if not messages:
-                logger.warning(f"No messages in conversation {conversation_id}")
-                return None
-            
-            token_count = self._count_tokens(messages)
-            logger.info(f"Analyzing conversation {conversation_id[:8]}... ({token_count} tokens)")
-            
-            if token_count < 500:
-                logger.warning(
-                    f"Conversation {conversation_id[:8]}... too short ({token_count} tokens), skipping"
-                )
-                return None
-            
-            conversation_text = self._format_conversation(messages)
-            model_primary, model_fallback = self._select_models(character)
-            summary_model = self.archivist_model or model_primary or model_fallback
-            if self.archivist_model and not summary_model:
-                logger.warning(
-                    "Archivist model configured but no fallback model available; "
-                    "analysis may fail if the model is unavailable."
-                )
-            if not self.archivist_model and not summary_model:
-                logger.warning(
-                    "Archivist model not configured and no preferred model found; "
-                    "falling back to system default."
-                )
+            _, token_count, conversation_text, summary_model = prep
             
             # Step 1: Conversation summary
             summary_system_prompt, summary_user_prompt = self._build_summary_prompt(
@@ -171,6 +187,18 @@ class ConversationAnalysisService:
             
             if not summary_data:
                 logger.error("Summary parsing failed after retries")
+                self._write_failure_log(
+                    conversation_id=conversation_id,
+                    character_id=character.id,
+                    error="Summary parsing failed",
+                    summary_prompt=summary_user_prompt,
+                    summary_system_prompt=summary_system_prompt,
+                    summary_response=summary_response or "",
+                    archivist_prompt="",
+                    archivist_system_prompt="",
+                    archivist_response="",
+                    token_count=token_count
+                )
                 return None
             
             # Step 2: Archivist memory extraction
@@ -189,6 +217,22 @@ class ConversationAnalysisService:
                 temperature=0.0
             )
             
+            if memories is None:
+                logger.error("Archivist parsing failed after retries")
+                self._write_failure_log(
+                    conversation_id=conversation_id,
+                    character_id=character.id,
+                    error="Archivist parsing failed",
+                    summary_prompt=summary_user_prompt,
+                    summary_system_prompt=summary_system_prompt,
+                    summary_response=summary_response or "",
+                    archivist_prompt=archivist_user_prompt,
+                    archivist_system_prompt=archivist_system_prompt,
+                    archivist_response=archivist_response or "",
+                    token_count=token_count
+                )
+                return None
+
             memories = memories or []
             
             analysis = ConversationAnalysis(
@@ -215,6 +259,152 @@ class ConversationAnalysisService:
             
         except Exception as e:
             logger.error(f"Error analyzing conversation {conversation_id}: {e}", exc_info=True)
+            return None
+
+    async def analyze_summary_only(
+        self,
+        conversation_id: str,
+        character: CharacterConfig,
+        manual: bool = False
+    ) -> Optional[ConversationAnalysis]:
+        """Analyze a conversation for summary data only."""
+        try:
+            prep = self._prepare_analysis_context(
+                conversation_id,
+                character,
+                self.analysis_min_tokens_summary
+            )
+            if not prep:
+                return None
+            _, token_count, conversation_text, summary_model = prep
+
+            summary_system_prompt, summary_user_prompt = self._build_summary_prompt(
+                conversation_text=conversation_text,
+                token_count=token_count
+            )
+            summary_data, summary_response = await self._call_and_parse(
+                system_prompt=summary_system_prompt,
+                user_prompt=summary_user_prompt,
+                model_primary=summary_model,
+                model_fallback=summary_model,
+                max_tokens=self.analysis_max_tokens_summary,
+                parser=self._parse_summary_response,
+                label="summary",
+                temperature=0.0
+            )
+
+            if not summary_data:
+                logger.error("Summary parsing failed after retries")
+                self._write_failure_log(
+                    conversation_id=conversation_id,
+                    character_id=character.id,
+                    error="Summary parsing failed",
+                    summary_prompt=summary_user_prompt,
+                    summary_system_prompt=summary_system_prompt,
+                    summary_response=summary_response or "",
+                    archivist_prompt="",
+                    archivist_system_prompt="",
+                    archivist_response="",
+                    token_count=token_count
+                )
+                return None
+
+            analysis = ConversationAnalysis(
+                memories=[],
+                summary=summary_data.get("summary", ""),
+                emotional_arc=summary_data.get("emotional_arc", ""),
+                participants=summary_data.get("participants", []),
+                open_questions=summary_data.get("open_questions", [])
+            )
+
+            self._write_debug_log(
+                conversation_id=conversation_id,
+                summary_prompt=summary_user_prompt,
+                summary_system_prompt=summary_system_prompt,
+                summary_response=summary_response or "",
+                archivist_prompt="",
+                archivist_system_prompt="",
+                archivist_response="",
+                analysis=analysis,
+                token_count=token_count
+            )
+
+            return analysis
+        except Exception as e:
+            logger.error(f"Error analyzing summary for {conversation_id}: {e}", exc_info=True)
+            return None
+
+    async def analyze_memories_only(
+        self,
+        conversation_id: str,
+        character: CharacterConfig,
+        manual: bool = False
+    ) -> Optional[ConversationAnalysis]:
+        """Analyze a conversation for memory extraction only."""
+        try:
+            prep = self._prepare_analysis_context(
+                conversation_id,
+                character,
+                self.analysis_min_tokens_memories
+            )
+            if not prep:
+                return None
+            _, token_count, conversation_text, summary_model = prep
+
+            archivist_system_prompt, archivist_user_prompt = self._build_archivist_prompt(
+                conversation_text=conversation_text,
+                token_count=token_count
+            )
+            memories, archivist_response = await self._call_and_parse(
+                system_prompt=archivist_system_prompt,
+                user_prompt=archivist_user_prompt,
+                model_primary=summary_model,
+                model_fallback=summary_model,
+                max_tokens=self.analysis_max_tokens_memories,
+                parser=lambda response: self._parse_archivist_response(response, character),
+                label="archivist",
+                temperature=0.0
+            )
+
+            if memories is None:
+                logger.error("Archivist parsing failed after retries")
+                self._write_failure_log(
+                    conversation_id=conversation_id,
+                    character_id=character.id,
+                    error="Archivist parsing failed",
+                    summary_prompt="",
+                    summary_system_prompt="",
+                    summary_response="",
+                    archivist_prompt=archivist_user_prompt,
+                    archivist_system_prompt=archivist_system_prompt,
+                    archivist_response=archivist_response or "",
+                    token_count=token_count
+                )
+                return None
+
+            analysis = ConversationAnalysis(
+                memories=memories or [],
+                summary="",
+                emotional_arc="",
+                participants=[],
+                open_questions=[]
+            )
+
+            self._write_debug_log(
+                conversation_id=conversation_id,
+                summary_prompt="",
+                summary_system_prompt="",
+                summary_response="",
+                archivist_prompt=archivist_user_prompt,
+                archivist_system_prompt=archivist_system_prompt,
+                archivist_response=archivist_response or "",
+                analysis=analysis,
+                token_count=token_count
+            )
+
+            return analysis
+        except Exception as e:
+            logger.error(f"Error analyzing memories for {conversation_id}: {e}", exc_info=True)
             return None
 
     async def save_analysis(
@@ -259,11 +449,12 @@ class ConversationAnalysisService:
                 analysis=analysis
             )
             
-            # Update conversation last_analyzed_at
-            conversation = self.conv_repo.get_by_id(conversation_id)
-            if conversation:
-                conversation.last_analyzed_at = datetime.utcnow()
-                self.db.commit()
+            # Update analysis timestamps
+            self._update_analysis_timestamps(
+                conversation_id=conversation_id,
+                summary=True,
+                memories=True
+            )
             
             logger.info(
                 f"Saved analysis for {conversation_id[:8]}...: "
@@ -276,6 +467,187 @@ class ConversationAnalysisService:
             logger.error(f"Error saving analysis: {e}", exc_info=True)
             self.db.rollback()
             return False
+
+    async def save_summary_only(
+        self,
+        conversation_id: str,
+        character_id: str,
+        analysis: ConversationAnalysis,
+        manual: bool = False
+    ) -> bool:
+        """Save summary analysis results to database and vector store."""
+        try:
+            summary = self._save_conversation_summary(
+                conversation_id=conversation_id,
+                analysis=analysis,
+                manual=manual
+            )
+            await self._save_summary_to_vector_store(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                summary=summary,
+                analysis=analysis
+            )
+
+            self._update_analysis_timestamps(
+                conversation_id=conversation_id,
+                summary=True,
+                memories=False
+            )
+
+            logger.info(
+                f"Saved summary for {conversation_id[:8]}... "
+                f"(summary length: {len(analysis.summary)})"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error saving summary analysis: {e}", exc_info=True)
+            self.db.rollback()
+            return False
+
+    async def save_memories_only(
+        self,
+        conversation_id: str,
+        character_id: str,
+        analysis: ConversationAnalysis
+    ) -> bool:
+        """Save memory extraction results to database and vector store."""
+        try:
+            saved_memories = await self._save_extracted_memories(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                memories=analysis.memories
+            )
+
+            self._update_analysis_timestamps(
+                conversation_id=conversation_id,
+                summary=False,
+                memories=True
+            )
+
+            logger.info(
+                f"Saved memories for {conversation_id[:8]}... "
+                f"({len(saved_memories)} memories)"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error saving memory analysis: {e}", exc_info=True)
+            self.db.rollback()
+            return False
+
+    def _update_analysis_timestamps(
+        self,
+        conversation_id: str,
+        summary: bool,
+        memories: bool
+    ) -> None:
+        conversation = self.conv_repo.get_by_id(conversation_id)
+        if not conversation:
+            return
+
+        now = datetime.utcnow()
+        if summary and hasattr(conversation, "last_summary_analyzed_at"):
+            conversation.last_summary_analyzed_at = now
+        if memories and hasattr(conversation, "last_memories_analyzed_at"):
+            conversation.last_memories_analyzed_at = now
+
+        conversation.last_analyzed_at = now
+        self.db.commit()
+
+    def mark_analysis_attempted(
+        self,
+        conversation_id: str,
+        summary: bool,
+        memories: bool,
+        reason: str | None = None
+    ) -> None:
+        """Mark analysis timestamps even when analysis fails to avoid repeat retries."""
+        conversation = self.conv_repo.get_by_id(conversation_id)
+        if not conversation:
+            return
+
+        now = datetime.utcnow()
+        if summary and hasattr(conversation, "last_summary_analyzed_at"):
+            conversation.last_summary_analyzed_at = now
+        if memories and hasattr(conversation, "last_memories_analyzed_at"):
+            conversation.last_memories_analyzed_at = now
+
+        conversation.last_analyzed_at = now
+        self.db.commit()
+
+        if reason:
+            logger.warning(
+                f"[ANALYSIS MARK] Marked analysis attempted for {conversation_id[:8]}... "
+                f"(summary={summary}, memories={memories}) reason={reason}"
+            )
+
+    def _write_failure_log(
+        self,
+        conversation_id: str,
+        character_id: str,
+        error: str,
+        summary_prompt: str,
+        summary_system_prompt: str,
+        summary_response: str,
+        archivist_prompt: str,
+        archivist_system_prompt: str,
+        archivist_response: str,
+        token_count: int
+    ) -> None:
+        """Write a failure-only debug log if the conversation folder already exists."""
+        try:
+            conv_dir = DEBUG_LOG_DIR / conversation_id
+            if not conv_dir.exists():
+                return
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = conv_dir / f"analysis_failure_{timestamp}.json"
+
+            conversation = self.conv_repo.get_by_id(conversation_id)
+            payload = {
+                "conversation": {
+                    "id": conversation_id,
+                    "character_id": character_id,
+                    "title": conversation.title if conversation else None,
+                    "created_at": conversation.created_at.isoformat() if conversation and conversation.created_at else None,
+                    "updated_at": conversation.updated_at.isoformat() if conversation and conversation.updated_at else None,
+                    "last_analyzed_at": conversation.last_analyzed_at.isoformat() if conversation and conversation.last_analyzed_at else None
+                },
+                "error": error,
+                "analysis": {
+                    "summary": "",
+                    "participants": [],
+                    "emotional_arc": "",
+                    "open_questions": []
+                },
+                "memories": [],
+                "prompts": {
+                    "summary": {
+                        "system": summary_system_prompt,
+                        "user": summary_prompt
+                    },
+                    "archivist": {
+                        "system": archivist_system_prompt,
+                        "user": archivist_prompt
+                    }
+                },
+                "raw_responses": {
+                    "summary": summary_response,
+                    "archivist": archivist_response
+                },
+                "parse_modes": {
+                    "summary": self._summary_parse_mode,
+                    "archivist": self._archivist_parse_mode
+                },
+                "token_count": token_count,
+                "timestamp": timestamp
+            }
+
+            log_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            logger.warning(f"[ANALYSIS FAIL] Failure log written: {log_file}")
+        except Exception:
+            # Fail silently by request
+            return
     
     def _get_all_messages(self, conversation_id: str) -> List[Message]:
         """Get all messages in conversation across all threads."""
@@ -508,12 +880,13 @@ Return only valid JSON. Do not include commentary or formatting."""
         temperature: Optional[float] = None
     ) -> str:
         temperature_to_use = self.temperature if temperature is None else temperature
+        model_name = model or self.llm_client.model
         if self.llm_usage_lock is not None:
             async with self.llm_usage_lock:
                 response = await self.llm_client.generate(
                     prompt=user_prompt,
                     system_prompt=system_prompt,
-                    model=model,
+                    model=model_name,
                     temperature=temperature_to_use,
                     max_tokens=max_tokens
                 )
@@ -521,12 +894,21 @@ Return only valid JSON. Do not include commentary or formatting."""
             response = await self.llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                model=model,
+                model=model_name,
                 temperature=temperature_to_use,
                 max_tokens=max_tokens
             )
 
-        return response.content
+        content = response.content or ""
+        if not content.strip():
+            logger.warning(
+                "[ANALYSIS LLM] Empty response content: "
+                f"model={model_name}, provider={self.llm_client.__class__.__name__}, "
+                f"temperature={temperature_to_use}, max_tokens={max_tokens}, "
+                f"system_len={len(system_prompt or '')}, user_len={len(user_prompt or '')}"
+            )
+
+        return content
 
     def _select_models(self, character: CharacterConfig) -> tuple[Optional[str], Optional[str]]:
         primary = character.preferred_llm.model if character.preferred_llm.model else None

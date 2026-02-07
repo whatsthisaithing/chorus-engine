@@ -99,6 +99,8 @@ class SystemSettingsManager {
         document.getElementById('llm_archivist_model').value = config.llm.archivist_model || '';
         document.getElementById('llm_analysis_max_tokens_summary').value = config.llm.analysis_max_tokens_summary || 4096;
         document.getElementById('llm_analysis_max_tokens_memories').value = config.llm.analysis_max_tokens_memories || 4096;
+        document.getElementById('llm_analysis_min_tokens_summary').value = config.llm.analysis_min_tokens_summary ?? 500;
+        document.getElementById('llm_analysis_min_tokens_memories').value = config.llm.analysis_min_tokens_memories ?? 0;
         document.getElementById('llm_context_window').value = config.llm.context_window || 32768;
         document.getElementById('llm_max_response_tokens').value = config.llm.max_response_tokens || 4096;
         document.getElementById('llm_temperature').value = config.llm.temperature || 0.7;
@@ -188,9 +190,12 @@ class SystemSettingsManager {
         document.getElementById('heartbeat_interval_seconds').value = heartbeat.interval_seconds || 60;
         document.getElementById('heartbeat_idle_threshold_minutes').value = heartbeat.idle_threshold_minutes || 5;
         document.getElementById('heartbeat_resume_grace_seconds').value = heartbeat.resume_grace_seconds || 2;
-        document.getElementById('heartbeat_analysis_stale_hours').value = heartbeat.analysis_stale_hours || 24;
-        document.getElementById('heartbeat_analysis_min_messages').value = heartbeat.analysis_min_messages || 10;
-        document.getElementById('heartbeat_analysis_batch_size').value = heartbeat.analysis_batch_size || 3;
+        document.getElementById('heartbeat_analysis_summary_stale_hours').value = heartbeat.analysis_summary_stale_hours || 24;
+        document.getElementById('heartbeat_analysis_summary_min_messages').value = heartbeat.analysis_summary_min_messages || 10;
+        document.getElementById('heartbeat_analysis_summary_batch_size').value = heartbeat.analysis_summary_batch_size || 3;
+        document.getElementById('heartbeat_analysis_memories_stale_hours').value = heartbeat.analysis_memories_stale_hours || 24;
+        document.getElementById('heartbeat_analysis_memories_min_messages').value = heartbeat.analysis_memories_min_messages || 10;
+        document.getElementById('heartbeat_analysis_memories_batch_size').value = heartbeat.analysis_memories_batch_size || 3;
         document.getElementById('heartbeat_gpu_check_enabled').checked = heartbeat.gpu_check_enabled || false;
         document.getElementById('heartbeat_gpu_max_utilization_percent').value = heartbeat.gpu_max_utilization_percent || 15;
 
@@ -212,6 +217,8 @@ class SystemSettingsManager {
                 archivist_model: document.getElementById('llm_archivist_model').value,
                 analysis_max_tokens_summary: parseInt(document.getElementById('llm_analysis_max_tokens_summary').value),
                 analysis_max_tokens_memories: parseInt(document.getElementById('llm_analysis_max_tokens_memories').value),
+                analysis_min_tokens_summary: parseInt(document.getElementById('llm_analysis_min_tokens_summary').value),
+                analysis_min_tokens_memories: parseInt(document.getElementById('llm_analysis_min_tokens_memories').value),
                 context_window: parseInt(document.getElementById('llm_context_window').value),
                 max_response_tokens: parseInt(document.getElementById('llm_max_response_tokens').value),
                 temperature: parseFloat(document.getElementById('llm_temperature').value),
@@ -280,9 +287,12 @@ class SystemSettingsManager {
                 interval_seconds: parseFloat(document.getElementById('heartbeat_interval_seconds').value),
                 idle_threshold_minutes: parseFloat(document.getElementById('heartbeat_idle_threshold_minutes').value),
                 resume_grace_seconds: parseFloat(document.getElementById('heartbeat_resume_grace_seconds').value),
-                analysis_stale_hours: parseFloat(document.getElementById('heartbeat_analysis_stale_hours').value),
-                analysis_min_messages: parseInt(document.getElementById('heartbeat_analysis_min_messages').value),
-                analysis_batch_size: parseInt(document.getElementById('heartbeat_analysis_batch_size').value),
+                analysis_summary_stale_hours: parseFloat(document.getElementById('heartbeat_analysis_summary_stale_hours').value),
+                analysis_summary_min_messages: parseInt(document.getElementById('heartbeat_analysis_summary_min_messages').value),
+                analysis_summary_batch_size: parseInt(document.getElementById('heartbeat_analysis_summary_batch_size').value),
+                analysis_memories_stale_hours: parseFloat(document.getElementById('heartbeat_analysis_memories_stale_hours').value),
+                analysis_memories_min_messages: parseInt(document.getElementById('heartbeat_analysis_memories_min_messages').value),
+                analysis_memories_batch_size: parseInt(document.getElementById('heartbeat_analysis_memories_batch_size').value),
                 gpu_check_enabled: document.getElementById('heartbeat_gpu_check_enabled').checked,
                 gpu_max_utilization_percent: parseInt(document.getElementById('heartbeat_gpu_max_utilization_percent').value)
             },

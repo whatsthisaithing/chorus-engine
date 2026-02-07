@@ -46,6 +46,7 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
         
         conversation_id = task.data.get("conversation_id")
         character_id = task.data.get("character_id")
+        analysis_kind = task.data.get("analysis_kind", "both")
         
         if not conversation_id or not character_id:
             return TaskResult(
@@ -82,27 +83,57 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
             
             logger.info(
                 f"[ANALYSIS TASK] Analyzing conversation {conversation_id[:8]}... "
-                f"for character {character.name}"
+                f"for character {character.name} (kind={analysis_kind})"
             )
-            
-            # Run the analysis
-            analysis = await analysis_service.analyze_conversation(
-                conversation_id=conversation_id,
-                character=character,
-                manual=False  # Background analysis
-            )
+
+            if analysis_kind == "summary":
+                analysis = await analysis_service.analyze_summary_only(
+                    conversation_id=conversation_id,
+                    character=character,
+                    manual=False
+                )
+                if analysis:
+                    save_success = await analysis_service.save_summary_only(
+                        conversation_id=conversation_id,
+                        character_id=character_id,
+                        analysis=analysis,
+                        manual=False
+                    )
+                else:
+                    save_success = False
+            elif analysis_kind == "memories":
+                analysis = await analysis_service.analyze_memories_only(
+                    conversation_id=conversation_id,
+                    character=character,
+                    manual=False
+                )
+                if analysis:
+                    save_success = await analysis_service.save_memories_only(
+                        conversation_id=conversation_id,
+                        character_id=character_id,
+                        analysis=analysis
+                    )
+                else:
+                    save_success = False
+            else:
+                analysis = await analysis_service.analyze_conversation(
+                    conversation_id=conversation_id,
+                    character=character,
+                    manual=False
+                )
+                if analysis:
+                    save_success = await analysis_service.save_analysis(
+                        conversation_id=conversation_id,
+                        character_id=character_id,
+                        analysis=analysis,
+                        manual=False
+                    )
+                else:
+                    save_success = False
             
             duration = (datetime.utcnow() - start_time).total_seconds()
             
             if analysis:
-                # SAVE the analysis to database - this was missing!
-                save_success = await analysis_service.save_analysis(
-                    conversation_id=conversation_id,
-                    character_id=character_id,
-                    analysis=analysis,
-                    manual=False
-                )
-                
                 if not save_success:
                     logger.error(
                         f"[ANALYSIS TASK] Failed to save analysis for {conversation_id[:8]}..."
@@ -114,7 +145,7 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                         duration_seconds=duration,
                         error="Failed to save analysis to database"
                     )
-                
+
                 logger.info(
                     f"[ANALYSIS TASK] Completed analysis of {conversation_id[:8]}... "
                     f"in {duration:.1f}s - extracted {len(analysis.memories)} memories"
@@ -135,6 +166,28 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                 logger.warning(
                     f"[ANALYSIS TASK] Analysis returned None for {conversation_id[:8]}..."
                 )
+                # Mark analysis attempted to prevent repeated retries for known failures
+                if analysis_kind == "summary":
+                    analysis_service.mark_analysis_attempted(
+                        conversation_id=conversation_id,
+                        summary=True,
+                        memories=False,
+                        reason="analysis_failed"
+                    )
+                elif analysis_kind == "memories":
+                    analysis_service.mark_analysis_attempted(
+                        conversation_id=conversation_id,
+                        summary=False,
+                        memories=True,
+                        reason="analysis_failed"
+                    )
+                else:
+                    analysis_service.mark_analysis_attempted(
+                        conversation_id=conversation_id,
+                        summary=True,
+                        memories=True,
+                        reason="analysis_failed"
+                    )
                 return TaskResult(
                     success=False,
                     task_id=task.id,
@@ -193,7 +246,11 @@ class StaleConversationFinder:
     def __init__(
         self,
         stale_hours: int = 24,
-        min_messages: int = 10
+        min_messages: int = 10,
+        summary_stale_hours: Optional[int] = None,
+        summary_min_messages: Optional[int] = None,
+        memories_stale_hours: Optional[int] = None,
+        memories_min_messages: Optional[int] = None
     ):
         """
         Initialize finder.
@@ -204,11 +261,16 @@ class StaleConversationFinder:
         """
         self.stale_hours = stale_hours
         self.min_messages = min_messages
+        self.summary_stale_hours = summary_stale_hours if summary_stale_hours is not None else stale_hours
+        self.summary_min_messages = summary_min_messages if summary_min_messages is not None else min_messages
+        self.memories_stale_hours = memories_stale_hours if memories_stale_hours is not None else stale_hours
+        self.memories_min_messages = memories_min_messages if memories_min_messages is not None else min_messages
     
     def find_stale_conversations(
         self,
         db,
         character_id: Optional[str] = None,
+        analysis_kind: str = "summary",
         limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
@@ -217,6 +279,7 @@ class StaleConversationFinder:
         Args:
             db: Database session
             character_id: Optional - only check this character's conversations
+            analysis_kind: "summary" or "memories"
             limit: Maximum number of conversations to return
             
         Returns:
@@ -231,7 +294,12 @@ class StaleConversationFinder:
         msg_repo = MessageRepository(db)
         
         candidates = []
-        cutoff_time = datetime.utcnow() - timedelta(hours=self.stale_hours)
+        if analysis_kind == "memories":
+            cutoff_time = datetime.utcnow() - timedelta(hours=self.memories_stale_hours)
+            min_messages = self.memories_min_messages
+        else:
+            cutoff_time = datetime.utcnow() - timedelta(hours=self.summary_stale_hours)
+            min_messages = self.summary_min_messages
         
         try:
             # Build query for conversations
@@ -261,7 +329,7 @@ class StaleConversationFinder:
             
             logger.debug(
                 f"[STALE FINDER] Query returned {len(conversations)} conversations "
-                f"(cutoff: {cutoff_time.isoformat()}, limit requested: {limit})"
+                f"(kind={analysis_kind}, cutoff: {cutoff_time.isoformat()}, limit requested: {limit})"
             )
             
             for conv in conversations:
@@ -289,15 +357,21 @@ class StaleConversationFinder:
                 if latest_message_at >= cutoff_time:
                     continue
 
-                if conv.last_analyzed_at and latest_message_at <= conv.last_analyzed_at:
+                if analysis_kind == "memories":
+                    last_analyzed = getattr(conv, "last_memories_analyzed_at", None)
+                else:
+                    last_analyzed = getattr(conv, "last_summary_analyzed_at", None)
+
+                if last_analyzed and latest_message_at <= last_analyzed:
                     continue
                 
-                if message_count >= self.min_messages:
+                if message_count >= min_messages:
                     # Conversation passes all filters
                     candidates.append({
                         "conversation_id": conv.id,
                         "character_id": conv.character_id,
                         "message_count": message_count,
+                        "analysis_kind": analysis_kind,
                         "last_activity": latest_message_at.isoformat() if latest_message_at else None,
                         "title": conv.title
                     })
@@ -307,7 +381,7 @@ class StaleConversationFinder:
             
             logger.debug(
                 f"[STALE FINDER] Found {len(candidates)} stale conversations "
-                f"(threshold: {self.stale_hours}h, min_messages: {self.min_messages})"
+                f"(kind={analysis_kind}, min_messages: {min_messages})"
             )
             
             return candidates
@@ -321,6 +395,7 @@ class StaleConversationFinder:
         heartbeat_service,
         db,
         character_id: Optional[str] = None,
+        analysis_kind: str = "summary",
         limit: int = 10,
         priority: TaskPriority = TaskPriority.LOW
     ) -> int:
@@ -331,23 +406,25 @@ class StaleConversationFinder:
             heartbeat_service: HeartbeatService instance
             db: Database session
             character_id: Optional - only check this character
+            analysis_kind: "summary" or "memories"
             limit: Max conversations to queue
             priority: Task priority level
             
         Returns:
             Number of tasks queued
         """
-        stale = self.find_stale_conversations(db, character_id, limit)
+        stale = self.find_stale_conversations(db, character_id, analysis_kind, limit)
         
         queued = 0
         for conv in stale:
-            task_id = f"analysis_{conv['conversation_id']}"
+            task_id = f"analysis_{analysis_kind}_{conv['conversation_id']}"
             
             heartbeat_service.queue_task(
                 task_type="conversation_analysis",
                 data={
                     "conversation_id": conv["conversation_id"],
-                    "character_id": conv["character_id"]
+                    "character_id": conv["character_id"],
+                    "analysis_kind": analysis_kind
                 },
                 priority=priority,
                 task_id=task_id
@@ -356,7 +433,8 @@ class StaleConversationFinder:
         
         if queued > 0:
             logger.info(
-                f"[STALE FINDER] Queued {queued} conversations for background analysis"
+                f"[STALE FINDER] Queued {queued} conversations for "
+                f"background analysis (kind={analysis_kind})"
             )
         
         return queued
