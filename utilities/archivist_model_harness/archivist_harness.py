@@ -360,6 +360,7 @@ async def _run_harness(args: argparse.Namespace) -> int:
             temperature=temperature,
             summary_vector_store=None,
             llm_usage_lock=asyncio.Lock(),
+            analysis_context_window=system_config.llm.context_window
         )
 
         temps: Iterable[float]
@@ -667,6 +668,7 @@ async def _retry_failures(args: argparse.Namespace) -> int:
             temperature=temperature,
             summary_vector_store=None,
             llm_usage_lock=asyncio.Lock(),
+            analysis_context_window=system_config.llm.context_window
         )
 
         with failures_path.open("r", encoding="utf-8") as f:

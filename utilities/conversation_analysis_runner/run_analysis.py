@@ -27,6 +27,10 @@ from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
 from chorus_engine.services.json_extraction import extract_json_block
+from chorus_engine.services.archivist_transcript import (
+    filter_archivist_messages,
+    format_archivist_transcript,
+)
 
 
 async def run_analysis(
@@ -65,7 +69,8 @@ async def run_analysis(
             analysis_max_tokens_summary=system_config.llm.analysis_max_tokens_summary,
             analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories,
             analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
-            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories
+            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories,
+            analysis_context_window=system_config.llm.context_window
         )
 
         # Build conversation text and token count
@@ -73,8 +78,10 @@ async def run_analysis(
         if not messages:
             print("No messages found for this conversation")
             return None
-        token_count = analysis_service._count_tokens(messages)
-        conversation_text = analysis_service._format_conversation(messages)
+        filtered_messages, filter_stats_obj = filter_archivist_messages(messages)
+        filter_stats = filter_stats_obj.to_dict()
+        conversation_text = format_archivist_transcript(filtered_messages)
+        token_count = analysis_service.token_counter.count_tokens(conversation_text)
 
         model_primary, model_fallback = analysis_service._select_models(character)
         summary_model = system_config.llm.archivist_model or model_primary or model_fallback
@@ -132,6 +139,15 @@ async def run_analysis(
             conversation_text=conversation_text,
             token_count=token_count
         )
+        conversation_text, token_count, filtered_messages, guard_stats, summary_user_prompt = analysis_service._apply_context_guard(
+            build_prompt_fn=lambda text, tokens: analysis_service._build_summary_prompt(text, tokens)[1],
+            system_prompt=summary_system_prompt,
+            conversation_text=conversation_text,
+            token_count=token_count,
+            filtered_messages=filtered_messages
+        )
+        if guard_stats:
+            filter_stats.update(guard_stats)
         summary_data, summary_response, summary_attempts = await run_with_retries(
             task_label="summary",
             system_prompt=summary_system_prompt,
@@ -178,6 +194,7 @@ async def run_analysis(
             data["parse_diagnostics"] = {
                 "summary": summary_attempts
             }
+            data["filter_stats"] = filter_stats
 
             json_output = json.dumps(data, indent=2, ensure_ascii=False)
 
@@ -199,6 +216,15 @@ async def run_analysis(
             conversation_text=conversation_text,
             token_count=token_count
         )
+        conversation_text, token_count, filtered_messages, guard_stats, archivist_user_prompt = analysis_service._apply_context_guard(
+            build_prompt_fn=lambda text, tokens: analysis_service._build_archivist_prompt(text, tokens)[1],
+            system_prompt=archivist_system_prompt,
+            conversation_text=conversation_text,
+            token_count=token_count,
+            filtered_messages=filtered_messages
+        )
+        if guard_stats:
+            filter_stats.update(guard_stats)
         memories, archivist_response, archivist_attempts = await run_with_retries(
             task_label="archivist",
             system_prompt=archivist_system_prompt,
@@ -263,6 +289,7 @@ async def run_analysis(
             "summary": summary_attempts,
             "archivist": archivist_attempts
         }
+        data["filter_stats"] = filter_stats
 
         json_output = json.dumps(data, indent=2, ensure_ascii=False)
 

@@ -229,7 +229,8 @@ async def lifespan(app: FastAPI):
             analysis_max_tokens_summary=system_config.llm.analysis_max_tokens_summary,
             analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories,
             analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
-            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories
+            analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories,
+            analysis_context_window=system_config.llm.context_window
         )
         logger.info("✓ Conversation analysis service initialized")
         

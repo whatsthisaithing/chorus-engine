@@ -81,10 +81,6 @@ async def sync_conversation_summary_vectors(
             .all()
         )
         
-        if not latest_rows:
-            logger.debug("No conversation summaries in database - nothing to sync")
-            return stats
-        
         # Group latest summaries by character
         summaries_by_character: dict[str, list] = {}
         for summary, conv in latest_rows:
@@ -101,6 +97,10 @@ async def sync_conversation_summary_vectors(
         }
         
         all_char_ids = set(summaries_by_character.keys()) | existing_char_ids
+
+        if not latest_rows and not existing_char_ids:
+            logger.debug("No conversation summaries in database - nothing to sync")
+            return stats
         
         # Process each character's summaries
         for char_id in all_char_ids:
