@@ -659,6 +659,19 @@ class API {
         
         return response.json();
     }
+
+    // === User Identity ===
+    
+    static async getUserIdentity() {
+        return this.request('/system/user-identity');
+    }
+    
+    static async updateUserIdentity(identity) {
+        return this.request('/system/user-identity', {
+            method: 'PUT',
+            body: JSON.stringify(identity),
+        });
+    }
     
     // === Logs ===
     

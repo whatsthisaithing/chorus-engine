@@ -198,6 +198,13 @@ class SystemSettingsManager {
         document.getElementById('heartbeat_analysis_memories_batch_size').value = heartbeat.analysis_memories_batch_size || 3;
         document.getElementById('heartbeat_gpu_check_enabled').checked = heartbeat.gpu_check_enabled || false;
         document.getElementById('heartbeat_gpu_max_utilization_percent').value = heartbeat.gpu_max_utilization_percent || 15;
+        
+        // Time Context Configuration
+        const timeContext = config.time_context || {};
+        const timeEnabled = timeContext.enabled !== false;
+        document.getElementById('time_context_enabled').checked = timeEnabled;
+        document.getElementById('time_context_timezone').value = timeContext.timezone || '';
+        document.getElementById('time_context_format').value = timeContext.format || 'iso';
 
         // General Configuration
         document.getElementById('api_host').value = config.api_host || 'localhost';
@@ -295,6 +302,11 @@ class SystemSettingsManager {
                 analysis_memories_batch_size: parseInt(document.getElementById('heartbeat_analysis_memories_batch_size').value),
                 gpu_check_enabled: document.getElementById('heartbeat_gpu_check_enabled').checked,
                 gpu_max_utilization_percent: parseInt(document.getElementById('heartbeat_gpu_max_utilization_percent').value)
+            },
+            time_context: {
+                enabled: document.getElementById('time_context_enabled').checked,
+                timezone: document.getElementById('time_context_timezone').value.trim(),
+                format: document.getElementById('time_context_format').value
             },
             ui: {
                 color_scheme: document.getElementById('ui_color_scheme').value

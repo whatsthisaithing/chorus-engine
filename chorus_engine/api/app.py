@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
-from chorus_engine.config import ConfigLoader, SystemConfig, CharacterConfig
+from chorus_engine.config import ConfigLoader, SystemConfig, CharacterConfig, UserIdentityConfig
 from chorus_engine.config import IMMUTABLE_CHARACTERS
 from chorus_engine.llm import create_llm_client, LLMError
 from chorus_engine.db import get_db, init_db
@@ -1073,6 +1073,12 @@ class ChatInThreadRequest(BaseModel):
     primary_user: Optional[str] = None  # Name of user who invoked the bot (for multi-user contexts)
     conversation_source: Optional[str] = None  # Platform source: 'web', 'discord', 'slack', etc.
     image_attachment_ids: Optional[List[str]] = None  # Array of pre-uploaded image attachment IDs to link to this message
+
+
+class UserIdentityUpdateRequest(BaseModel):
+    """Request body for updating system user identity."""
+    display_name: Optional[str] = ""
+    aliases: Optional[List[str]] = None
 
 
 class ChatInThreadResponse(BaseModel):
@@ -8626,6 +8632,75 @@ def delete_document(
 
 
 # === System Configuration Management ===
+
+@app.get("/system/user-identity")
+async def get_user_identity():
+    """
+    Get the current system user identity.
+    Returns display_name and aliases.
+    """
+    try:
+        system_config = app_state.get("system_config")
+        if system_config and getattr(system_config, "user_identity", None):
+            identity = system_config.user_identity
+            return {
+                "display_name": identity.display_name or "",
+                "aliases": identity.aliases or []
+            }
+        
+        # Fallback to system.yaml if system_config not loaded
+        config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
+        if not config_path.exists():
+            return {"display_name": "", "aliases": []}
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f) or {}
+        
+        user_identity = config_data.get("user_identity", {}) or {}
+        return {
+            "display_name": user_identity.get("display_name", "") or "",
+            "aliases": user_identity.get("aliases", []) or []
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to read user identity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/system/user-identity")
+async def update_user_identity(request: UserIdentityUpdateRequest):
+    """
+    Update user identity in system.yaml without restarting the server.
+    """
+    try:
+        config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
+        config_data = {}
+        
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f) or {}
+        
+        # Validate and normalize
+        identity = UserIdentityConfig(
+            display_name=request.display_name or "",
+            aliases=request.aliases or []
+        )
+        
+        config_data["user_identity"] = identity.model_dump(mode="json")
+        
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        
+        # Hot-apply to app_state
+        if app_state.get("system_config"):
+            app_state["system_config"].user_identity = identity
+        
+        return {"success": True, "user_identity": identity.model_dump(mode="json")}
+    
+    except Exception as e:
+        logger.error(f"Failed to update user identity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/system/config")
 async def get_system_config():

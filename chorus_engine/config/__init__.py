@@ -7,6 +7,7 @@ from .models import (
     MemoryConfig,
     ComfyUIConfig,
     PathsConfig,
+    UserIdentityConfig,
 )
 from .loader import ConfigLoader, ConfigLoadError, ConfigValidationError, IMMUTABLE_CHARACTERS
 
@@ -17,6 +18,7 @@ __all__ = [
     "MemoryConfig",
     "ComfyUIConfig",
     "PathsConfig",
+    "UserIdentityConfig",
     "ConfigLoader",
     "ConfigLoadError",
     "ConfigValidationError",

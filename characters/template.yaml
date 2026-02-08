@@ -105,6 +105,18 @@ custom_system_prompt: false
 # Default: assistant
 role_type: assistant
 
+# USER IDENTITY OVERRIDE
+# ----------------------
+# Controls how the user's identity is presented to this character
+# Options: canonical, masked, role
+# - canonical: use system-level identity from system.yaml
+# - masked: withhold identity and instruct the assistant not to guess
+# - role: use an in-universe name/aliases for the user
+user_identity:
+  mode: canonical
+  role_name: null
+  role_aliases: []
+
 # OPTIONAL FIELDS
 # ===============
 

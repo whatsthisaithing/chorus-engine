@@ -17,6 +17,8 @@ This guide covers how to use Chorus Engine's features as an end user.
 9. [Ambient Activities](#ambient-activities)
 10. [Workflows](#workflows)
 11. [Troubleshooting](#troubleshooting)
+12. [User Identity](#user-identity)
+13. [Time Context](#time-context)
 
 ---
 
@@ -983,6 +985,28 @@ See [WORKFLOW_GUIDE.md](WORKFLOW_GUIDE.md) for detailed information on creating 
 - **Issues**: Check `server_log_fixed.txt` for error messages
 - **Community**: [Add your support channels here]
 - **Contributing**: See `CONTRIBUTING.md` for development guidelines
+
+---
+
+## User Identity
+
+User Identity is a system configuration setting used to address you consistently across chats. It is not a memory and is not inferred from conversation.
+
+**Fields**:
+- Display name: the name used for canonical addressing
+- Aliases: optional alternate names
+
+You can update this in **Settings -> User Identity**.
+
+## Time Context
+
+When enabled, the system injects the server-local time into conversation prompts to improve time awareness.
+
+**Defaults**:
+- Enabled by default
+- Blank timezone uses server local time
+
+You can configure this in **Settings -> System Settings -> Time Context**.
 
 ---
 

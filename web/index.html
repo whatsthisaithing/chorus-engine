@@ -146,7 +146,7 @@
                         <ul class="dropdown-menu" aria-labelledby="settingsMenuBtn">
                             <li><h6 class="dropdown-header">User Settings</h6></li>
                             <li><a class="dropdown-item" href="#" id="setUsernameMenuItem">
-                                <i class="bi bi-person me-2"></i>Set Username
+                                <i class="bi bi-person me-2"></i>User Identity
                             </a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><h6 class="dropdown-header">Configuration</h6></li>
@@ -425,26 +425,31 @@
         </div>
     </div>
     
-    <!-- Username Modal -->
+    <!-- User Identity Modal -->
     <div class="modal fade" id="usernameModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content bg-dark text-white">
                 <div class="modal-header border-secondary">
-                    <h5 class="modal-title">Set Username</h5>
+                    <h5 class="modal-title">User Identity</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="small text-muted mb-3">
-                        Your username helps the assistant identify you in conversations. 
-                        It's stored locally in your browser.
+                    <p class="small text-theme-secondary mb-3">
+                        Used to address you consistently across chats. This is configuration, not a memory.
                     </p>
                     <div class="mb-3">
-                        <label for="usernameInput" class="form-label">Username</label>
+                        <label for="usernameInput" class="form-label">Display name</label>
                         <input type="text" class="form-control bg-dark text-white border-secondary" id="usernameInput" 
                                placeholder="Enter your name" maxlength="50">
-                        <div class="form-text text-muted">Leave empty to use "User" as default</div>
+                        <div class="form-text text-theme-secondary">Leave empty to use "User" as default</div>
                     </div>
-                    <div class="small text-muted">
+                    <div class="mb-3">
+                        <label for="userAliasesInput" class="form-label">Aliases (optional)</label>
+                        <input type="text" class="form-control bg-dark text-white border-secondary" id="userAliasesInput" 
+                               placeholder="Comma-separated aliases" maxlength="200">
+                        <div class="form-text text-theme-secondary">Example: Fitzy, FitzyCodesThings</div>
+                    </div>
+                    <div class="small text-theme-secondary">
                         <i class="bi bi-info-circle"></i> User ID: <code id="currentUserId" class="text-warning bg-dark px-2 py-1 rounded"></code>
                     </div>
                 </div>
@@ -1196,6 +1201,40 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <!-- Time Context Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-clock me-2"></i>Time Context</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-12 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="time_context_enabled">
+                                            <label class="form-check-label text-light" for="time_context_enabled">
+                                                Enable Time Injection
+                                            </label>
+                                            <div class="form-text text-secondary">Inject server-local time into conversation prompts.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Timezone (IANA)</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="time_context_timezone" placeholder="e.g., America/New_York">
+                                        <div class="form-text text-secondary">Leave blank to use server local time.</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Format</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="time_context_format">
+                                            <option value="iso">ISO (YYYY-MM-DD HH:MM:SS)</option>
+                                        </select>
+                                        <div class="form-text text-secondary">Stable time formatting for LLM prompts.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
 
                         <!-- General Configuration -->
                         <div class="card bg-dark border-secondary mb-3">
@@ -1682,6 +1721,26 @@
                                             <input type="text" class="form-control" id="charTraits" 
                                                    placeholder="e.g., thoughtful, creative, analytical">
                                             <small class="text-theme-secondary">Comma-separated list of adjectives</small>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">User Identity</label>
+                                            <select class="form-select" id="charUserIdentityMode">
+                                                <option value="canonical">Canonical (system identity)</option>
+                                                <option value="masked">Masked (withhold identity)</option>
+                                                <option value="role">Role (in-universe name)</option>
+                                            </select>
+                                            <small class="text-theme-secondary">Controls how the user is identified in conversation prompts.</small>
+                                        </div>
+                                        
+                                        <div class="mb-3" id="charUserIdentityRoleFields" style="display: none;">
+                                            <label class="form-label">Role Name</label>
+                                            <input type="text" class="form-control" id="charUserRoleName" 
+                                                   placeholder="e.g., Sir Rowan">
+                                            <small class="text-theme-secondary d-block mb-2">Used only when Identity Mode is Role.</small>
+                                            <label class="form-label">Role Aliases (optional)</label>
+                                            <input type="text" class="form-control" id="charUserRoleAliases" 
+                                                   placeholder="Comma-separated aliases">
                                         </div>
                                         
                                         <div class="mb-3">
@@ -3487,37 +3546,83 @@
             const setUsernameMenuItem = document.getElementById('setUsernameMenuItem');
             const usernameModal = new bootstrap.Modal(document.getElementById('usernameModal'));
             const usernameInput = document.getElementById('usernameInput');
+            const userAliasesInput = document.getElementById('userAliasesInput');
             const currentUserId = document.getElementById('currentUserId');
             const saveUsernameBtn = document.getElementById('saveUsernameBtn');
             
             // Open username modal
             if (setUsernameMenuItem) {
-                setUsernameMenuItem.addEventListener('click', function(e) {
+                setUsernameMenuItem.addEventListener('click', async function(e) {
                     e.preventDefault();
                     // Populate current values
-                    usernameInput.value = userManager.getUsername();
                     currentUserId.textContent = userManager.getUserId();
+                    try {
+                        const response = await fetch('/system/user-identity');
+                        if (response.ok) {
+                            const data = await response.json();
+                            usernameInput.value = data.display_name || '';
+                            const aliases = Array.isArray(data.aliases) ? data.aliases : [];
+                            userAliasesInput.value = aliases.join(', ');
+                        } else {
+                            usernameInput.value = userManager.getUsername();
+                            userAliasesInput.value = '';
+                        }
+                    } catch (e) {
+                        usernameInput.value = userManager.getUsername();
+                        userAliasesInput.value = '';
+                    }
                     usernameModal.show();
                 });
             }
             
             // Save username
             if (saveUsernameBtn) {
-                saveUsernameBtn.addEventListener('click', function() {
-                    const newUsername = usernameInput.value.trim() || 'User';
-                    userManager.setUsername(newUsername);
-                    usernameModal.hide();
+                saveUsernameBtn.addEventListener('click', async function() {
+                    const newUsername = usernameInput.value.trim();
+                    const aliases = userAliasesInput.value
+                        .split(',')
+                        .map(a => a.trim())
+                        .filter(a => a.length > 0);
                     
-                    // Show confirmation
-                    const toast = document.createElement('div');
-                    toast.className = 'toast-notification';
-                    toast.textContent = `Username set to: ${newUsername}`;
-                    document.body.appendChild(toast);
-                    setTimeout(() => toast.classList.add('show'), 10);
-                    setTimeout(() => {
-                        toast.classList.remove('show');
-                        setTimeout(() => toast.remove(), 300);
-                    }, 3000);
+                    try {
+                        const response = await fetch('/system/user-identity', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                display_name: newUsername,
+                                aliases: aliases
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            const error = await response.json().catch(() => ({}));
+                            throw new Error(error.detail || 'Failed to update user identity');
+                        }
+                        
+                        userManager.setIdentity(newUsername, aliases);
+                        usernameModal.hide();
+                        
+                        // Show confirmation
+                        const toast = document.createElement('div');
+                        toast.className = 'toast-notification';
+                        toast.textContent = `User identity updated`;
+                        document.body.appendChild(toast);
+                        setTimeout(() => toast.classList.add('show'), 10);
+                        setTimeout(() => {
+                            toast.classList.remove('show');
+                            setTimeout(() => toast.remove(), 300);
+                        }, 3000);
+                    } catch (e) {
+                        const toast = document.createElement('div');
+                        toast.className = 'toast-notification error';
+                        toast.textContent = `Failed to update user identity`;
+                        document.body.appendChild(toast);
+                        setTimeout(() => toast.classList.add('show'), 10);
+                        setTimeout(() => {
+                            toast.classList.remove('show');
+                            setTimeout(() => toast.remove(), 300);
+                        }, 3000);
+                    }
                 });
             }
         });

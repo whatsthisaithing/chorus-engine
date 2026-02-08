@@ -123,6 +123,14 @@ window.CharacterManagement = {
                 }
             });
         });
+        
+        // User identity mode toggle
+        document.getElementById('charUserIdentityMode')?.addEventListener('change', (e) => {
+            const roleFields = document.getElementById('charUserIdentityRoleFields');
+            if (roleFields) {
+                roleFields.style.display = e.target.value === 'role' ? 'block' : 'none';
+            }
+        });
     },
     
     /**
@@ -360,6 +368,16 @@ window.CharacterManagement = {
         document.getElementById('charTraits').value = character.personality_traits ? character.personality_traits.join(', ') : '';
         document.getElementById('charProfileImage').value = character.profile_image || '';
         document.getElementById('charColorScheme').value = character.ui_preferences?.color_scheme || '';
+        
+        // User identity override
+        const userIdentity = character.user_identity || {};
+        document.getElementById('charUserIdentityMode').value = userIdentity.mode || 'canonical';
+        document.getElementById('charUserRoleName').value = userIdentity.role_name || '';
+        document.getElementById('charUserRoleAliases').value = userIdentity.role_aliases ? userIdentity.role_aliases.join(', ') : '';
+        const roleFields = document.getElementById('charUserIdentityRoleFields');
+        if (roleFields) {
+            roleFields.style.display = (userIdentity.mode === 'role') ? 'block' : 'none';
+        }
         
         // Image focus point
         const focusX = character.profile_image_focus?.x ?? 50;
@@ -609,6 +627,15 @@ window.CharacterManagement = {
         document.getElementById('charTtsChatterboxTemp').value = '0.8';
         document.getElementById('charTtsChatterboxChunkThreshold').value = '200';
         
+        // User identity defaults
+        document.getElementById('charUserIdentityMode').value = 'canonical';
+        document.getElementById('charUserRoleName').value = '';
+        document.getElementById('charUserRoleAliases').value = '';
+        const roleFields = document.getElementById('charUserIdentityRoleFields');
+        if (roleFields) {
+            roleFields.style.display = 'none';
+        }
+        
         // Clear core memories and add one empty row
         document.getElementById('coreMemoriesList').innerHTML = '';
         this.addCoreMemoryRow();
@@ -641,6 +668,16 @@ window.CharacterManagement = {
             custom_system_prompt: document.getElementById('charCustomSystemPrompt').checked,
             personality_traits: traits,
             immersion_level: document.getElementById('charImmersionLevel').value,
+            
+            // User identity override
+            user_identity: {
+                mode: document.getElementById('charUserIdentityMode').value,
+                role_name: document.getElementById('charUserRoleName').value.trim(),
+                role_aliases: document.getElementById('charUserRoleAliases').value
+                    .split(',')
+                    .map(a => a.trim())
+                    .filter(a => a.length > 0)
+            },
             
             // Immersion settings
             immersion_settings: {

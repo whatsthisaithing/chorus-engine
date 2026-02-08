@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Literal, Dict
+from typing import Optional, Literal, Dict, List
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -139,6 +139,68 @@ class UIConfig(BaseModel):
         default="stage-night",
         description="Color scheme/theme name"
     )
+
+
+class UserIdentityConfig(BaseModel):
+    """System-level canonical user identity."""
+    
+    display_name: str = ""
+    aliases: List[str] = Field(default_factory=list)
+    
+    @field_validator('display_name')
+    @classmethod
+    def normalize_display_name(cls, v: str) -> str:
+        if v is None:
+            return ""
+        # Trim and collapse repeated spaces
+        return " ".join(v.strip().split())
+    
+    @field_validator('aliases')
+    @classmethod
+    def normalize_aliases(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        seen = set()
+        normalized = []
+        for alias in v:
+            if alias is None:
+                continue
+            cleaned = " ".join(str(alias).strip().split())
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(cleaned)
+        return normalized
+
+
+class TimeContextConfig(BaseModel):
+    """Server-local time injection configuration."""
+    
+    enabled: bool = True
+    timezone: Optional[str] = None  # IANA tz; None/blank uses server local time
+    format: Literal["iso"] = "iso"
+
+
+class UserIdentityOverrideConfig(BaseModel):
+    """Character-level user identity override settings."""
+    
+    mode: Literal["canonical", "masked", "role"] = "canonical"
+    role_name: Optional[str] = None
+    role_aliases: List[str] = Field(default_factory=list)
+    
+    @field_validator('role_name')
+    @classmethod
+    def validate_role_name(cls, v: Optional[str], info) -> Optional[str]:
+        if v is None:
+            return v
+        return " ".join(v.strip().split())
+    
+    def model_post_init(self, __context) -> None:
+        if self.mode == "role" and not self.role_name:
+            raise ValueError("role_name is required when user_identity.mode is 'role'")
 
 
 class SystemDocumentAnalysisConfig(BaseModel):
@@ -392,6 +454,8 @@ class SystemConfig(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     startup: StartupConfig = Field(default_factory=StartupConfig)
+    user_identity: UserIdentityConfig = Field(default_factory=UserIdentityConfig)
+    time_context: TimeContextConfig = Field(default_factory=TimeContextConfig)
     debug: bool = False
     api_host: str = "localhost"
     api_port: int = Field(default=8080, gt=0, le=65535)
@@ -658,6 +722,9 @@ class CharacterConfig(BaseModel):
     
     # UI preferences
     ui_preferences: UIPreferences = Field(default_factory=UIPreferences)
+    
+    # User identity override (conversation runtime only)
+    user_identity: UserIdentityOverrideConfig = Field(default_factory=UserIdentityOverrideConfig)
     
     # Profile customization
     profile_image: Optional[str] = Field(default=None, description="Filename of profile image in data/character_images/")

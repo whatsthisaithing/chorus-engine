@@ -327,11 +327,12 @@ class StaleConversationFinder:
             # Most conversations are short (testing), so we need extra buffer
             conversations = query.limit(limit * 10).all()  # Get extra for filtering
             
-            logger.debug(
+            query_log_line = (
                 f"[STALE FINDER] Query returned {len(conversations)} conversations "
                 f"(kind={analysis_kind}, cutoff: {cutoff_time.isoformat()}, limit requested: {limit})"
             )
             
+            debug_checks = []
             for conv in conversations:
                 # Get message count from threads
                 message_count = 0
@@ -345,7 +346,7 @@ class StaleConversationFinder:
                     .scalar()
                 )
                 
-                logger.debug(
+                debug_checks.append(
                     f"[STALE FINDER] Checking {conv.id[:8]}... "
                     f"msgs={message_count}, updated={conv.updated_at}, "
                     f"latest_message={latest_message_at}, analyzed={conv.last_analyzed_at}"
@@ -379,10 +380,14 @@ class StaleConversationFinder:
                     if len(candidates) >= limit:
                         break
             
-            logger.debug(
-                f"[STALE FINDER] Found {len(candidates)} stale conversations "
-                f"(kind={analysis_kind}, min_messages: {min_messages})"
-            )
+            if candidates:
+                logger.debug(query_log_line)
+                for line in debug_checks:
+                    logger.debug(line)
+                logger.debug(
+                    f"[STALE FINDER] Found {len(candidates)} stale conversations "
+                    f"(kind={analysis_kind}, min_messages: {min_messages})"
+                )
             
             return candidates
             

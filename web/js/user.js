@@ -7,6 +7,7 @@ class UserManager {
     constructor() {
         this.userId = null;
         this.username = null;
+        this.aliases = [];
         this.init();
     }
     
@@ -21,8 +22,11 @@ class UserManager {
             localStorage.setItem('chorus_web_user_id', this.userId);
         }
         
-        // Get username (default to "User")
-        this.username = localStorage.getItem('chorus_username') || 'User';
+        // Default username (will be overridden by system config)
+        this.username = 'User';
+        
+        // Load identity from server (async)
+        this.loadIdentity();
     }
     
     /**
@@ -33,11 +37,11 @@ class UserManager {
     }
     
     /**
-     * Set username
+     * Set identity (display name + aliases)
      */
-    setUsername(username) {
-        this.username = username || 'User';
-        localStorage.setItem('chorus_username', this.username);
+    setIdentity(displayName, aliases = []) {
+        this.username = displayName && displayName.trim() ? displayName.trim() : 'User';
+        this.aliases = Array.isArray(aliases) ? aliases : [];
     }
     
     /**
@@ -45,6 +49,13 @@ class UserManager {
      */
     getUsername() {
         return this.username;
+    }
+
+    /**
+     * Get aliases
+     */
+    getAliases() {
+        return this.aliases || [];
     }
     
     /**
@@ -70,8 +81,25 @@ class UserManager {
      */
     clearUserData() {
         localStorage.removeItem('chorus_web_user_id');
-        localStorage.removeItem('chorus_username');
         this.init();
+    }
+
+    /**
+     * Load identity from server config
+     */
+    async loadIdentity() {
+        try {
+            const response = await fetch('/system/user-identity');
+            if (!response.ok) {
+                return;
+            }
+            const data = await response.json();
+            const displayName = data.display_name || '';
+            const aliases = Array.isArray(data.aliases) ? data.aliases : [];
+            this.setIdentity(displayName, aliases);
+        } catch (e) {
+            // Keep defaults if fetch fails
+        }
     }
 }
 

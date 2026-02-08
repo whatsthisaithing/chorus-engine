@@ -199,6 +199,26 @@ core_memories:
   - "Alex values clear communication and collaborative problem-solving."
 ```
 
+---
+
+### User Identity Override
+
+**Field**: `user_identity`
+
+Controls how the user is identified in conversation runtime prompts. This does not affect archivist analysis or memory extraction.
+
+```yaml
+user_identity:
+  mode: canonical | masked | role
+  role_name: "Sir Rowan"        # only used when mode = role
+  role_aliases: ["Rowan"]       # optional, only used when mode = role
+```
+
+**Modes**:
+- `canonical`: use the system-level identity from `config/system.yaml`
+- `masked`: withhold identity and instruct the assistant not to guess
+- `role`: inject an in-universe name/aliases for the user
+
 **Full Profile** (Creative Companion):
 ```yaml
 name: "Nova"

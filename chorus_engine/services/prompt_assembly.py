@@ -12,6 +12,8 @@ for intelligent memory selection.
 """
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
@@ -252,9 +254,18 @@ class PromptAssemblyService:
         # Load character config and generate system prompt with immersion guidance
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
+        system_config = config_loader.load_system_config()
         system_prompt = self.system_prompt_generator.generate(
             character_config,
             primary_user=primary_user,
+            conversation_source=conversation_source
+        )
+        
+        # Inject identity/time headers before other system prompt additions
+        system_prompt = self._prepend_identity_time_headers(
+            system_prompt=system_prompt,
+            system_config=system_config,
+            character_config=character_config,
             conversation_source=conversation_source
         )
         
@@ -317,11 +328,11 @@ class PromptAssemblyService:
         
         # If an image is being generated, add context about it to the system prompt
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, composition, and mood described in the prompt. If the prompt shows you painting, say you're sharing a photo of yourself painting. If it shows a landscape, describe that landscape. Stay faithful to what's actually in the image prompt.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Simply describe what you're capturing based on the prompt above."
+            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # If a video is being generated, add context about it to the system prompt
         if video_prompt_context:
-            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above in FIRST-PERSON as YOUR video. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, action, and mood described in the prompt. If the prompt shows you dancing, say you're sharing a video of yourself dancing. If the prompt shows you at the beach, describe that as YOUR video at the beach. If it shows a landscape or scene without you, describe that scene. Stay faithful to what's actually in the video prompt and speak from YOUR perspective.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. DO NOT say \"I'm creating a video showing [your name]\" - that's third-person narration. Instead say \"I'm sharing this video of myself...\" or \"Here's a video I captured...\" Stay in character and in first-person."
+            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -542,11 +553,28 @@ class PromptAssemblyService:
         # Load character config and generate system prompt
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
-        system_prompt = self.system_prompt_generator.generate(character_config)
+        system_config = config_loader.load_system_config()
+        system_prompt = self.system_prompt_generator.generate(
+            character_config,
+            primary_user=primary_user,
+            conversation_source=conversation_source
+        )
+        
+        # Inject identity/time headers before other system prompt additions
+        system_prompt = self._prepend_identity_time_headers(
+            system_prompt=system_prompt,
+            system_config=system_config,
+            character_config=character_config,
+            conversation_source=conversation_source
+        )
         
         # Add image context if present
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL: Describe ONLY what is shown in the prompt above. DO NOT make up your own scene or interpretation. Reference the specific elements, setting, composition, and mood described in the prompt. If the prompt shows you painting, say you're sharing a photo of yourself painting. If it shows a landscape, describe that landscape. Stay faithful to what's actually in the image prompt.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos - simply describe what you're capturing based on the prompt above."
+            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+        
+        # Add video context if present
+        if video_prompt_context:
+            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe video IS being generated and will be attached to your message. DO NOT say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -707,6 +735,119 @@ class PromptAssemblyService:
             result = self._truncate_history(result, budget)
         
         return result
+
+    def _prepend_identity_time_headers(
+        self,
+        system_prompt: str,
+        system_config,
+        character_config,
+        conversation_source: Optional[str]
+    ) -> str:
+        headers = []
+        
+        identity_header = self._build_identity_header(
+            system_config=system_config,
+            character_config=character_config,
+            conversation_source=conversation_source
+        )
+        if identity_header:
+            headers.append(identity_header)
+        
+        time_header = self._build_time_header(system_config)
+        if time_header:
+            headers.append(time_header)
+        
+        if not headers:
+            return system_prompt
+        
+        return "\n\n".join(headers + [system_prompt])
+
+    def _build_identity_header(
+        self,
+        system_config,
+        character_config,
+        conversation_source: Optional[str]
+    ) -> Optional[str]:
+        # Only inject identity for web (single-user) conversations
+        if conversation_source != "web":
+            return None
+        
+        identity_override = getattr(character_config, "user_identity", None)
+        mode = getattr(identity_override, "mode", "canonical") if identity_override else "canonical"
+        
+        if mode == "masked":
+            return (
+                "User identity is intentionally withheld for this conversation. "
+                "Do not guess the user's name or identity."
+            )
+    
+        if mode == "role":
+            role_name = getattr(identity_override, "role_name", None) or "User"
+            role_aliases = getattr(identity_override, "role_aliases", []) or []
+            if role_aliases:
+                aliases_str = ", ".join(role_aliases)
+                return (
+                    f"In-universe user identity (authoritative for this conversation): "
+                    f"Name = {role_name}. Aliases: {aliases_str}. "
+                    "Address the user by the role name by default. "
+                    "Only use a role alias if the current message explicitly shows that alias as "
+                    "the speaker (e.g., a username/handle in the message metadata or prefix)."
+                )
+            return (
+                f"In-universe user identity (authoritative for this conversation): "
+                f"Name = {role_name}. "
+                "Address the user by the role name by default. "
+                "Only use a role alias if the current message explicitly shows that alias as "
+                "the speaker (e.g., a username/handle in the message metadata or prefix)."
+            )
+        
+        # Canonical mode
+        system_identity = getattr(system_config, "user_identity", None)
+        display_name = getattr(system_identity, "display_name", "") if system_identity else ""
+        aliases = getattr(system_identity, "aliases", []) if system_identity else []
+        
+        display_name = display_name.strip() if display_name else ""
+        if not display_name:
+            display_name = "User"
+        
+        if aliases:
+            aliases_str = ", ".join(aliases)
+            return (
+                f"Canonical user identity (authoritative): Name = {display_name}. "
+                f"Aliases: {aliases_str}. "
+                "Address the user by the canonical name by default. "
+                "Only use an alias if the current message explicitly shows that alias as "
+                "the speaker (e.g., a username/handle in the message metadata or prefix)."
+            )
+        
+        return f"Canonical user identity (authoritative): Name = {display_name}."
+
+    def _build_time_header(self, system_config) -> Optional[str]:
+        time_context = getattr(system_config, "time_context", None)
+        if not time_context or not getattr(time_context, "enabled", False):
+            return None
+        
+        tz_name = getattr(time_context, "timezone", None)
+        tzinfo = None
+        
+        if tz_name:
+            try:
+                tzinfo = ZoneInfo(tz_name)
+            except Exception:
+                logger.warning(f"Invalid time_context.timezone '{tz_name}', using server local time")
+                tzinfo = None
+        
+        if tzinfo:
+            now = datetime.now(tzinfo)
+            tz_label = tzinfo.key if hasattr(tzinfo, "key") else tz_name
+        else:
+            now = datetime.now().astimezone()
+            tz_label = now.tzname() or "local"
+        
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        weekday = now.strftime("%A")
+        
+        return f"Current local time (server): {timestamp} {tz_label} ({weekday})"
     
     def format_for_api(
         self,
