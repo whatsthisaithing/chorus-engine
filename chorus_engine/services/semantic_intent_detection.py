@@ -32,14 +32,20 @@ INTENT_PROTOTYPES = {
         "send me a photo of you doing something specific",
         "could you take a selfie of yourself with a particular expression",
         "show me an image of you holding something",
-        "generate a picture of you making a gesture"
+        "generate a picture of you making a gesture",
+        "send another photo of yourself in a different setting",
+        "send a photo of you somewhere unusual, no office setting",
+        "If you would, try something REALLY out there. Send another photo. Include yourself in the photo, but no offices or bland attire. It can be anywhere, anything."
     ],
     "send_video": [
         "send me a video",
         "show me a video clip",
         "create a video of something",
         "generate a video showing",
-        "make me a video"
+        "make me a video",
+        "send another video of yourself in a different setting",
+        "send a video of you somewhere unusual, no office setting",
+        "If you would, try something REALLY out there. Send another video. Include yourself in the video, but no offices or bland attire. It can be anywhere, anything."
     ],
     "set_reminder": [
         "remind me to do something",

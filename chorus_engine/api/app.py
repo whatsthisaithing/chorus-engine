@@ -113,6 +113,18 @@ def _strip_image_tags(text: str) -> str:
     return text
 
 
+def _media_interpretation_prefix(
+    character_name: str,
+    image_request_detected: bool,
+    video_request_detected: bool
+) -> str:
+    if video_request_detected:
+        return f"{character_name} is sending the following video:\n\n"
+    if image_request_detected:
+        return f"{character_name} is sending the following image:\n\n"
+    return ""
+
+
 # Global state
 app_state = {
     "system_config": None,
@@ -3994,6 +4006,14 @@ async def send_message(
             )
             logger.info(f"Appended {len(doc_context.citations)} citations to response")
         
+        media_prefix = _media_interpretation_prefix(
+            character_name=character.name,
+            image_request_detected=image_request_detected,
+            video_request_detected=video_request_detected
+        )
+        if media_prefix:
+            response_content = f"{media_prefix}{response_content}"
+        
         # Save assistant message
         assistant_message = msg_repo.create(
             thread_id=thread_id,
@@ -4926,6 +4946,15 @@ async def send_message_stream(
             if video_request_detected and video_prompt_preview:
                 yield f"data: {json.dumps({'type': 'video_request', 'video_info': video_prompt_preview})}\n\n"
             
+            media_prefix = _media_interpretation_prefix(
+                character_name=character_name,
+                image_request_detected=image_request_detected,
+                video_request_detected=video_request_detected
+            )
+            if media_prefix:
+                full_content += media_prefix
+                yield f"data: {json.dumps({'type': 'content', 'content': media_prefix})}\n\n"
+
             # Stream assistant response
             async for chunk in llm_client.stream_with_history(
                 messages=messages,

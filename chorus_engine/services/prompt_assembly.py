@@ -255,10 +255,12 @@ class PromptAssemblyService:
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
         system_config = config_loader.load_system_config()
+        media_interpretation = bool(image_prompt_context or video_prompt_context)
         system_prompt = self.system_prompt_generator.generate(
             character_config,
             primary_user=primary_user,
-            conversation_source=conversation_source
+            conversation_source=conversation_source,
+            include_chatbot_guidance=not media_interpretation
         )
         
         # Inject identity/time headers before other system prompt additions
@@ -328,11 +330,11 @@ class PromptAssemblyService:
         
         # If an image is being generated, add context about it to the system prompt
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # If a video is being generated, add context about it to the system prompt
         if video_prompt_context:
-            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -457,6 +459,17 @@ class PromptAssemblyService:
         )
         history_dicts = self._truncate_history(history_dicts, history_budget)
         
+        # Media interpretation: inject an explicit user instruction even when history is skipped
+        if media_interpretation:
+            if video_prompt_context:
+                user_instruction = "Describe the video above in 2–5 sentences, following the instructions."
+            else:
+                user_instruction = "Describe the image above in 2–5 sentences, following the instructions."
+            history_dicts.append({
+                "role": "user",
+                "content": user_instruction
+            })
+        
         # Count history tokens
         history_tokens = self.token_counter.count_messages(history_dicts)
         
@@ -489,6 +502,7 @@ class PromptAssemblyService:
         include_memories: bool = True,
         memory_query: Optional[str] = None,
         image_prompt_context: Optional[str] = None,
+        video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
         conversation_source: Optional[str] = None,
         include_conversation_context: bool = True
@@ -554,10 +568,12 @@ class PromptAssemblyService:
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
         system_config = config_loader.load_system_config()
+        media_interpretation = bool(image_prompt_context or video_prompt_context)
         system_prompt = self.system_prompt_generator.generate(
             character_config,
             primary_user=primary_user,
-            conversation_source=conversation_source
+            conversation_source=conversation_source,
+            include_chatbot_guidance=not media_interpretation
         )
         
         # Inject identity/time headers before other system prompt additions
@@ -570,11 +586,11 @@ class PromptAssemblyService:
         
         # Add image context if present
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Add video context if present
         if video_prompt_context:
-            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n\nThe video IS being generated and will be attached to your message. DO NOT say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS being generated and will be attached to your message. DO NOT say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -642,6 +658,17 @@ class PromptAssemblyService:
             preservation_strategy=preservation_strategy,
             budget=history_budget
         )
+
+        # Media interpretation: inject an explicit user instruction even when history is skipped
+        if media_interpretation:
+            if video_prompt_context:
+                user_instruction = "Describe the video above in 2–5 sentences, following the instructions."
+            else:
+                user_instruction = "Describe the image above in 2–5 sentences, following the instructions."
+            history_dicts.append({
+                "role": "user",
+                "content": user_instruction
+            })
         
         # Count history tokens
         history_tokens = self.token_counter.count_messages(history_dicts)
@@ -743,24 +770,27 @@ class PromptAssemblyService:
         character_config,
         conversation_source: Optional[str]
     ) -> str:
-        headers = []
-        
         identity_header = self._build_identity_header(
             system_config=system_config,
             character_config=character_config,
             conversation_source=conversation_source
         )
-        if identity_header:
-            headers.append(identity_header)
         
         time_header = self._build_time_header(system_config)
+        
+        user_info_lines = []
+        if identity_header:
+            user_info_lines.append(f"- {identity_header}")
         if time_header:
-            headers.append(time_header)
+            user_info_lines.append(f"- {time_header}")
         
-        if not headers:
-            return system_prompt
+        user_info_section = "User Info (authoritative):"
+        if user_info_lines:
+            user_info_section = "\n".join([user_info_section] + user_info_lines)
         
-        return "\n\n".join(headers + [system_prompt])
+        character_section = "Your Character Context:\n" + system_prompt
+        
+        return "\n\n".join([user_info_section, character_section])
 
     def _build_identity_header(
         self,

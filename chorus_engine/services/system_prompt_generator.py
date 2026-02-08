@@ -22,7 +22,8 @@ class SystemPromptGenerator:
         character: CharacterConfig, 
         include_notice: bool = True,
         primary_user: Optional[str] = None,
-        conversation_source: Optional[str] = None
+        conversation_source: Optional[str] = None,
+        include_chatbot_guidance: bool = True
     ) -> str:
         """
         Generate the complete system prompt for a character.
@@ -60,8 +61,8 @@ class SystemPromptGenerator:
             if multi_user_context:
                 parts.append(multi_user_context)
         
-        # 3.5. Add chatbot-specific guidance if role_type is chatbot
-        if hasattr(character, 'role_type') and character.role_type == 'chatbot':
+        # 3.5. Add chatbot-specific guidance if role_type is chatbot (optional)
+        if include_chatbot_guidance and hasattr(character, 'role_type') and character.role_type == 'chatbot':
             chatbot_guidance = self._generate_chatbot_guidance()
             if chatbot_guidance:
                 parts.append("")
