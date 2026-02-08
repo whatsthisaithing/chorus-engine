@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Optional, AsyncIterator
 from .base import BaseLLMClient, LLMResponse, LLMError
+from .text_normalization import normalize_mojibake
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -84,12 +85,15 @@ class KoboldCppLLMClient(BaseLLMClient):
                 json=payload
             )
             response.raise_for_status()
+
+            if response.encoding is None or response.encoding.lower() != "utf-8":
+                response.encoding = "utf-8"
             
             data = response.json()
             
             # OpenAI-compatible response format
             choice = data.get("choices", [{}])[0]
-            content = choice.get("message", {}).get("content", "")
+            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
             used_model = data.get("model", self.model)
             finish_reason = choice.get("finish_reason")
             if not content.strip():
@@ -165,11 +169,14 @@ class KoboldCppLLMClient(BaseLLMClient):
                 json=payload
             )
             response.raise_for_status()
+
+            if response.encoding is None or response.encoding.lower() != "utf-8":
+                response.encoding = "utf-8"
             
             data = response.json()
             
             choice = data.get("choices", [{}])[0]
-            content = choice.get("message", {}).get("content", "")
+            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
             used_model = data.get("model", self.model)
             finish_reason = choice.get("finish_reason")
             if not content.strip():
@@ -244,6 +251,9 @@ class KoboldCppLLMClient(BaseLLMClient):
                 timeout=self.timeout
             ) as response:
                 response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
                 
                 async for line in response.aiter_lines():
                     if not line.strip():
@@ -258,7 +268,7 @@ class KoboldCppLLMClient(BaseLLMClient):
                         try:
                             data = json.loads(data_str)
                             delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
+                            content = normalize_mojibake(delta.get("content", ""))
                             
                             if content:
                                 yield content
@@ -313,6 +323,9 @@ class KoboldCppLLMClient(BaseLLMClient):
                 timeout=self.timeout
             ) as response:
                 response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
                 
                 async for line in response.aiter_lines():
                     if not line.strip():
@@ -327,7 +340,7 @@ class KoboldCppLLMClient(BaseLLMClient):
                         try:
                             data = json.loads(data_str)
                             delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
+                            content = normalize_mojibake(delta.get("content", ""))
                             
                             if content:
                                 yield content

@@ -38,6 +38,8 @@ class ConversationSummaryVectorStore:
     - created_at: str (ISO timestamp)
     - updated_at: str (ISO timestamp)
     - message_count: int
+    - key_topics: str (JSON array)
+    - tone: str
     - emotional_arc: str
     - participants: str (JSON array)
     - open_questions: str (JSON array)

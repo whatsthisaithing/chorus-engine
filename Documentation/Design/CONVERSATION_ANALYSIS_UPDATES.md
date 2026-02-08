@@ -26,7 +26,7 @@ Conversation analysis now runs two independent LLM calls:
 
 1. **Conversation Summary**
    - Narrative, assistant-neutral summary
-   - Produces `summary`, `participants`, `emotional_arc`, `open_questions`
+   - Produces `summary`, `key_topics`, `tone`, `participants`, `emotional_arc`, `open_questions`
 
 2. **Archivist Memory Extraction**
    - Durable, assistant-neutral memory extraction
@@ -56,7 +56,7 @@ New columns added:
 - `memories.pattern_eligible` (0/1)
 - `conversation_summaries.open_questions` (JSON list)
 
-Legacy summary fields (`themes`, `tone`, `key_topics`) remain for backward compatibility but are no longer written for new summaries.
+Legacy summary fields (`themes`) remain for backward compatibility but are no longer written for new summaries.
 
 ### 4. Storage and Retrieval Rules
 
@@ -76,6 +76,8 @@ Memory vectors now include:
 
 Conversation summary vectors now include:
 - `open_questions`
+- `key_topics`
+- `tone`
 
 ---
 

@@ -2274,6 +2274,29 @@ audio::-webkit-media-controls-time-remaining-display {
     display: block;
 }
 
+.analysis-topic-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.analysis-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.analysis-pill.tone {
+    background: rgba(var(--accent-primary-rgb, 212, 175, 55), 0.15);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
 .search-result-footer {
     display: flex;
     justify-content: space-between;

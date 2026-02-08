@@ -160,6 +160,8 @@ async def run_analysis(
         if not summary_data:
             analysis = {
                 "summary": "",
+                "key_topics": [],
+                "tone": "",
                 "participants": [],
                 "emotional_arc": "",
                 "open_questions": [],
@@ -214,10 +216,11 @@ async def run_analysis(
         # Archivist step
         archivist_system_prompt, archivist_user_prompt = analysis_service._build_archivist_prompt(
             conversation_text=conversation_text,
-            token_count=token_count
+            token_count=token_count,
+            character=character
         )
         conversation_text, token_count, filtered_messages, guard_stats, archivist_user_prompt = analysis_service._apply_context_guard(
-            build_prompt_fn=lambda text, tokens: analysis_service._build_archivist_prompt(text, tokens)[1],
+            build_prompt_fn=lambda text, tokens: analysis_service._build_archivist_prompt(text, tokens, character)[1],
             system_prompt=archivist_system_prompt,
             conversation_text=conversation_text,
             token_count=token_count,
@@ -236,6 +239,8 @@ async def run_analysis(
 
         analysis = {
             "summary": summary_data.get("summary", ""),
+            "key_topics": summary_data.get("key_topics", []),
+            "tone": summary_data.get("tone", ""),
             "participants": summary_data.get("participants", []),
             "emotional_arc": summary_data.get("emotional_arc", ""),
             "open_questions": summary_data.get("open_questions", []),

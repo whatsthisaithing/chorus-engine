@@ -136,6 +136,15 @@ def _validate_summary_schema(parsed: dict[str, Any]) -> bool:
     if isinstance(participants, list):
         if not all(isinstance(p, str) for p in participants):
             return False
+    key_topics = parsed.get("key_topics")
+    if key_topics is not None and not isinstance(key_topics, list):
+        return False
+    if isinstance(key_topics, list):
+        if not all(isinstance(t, str) for t in key_topics):
+            return False
+    tone = parsed.get("tone")
+    if tone is not None and not isinstance(tone, str):
+        return False
     emotional_arc = parsed.get("emotional_arc")
     if emotional_arc is not None and not isinstance(emotional_arc, str):
         return False
@@ -467,6 +476,7 @@ async def _run_harness(args: argparse.Namespace) -> int:
             archivist_system_prompt, archivist_user_prompt = analysis_service._build_archivist_prompt(
                 conversation_text=conversation_text,
                 token_count=token_count,
+                character=character,
             )
 
             for model_id in model_ids:

@@ -4,7 +4,7 @@ Conversation Analysis Service for Phase 8.
 Analyzes complete conversations to extract:
 - Conversation summary (narrative)
 - Archivist memories (durable, assistant-neutral)
-- Participants and emotional arc
+- Key topics, tone, participants, and emotional arc
 """
 
 import logging
@@ -60,6 +60,8 @@ class ConversationAnalysis:
     """Result of conversation analysis."""
     memories: List[AnalyzedMemory]
     summary: str
+    key_topics: List[str]
+    tone: str
     emotional_arc: str
     participants: List[str]
     open_questions: List[str]
@@ -315,7 +317,8 @@ class ConversationAnalysisService:
             # Step 2: Archivist memory extraction
             archivist_system_prompt, archivist_user_prompt = self._build_archivist_prompt(
                 conversation_text=conversation_text,
-                token_count=token_count
+                token_count=token_count,
+                character=character
             )
             memories, archivist_response = await self._call_and_parse(
                 system_prompt=archivist_system_prompt,
@@ -350,6 +353,8 @@ class ConversationAnalysisService:
             analysis = ConversationAnalysis(
                 memories=memories,
                 summary=summary_data.get("summary", ""),
+                key_topics=summary_data.get("key_topics", []),
+                tone=summary_data.get("tone", ""),
                 emotional_arc=summary_data.get("emotional_arc", ""),
                 participants=summary_data.get("participants", []),
                 open_questions=summary_data.get("open_questions", [])
@@ -439,6 +444,8 @@ class ConversationAnalysisService:
             analysis = ConversationAnalysis(
                 memories=[],
                 summary=summary_data.get("summary", ""),
+                key_topics=summary_data.get("key_topics", []),
+                tone=summary_data.get("tone", ""),
                 emotional_arc=summary_data.get("emotional_arc", ""),
                 participants=summary_data.get("participants", []),
                 open_questions=summary_data.get("open_questions", [])
@@ -481,10 +488,11 @@ class ConversationAnalysisService:
 
             archivist_system_prompt, archivist_user_prompt = self._build_archivist_prompt(
                 conversation_text=conversation_text,
-                token_count=token_count
+                token_count=token_count,
+                character=character
             )
             conversation_text, token_count, filtered_messages, guard_stats, archivist_user_prompt = self._apply_context_guard(
-                build_prompt_fn=lambda text, tokens: self._build_archivist_prompt(text, tokens)[1],
+                build_prompt_fn=lambda text, tokens: self._build_archivist_prompt(text, tokens, character)[1],
                 system_prompt=archivist_system_prompt,
                 conversation_text=conversation_text,
                 token_count=token_count,
@@ -527,6 +535,8 @@ class ConversationAnalysisService:
             analysis = ConversationAnalysis(
                 memories=memories or [],
                 summary="",
+                key_topics=[],
+                tone="",
                 emotional_arc="",
                 participants=[],
                 open_questions=[]
@@ -760,6 +770,8 @@ class ConversationAnalysisService:
                 "error": error,
                 "analysis": {
                     "summary": "",
+                    "key_topics": [],
+                    "tone": "",
                     "participants": [],
                     "emotional_arc": "",
                     "open_questions": []
@@ -859,8 +871,8 @@ STYLE RULES (CRITICAL)
 - The summary must remain valid if the assistant, model, or persona were replaced.
 
 ASSISTANT-NEUTRALITY (MANDATORY)
-- Do not describe the assistant’s emotions, creativity, intent, or experiential reactions.
-- Do not evaluate or characterize the assistant’s behavior or approach.
+- Do not describe the assistant's emotions, creativity, intent, or experiential reactions.
+- Do not evaluate or characterize the assistant's behavior or approach.
 - If a detail would not remain true after swapping the assistant implementation, it must be excluded.
 
 ALLOWED CONTENT
@@ -881,14 +893,17 @@ Return a single JSON object:
 
 {
   "summary": "A concise narrative summary of the conversation",
+  "key_topics": ["3-8 short topic phrases"],
+  "tone": "brief overall tone (1-3 words or short phrase)",
   "participants": ["user", "assistant"],
-  "emotional_arc": "optional brief description",
+  "emotional_arc": "brief description of the emotional progression",
   "open_questions": ["optional", "list"]
 }
 
-All fields except summary are optional.
+All fields except open_questions are required. Use empty lists/strings when no signal is present.
 
 Return only valid JSON. Do not include commentary, markdown, or formatting."""
+
 
         user_prompt = f"""CONVERSATION ({token_count} tokens):
 You are analyzing the transcript below. You are not a participant.
@@ -904,8 +919,10 @@ Do NOT describe images or continue the conversation.
     def _build_archivist_prompt(
         self,
         conversation_text: str,
-        token_count: int
+        token_count: int,
+        character: Optional[CharacterConfig] = None
     ) -> tuple[str, str]:
+
         system_prompt = """You are an archivist system responsible for extracting durable, assistant-neutral memories from a completed conversation.
 
 Your role is to identify information that may be useful in the future without freezing transient states, assistant behavior, or stylistic artifacts.
@@ -924,6 +941,9 @@ CORE PRINCIPLES (MANDATORY)
    - Do NOT store “the assistant did/expressed/felt/used” as durable information.
    - If a memory would not survive swapping the assistant implementation, it must be excluded.
    - Prefer storing effects, outcomes, or user-grounded content over causes rooted in assistant behavior.
+   - Do NOT store assistant-attributed interpretations or observations unless the user explicitly stated or affirmed them.
+   - If the only evidence is the assistantâ€™s own interpretation, exclude the memory.
+   - Facts stated only by the assistant are NOT durable memories unless the user explicitly confirms them.
 
 2. Temporal Discipline
    - Write all memories in the past tense.
@@ -953,6 +973,7 @@ MEMORY TYPES
 FACT SCOPE (MANDATORY)
 - FACT memories must be derived from USER messages only.
 - Assistant text may provide context but cannot be the source of a FACT.
+- If a fact is stated in ASSISTANT role text, it must be ignored unless the USER explicitly confirms it.
 - Do not infer facts from usernames, handles, metadata, or assistant guesses.
 
 DURABILITY CLASSIFICATION
@@ -1018,7 +1039,6 @@ Do NOT describe images or continue the conversation.
         attempt_models = [model_primary]
         if model_fallback != model_primary:
             attempt_models.append(model_fallback)
-        else:
             attempt_models.append(model_primary)
 
         last_response = None
@@ -1070,7 +1090,6 @@ Do NOT describe images or continue the conversation.
                     temperature=temperature_to_use,
                     max_tokens=max_tokens
                 )
-        else:
             response = await self.llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -1112,6 +1131,18 @@ Do NOT describe images or continue the conversation.
             if not isinstance(participants, list):
                 participants = []
 
+            key_topics = data.get("key_topics", [])
+            if isinstance(key_topics, str):
+                try:
+                    key_topics = json.loads(key_topics)
+                except Exception:
+                    key_topics = [t.strip() for t in key_topics.split(",") if t.strip()]
+            if not isinstance(key_topics, list):
+                key_topics = []
+            key_topics = [str(topic).strip() for topic in key_topics if str(topic).strip()]
+
+            tone = str(data.get("tone", "")).strip()
+
             emotional_arc = data.get("emotional_arc", "")
             if isinstance(emotional_arc, list):
                 emotional_arc = " | ".join([str(item) for item in emotional_arc])
@@ -1125,6 +1156,8 @@ Do NOT describe images or continue the conversation.
 
             return {
                 "summary": summary,
+                "key_topics": key_topics,
+                "tone": tone,
                 "participants": participants,
                 "emotional_arc": emotional_arc,
                 "open_questions": open_questions
@@ -1236,7 +1269,6 @@ Do NOT describe images or continue the conversation.
                 # Determine status based on confidence
                 if mem.confidence >= 0.9:
                     status = "auto_approved"
-                else:
                     status = "pending"
                 
                 vector_id = None
@@ -1329,10 +1361,10 @@ Do NOT describe images or continue the conversation.
             message_range_start=0,
             message_range_end=message_count - 1,
             message_count=message_count,
-            key_topics=None,
+            key_topics=analysis.key_topics,
             participants=analysis.participants,
             emotional_arc=analysis.emotional_arc,
-            tone=None,
+            tone=analysis.tone,
             open_questions=analysis.open_questions,
             manual="true" if manual else "false"
         )
@@ -1378,6 +1410,10 @@ Do NOT describe images or continue the conversation.
             searchable_text = f"{analysis.summary}"
             if analysis.open_questions:
                 searchable_text += f"\nOpen Questions: {', '.join(analysis.open_questions)}"
+            if analysis.key_topics:
+                searchable_text += f"\nKey Topics: {', '.join(analysis.key_topics)}"
+            if analysis.tone:
+                searchable_text += f"\nTone: {analysis.tone}"
             
             # Generate embedding
             embedding = self.embedding_service.embed(searchable_text)
@@ -1390,6 +1426,9 @@ Do NOT describe images or continue the conversation.
                 "created_at": conversation.created_at.isoformat() if conversation and conversation.created_at else "",
                 "updated_at": conversation.updated_at.isoformat() if conversation and conversation.updated_at else "",
                 "message_count": summary.message_count,
+                "themes": analysis.key_topics,
+                "key_topics": analysis.key_topics,
+                "tone": analysis.tone or "",
                 "emotional_arc": analysis.emotional_arc or "",
                 "participants": analysis.participants,  # Will be JSON serialized
                 "open_questions": analysis.open_questions,  # Will be JSON serialized
@@ -1409,7 +1448,6 @@ Do NOT describe images or continue the conversation.
             
             if success:
                 logger.debug(f"Saved summary to vector store for conversation {conversation_id[:8]}...")
-            else:
                 logger.warning(f"Failed to save summary to vector store for {conversation_id[:8]}...")
             
             return success
@@ -1483,6 +1521,8 @@ Do NOT describe images or continue the conversation.
                     f.write(json.dumps({
                         "type": "analysis",
                         "memory_count": len(analysis.memories),
+                        "key_topics": analysis.key_topics,
+                        "tone": analysis.tone,
                         "participants": analysis.participants,
                         "open_questions": analysis.open_questions
                     }) + "\n")

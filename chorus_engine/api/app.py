@@ -3126,6 +3126,8 @@ async def analyze_conversation_now(
                 for m in analysis.memories
             ],
             "summary": analysis.summary,
+            "key_topics": analysis.key_topics,
+            "tone": analysis.tone,
             "emotional_arc": analysis.emotional_arc,
             "participants": analysis.participants,
             "open_questions": analysis.open_questions
@@ -3201,6 +3203,7 @@ async def get_analysis_history(
             "manual": summary.manual == "true",
             "summary": summary.summary,
             "themes": summary.key_topics if summary.key_topics else [],
+            "key_topics": summary.key_topics if summary.key_topics else [],
             "tone": summary.tone,
             "emotional_arc": emotional_arc,
             "participants": summary.participants if summary.participants else [],

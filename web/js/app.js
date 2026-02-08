@@ -1445,6 +1445,24 @@ window.App = {
             
             // Populate summary
             document.getElementById('analysisSummary').textContent = result.summary || 'No summary available';
+
+            // Populate key topics
+            const keyTopicsDiv = document.getElementById('analysisKeyTopics');
+            let keyTopics = result.key_topics;
+            if (typeof keyTopics === 'string') {
+                try {
+                    keyTopics = JSON.parse(keyTopics);
+                } catch (e) {
+                    keyTopics = keyTopics.split(',').map(t => t.trim()).filter(Boolean);
+                }
+            }
+            if (keyTopics && keyTopics.length > 0) {
+                keyTopicsDiv.innerHTML = keyTopics.map(topic =>
+                    `<span class="analysis-pill">${this.escapeHtml(topic)}</span>`
+                ).join('');
+            } else {
+                keyTopicsDiv.innerHTML = '<span class="text-muted">No key topics</span>';
+            }
             
             // Populate participants
             const participantsDiv = document.getElementById('analysisParticipants');
@@ -1485,20 +1503,39 @@ window.App = {
             // Populate emotional arc
             const emotionalArcDiv = document.getElementById('analysisEmotionalArc');
             let emotionalArc = result.emotional_arc;
-            // Parse if it's a string
+            let emotionalArcList = null;
             if (typeof emotionalArc === 'string') {
                 try {
-                    emotionalArc = JSON.parse(emotionalArc);
+                    const parsed = JSON.parse(emotionalArc);
+                    if (Array.isArray(parsed)) {
+                        emotionalArcList = parsed;
+                    }
                 } catch (e) {
-                    emotionalArc = [];
+                    // Keep string form
                 }
+            } else if (Array.isArray(emotionalArc)) {
+                emotionalArcList = emotionalArc;
             }
-            if (emotionalArc && emotionalArc.length > 0) {
-                emotionalArcDiv.innerHTML = emotionalArc.map((stage, index) => 
-                    `<div><strong>Stage ${index + 1}:</strong> ${stage}</div>`
+            if (emotionalArcList && emotionalArcList.length > 0) {
+                emotionalArcDiv.innerHTML = emotionalArcList.map((stage, index) =>
+                    `<div><strong>Stage ${index + 1}:</strong> ${this.escapeHtml(stage)}</div>`
                 ).join('');
+            } else if (typeof emotionalArc === 'string' && emotionalArc.trim().length > 0) {
+                emotionalArcDiv.textContent = emotionalArc;
             } else {
                 emotionalArcDiv.innerHTML = '<span class="text-muted">No emotional arc data</span>';
+            }
+
+            // Populate tone
+            const toneDiv = document.getElementById('analysisTone');
+            let tone = result.tone;
+            if (Array.isArray(tone)) {
+                tone = tone.join(' / ');
+            }
+            if (typeof tone === 'string' && tone.trim().length > 0) {
+                toneDiv.innerHTML = `<span class="analysis-pill tone">${this.escapeHtml(tone)}</span>`;
+            } else {
+                toneDiv.innerHTML = '<span class="text-muted">No tone available</span>';
             }
             
             // Populate memory counts
@@ -1747,6 +1784,24 @@ window.App = {
             
             // Populate summary
             document.getElementById('analysisSummary').textContent = fullAnalysis.summary || 'No summary available';
+
+            // Populate key topics
+            const keyTopicsDiv = document.getElementById('analysisKeyTopics');
+            let keyTopics = fullAnalysis.key_topics;
+            if (typeof keyTopics === 'string') {
+                try {
+                    keyTopics = JSON.parse(keyTopics);
+                } catch (e) {
+                    keyTopics = keyTopics.split(',').map(t => t.trim()).filter(Boolean);
+                }
+            }
+            if (keyTopics && keyTopics.length > 0) {
+                keyTopicsDiv.innerHTML = keyTopics.map(topic =>
+                    `<span class="analysis-pill">${this.escapeHtml(topic)}</span>`
+                ).join('');
+            } else {
+                keyTopicsDiv.innerHTML = '<span class="text-muted">No key topics</span>';
+            }
             
             // Populate participants
             const participantsDiv = document.getElementById('analysisParticipants');
@@ -1787,20 +1842,39 @@ window.App = {
             // Populate emotional arc
             const emotionalArcDiv = document.getElementById('analysisEmotionalArc');
             let emotionalArc = fullAnalysis.emotional_arc;
-            // Parse if it's a string
+            let emotionalArcList = null;
             if (typeof emotionalArc === 'string') {
                 try {
-                    emotionalArc = JSON.parse(emotionalArc);
+                    const parsed = JSON.parse(emotionalArc);
+                    if (Array.isArray(parsed)) {
+                        emotionalArcList = parsed;
+                    }
                 } catch (e) {
-                    emotionalArc = null;
+                    // Keep string form
                 }
+            } else if (Array.isArray(emotionalArc)) {
+                emotionalArcList = emotionalArc;
             }
-            if (emotionalArc && emotionalArc.length > 0) {
-                emotionalArcDiv.innerHTML = emotionalArc.map((stage, index) => 
-                    `<div><strong>Stage ${index + 1}:</strong> ${stage}</div>`
+            if (emotionalArcList && emotionalArcList.length > 0) {
+                emotionalArcDiv.innerHTML = emotionalArcList.map((stage, index) =>
+                    `<div><strong>Stage ${index + 1}:</strong> ${this.escapeHtml(stage)}</div>`
                 ).join('');
+            } else if (typeof emotionalArc === 'string' && emotionalArc.trim().length > 0) {
+                emotionalArcDiv.textContent = emotionalArc;
             } else {
                 emotionalArcDiv.innerHTML = '<span class="text-muted">No emotional arc data</span>';
+            }
+
+            // Populate tone
+            const toneDiv = document.getElementById('analysisTone');
+            let tone = fullAnalysis.tone;
+            if (Array.isArray(tone)) {
+                tone = tone.join(' / ');
+            }
+            if (typeof tone === 'string' && tone.trim().length > 0) {
+                toneDiv.innerHTML = `<span class="analysis-pill tone">${this.escapeHtml(tone)}</span>`;
+            } else {
+                toneDiv.innerHTML = '<span class="text-muted">No tone available</span>';
             }
             
             // Populate memory counts

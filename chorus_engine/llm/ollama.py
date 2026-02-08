@@ -1,6 +1,8 @@
 """Ollama LLM client implementation."""
 
 import json
+
+from .text_normalization import normalize_mojibake
 import logging
 from typing import Optional, AsyncIterator
 from .base import BaseLLMClient, LLMResponse, LLMError
@@ -76,9 +78,12 @@ class OllamaLLMClient(BaseLLMClient):
             )
             response.raise_for_status()
 
+            if response.encoding is None or response.encoding.lower() != "utf-8":
+                response.encoding = "utf-8"
+
             response_text = response.text
             data = response.json()
-            content = data.get("message", {}).get("content", "")
+            content = normalize_mojibake(data.get("message", {}).get("content", ""))
             if not content.strip():
                 options = payload.get("options", {})
                 logger.warning(
@@ -186,9 +191,12 @@ class OllamaLLMClient(BaseLLMClient):
             )
             response.raise_for_status()
 
+            if response.encoding is None or response.encoding.lower() != "utf-8":
+                response.encoding = "utf-8"
+
             response_text = response.text
             data = response.json()
-            content = data.get("message", {}).get("content", "")
+            content = normalize_mojibake(data.get("message", {}).get("content", ""))
             if not content.strip():
                 options = payload.get("options", {})
                 logger.warning(
@@ -283,13 +291,16 @@ class OllamaLLMClient(BaseLLMClient):
                 json=payload
             ) as response:
                 response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
                 
                 async for line in response.aiter_lines():
                     if line.strip():
                         try:
                             data = json.loads(line)
                             if "message" in data:
-                                content = data["message"].get("content", "")
+                                content = normalize_mojibake(data["message"].get("content", ""))
                                 if content:
                                     yield content
                         except json.JSONDecodeError:
@@ -349,6 +360,9 @@ class OllamaLLMClient(BaseLLMClient):
                 json=payload
             ) as response:
                 response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
                 
                 chunk_count = 0
                 async for line in response.aiter_lines():
@@ -361,7 +375,7 @@ class OllamaLLMClient(BaseLLMClient):
                                 logger.error(f"Ollama error: {data['error']}")
                             
                             if "message" in data:
-                                content = data["message"].get("content", "")
+                                content = normalize_mojibake(data["message"].get("content", ""))
                                 if content:
                                     chunk_count += 1
                                     yield content

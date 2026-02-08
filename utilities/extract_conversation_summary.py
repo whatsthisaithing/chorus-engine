@@ -60,12 +60,13 @@ def extract_conversation_analysis(conversation_id: str):
         
         print(f"Extracted memories: {len(memories)}")
         
-        # Get themes from vector store (they're stored there, not in SQL)
+        # Get themes/key topics from vector store (for cross-checking legacy metadata)
         vector_store = ConversationSummaryVectorStore(
             persist_directory=Path("data/vector_store")
         )
         
         themes = []
+        vector_key_topics = []
         try:
             collection = vector_store.get_collection(conversation.character_id)
             if collection:
@@ -77,15 +78,21 @@ def extract_conversation_analysis(conversation_id: str):
                 if result and result["metadatas"]:
                     metadata = result["metadatas"][0]
                     themes_raw = metadata.get("themes", [])
+                    key_topics_raw = metadata.get("key_topics", [])
                     # Themes might be JSON string or list
                     if isinstance(themes_raw, str):
                         themes = json.loads(themes_raw)
                     else:
                         themes = themes_raw
+                    if isinstance(key_topics_raw, str):
+                        vector_key_topics = json.loads(key_topics_raw)
+                    else:
+                        vector_key_topics = key_topics_raw
         except Exception as e:
             print(f"Warning: Could not retrieve themes from vector store: {e}")
         
         print(f"Themes: {len(themes)}")
+        print(f"Vector key topics: {len(vector_key_topics)}")
         
         # Build comprehensive JSON structure
         data = {
@@ -106,10 +113,11 @@ def extract_conversation_analysis(conversation_id: str):
                     "end": summary.message_range_end
                 },
                 "summary": summary.summary,
-                "themes": themes,  # From vector store
+                "themes": themes,  # From vector store (legacy)
                 "tone": summary.tone,
                 "emotional_arc": summary.emotional_arc,
                 "key_topics": summary.key_topics if summary.key_topics else [],
+                "vector_key_topics": vector_key_topics,
                 "participants": summary.participants if summary.participants else [],
                 "manual_analysis": summary.manual == "true"
             },

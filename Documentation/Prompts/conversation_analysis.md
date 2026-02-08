@@ -88,12 +88,14 @@ Return a single JSON object:
 
 {
   "summary": "A concise narrative summary of the conversation",
+  "key_topics": ["3-8 short topic phrases"],
+  "tone": "brief overall tone (1-3 words or short phrase)",
   "participants": ["user", "assistant"],
-  "emotional_arc": "optional brief description",
+  "emotional_arc": "brief description of the emotional progression",
   "open_questions": ["optional", "list"]
 }
 
-All fields except summary are optional.
+All fields except open_questions are required. Use empty lists/strings when no signal is present.
 
 Return only valid JSON. Do not include commentary or formatting.
 ```
@@ -207,10 +209,12 @@ CONVERSATION ({token_count} tokens):
 ### 5. Summary Storage
 - Summary fields stored:
   - `summary`
+  - `key_topics`
+  - `tone`
   - `participants`
   - `emotional_arc`
   - `open_questions`
-- Legacy fields (`themes`, `tone`, `key_topics`) remain in the schema for older data but are no longer written for new analyses
+- Legacy fields (`themes`) remain in the schema for older data but are no longer written for new analyses
 
 ---
 
@@ -265,7 +269,7 @@ Response includes:
 | Assistant-neutral | Partial | Enforced by prompt |
 | Durability | Not present | Required + persisted |
 | Pattern eligibility | Not present | Required + persisted |
-| Storage | Themes/tone/key_topics | Open questions + participants |
+| Storage | Themes/tone/key_topics | Key topics + tone + open questions + participants |
 
 ---
 
