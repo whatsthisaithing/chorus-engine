@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Dict, Any
+from typing import Iterable, List, Dict, Any, Optional
+import json
 
 
 VISUAL_CONTEXT_PATTERN = re.compile(r"\[VISUAL CONTEXT:.*?\]", re.DOTALL)
@@ -164,9 +165,48 @@ def filter_archivist_messages(messages: Iterable, role_attr: str = "role") -> tu
     return cleaned, stats
 
 
+def filter_archivist_messages_by_role(
+    messages: Iterable[Dict[str, str]],
+    roles: Iterable[str]
+) -> List[Dict[str, str]]:
+    """
+    Filter already-cleaned archivist messages by role (case-insensitive).
+    """
+    role_set = {role.lower() for role in roles}
+    return [
+        msg for msg in messages
+        if (msg.get("role") or "").strip().lower() in role_set
+    ]
+
+
 def format_archivist_transcript(messages: List[Dict[str, str]]) -> str:
     lines = []
     for msg in messages:
         role = msg["role"].upper()
         lines.append(f"{role}: {msg['content']}")
     return "\n\n".join(lines)
+
+
+def format_archivist_transcript_json(
+    messages: List[Dict[str, str]],
+    name_map: Optional[Dict[str, str]] = None
+) -> str:
+    """
+    Serialize messages as a JSON array of {role, name?, content}.
+    Roles are normalized to: user | assistant | system | tool.
+    """
+    allowed_roles = {"user", "assistant", "system", "tool"}
+    payload: List[Dict[str, str]] = []
+
+    for msg in messages:
+        role_raw = (msg.get("role") or "").strip().lower()
+        role = role_raw if role_raw in allowed_roles else "tool"
+        entry: Dict[str, str] = {
+            "role": role,
+            "content": msg.get("content", "")
+        }
+        if name_map and role in name_map and name_map[role]:
+            entry["name"] = name_map[role]
+        payload.append(entry)
+
+    return json.dumps(payload, ensure_ascii=False)

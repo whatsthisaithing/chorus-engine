@@ -20,7 +20,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from chorus_engine.db.database import SessionLocal
-from chorus_engine.models.conversation import Conversation
+from chorus_engine.models.conversation import Conversation, MemoryType
 from chorus_engine.config.loader import ConfigLoader
 from chorus_engine.llm.client import create_llm_client
 from chorus_engine.services.embedding_service import EmbeddingService
@@ -29,7 +29,8 @@ from chorus_engine.services.conversation_analysis_service import ConversationAna
 from chorus_engine.services.json_extraction import extract_json_block
 from chorus_engine.services.archivist_transcript import (
     filter_archivist_messages,
-    format_archivist_transcript,
+    filter_archivist_messages_by_role,
+    format_archivist_transcript_json,
 )
 
 
@@ -80,7 +81,10 @@ async def run_analysis(
             return None
         filtered_messages, filter_stats_obj = filter_archivist_messages(messages)
         filter_stats = filter_stats_obj.to_dict()
-        conversation_text = format_archivist_transcript(filtered_messages)
+        name_map = {}
+        if getattr(character, "name", None):
+            name_map["assistant"] = character.name
+        conversation_text = format_archivist_transcript_json(filtered_messages, name_map=name_map)
         token_count = analysis_service.token_counter.count_tokens(conversation_text)
 
         model_primary, model_fallback = analysis_service._select_models(character)
@@ -144,7 +148,8 @@ async def run_analysis(
             system_prompt=summary_system_prompt,
             conversation_text=conversation_text,
             token_count=token_count,
-            filtered_messages=filtered_messages
+            filtered_messages=filtered_messages,
+            name_map=name_map
         )
         if guard_stats:
             filter_stats.update(guard_stats)
@@ -213,28 +218,95 @@ async def run_analysis(
             print(f"✓ Saved to: {output_file}")
             return output_file
 
-        # Archivist step
-        archivist_system_prompt, archivist_user_prompt = analysis_service._build_archivist_prompt(
-            conversation_text=conversation_text,
-            token_count=token_count,
-            character=character
-        )
-        conversation_text, token_count, filtered_messages, guard_stats, archivist_user_prompt = analysis_service._apply_context_guard(
-            build_prompt_fn=lambda text, tokens: analysis_service._build_archivist_prompt(text, tokens, character)[1],
-            system_prompt=archivist_system_prompt,
-            conversation_text=conversation_text,
-            token_count=token_count,
-            filtered_messages=filtered_messages
-        )
-        if guard_stats:
-            filter_stats.update(guard_stats)
-        memories, archivist_response, archivist_attempts = await run_with_retries(
-            task_label="archivist",
-            system_prompt=archivist_system_prompt,
-            user_prompt=archivist_user_prompt,
-            parser=lambda response: analysis_service._parse_archivist_response(response, character),
-            max_tokens=archivist_max_tokens or analysis_service.analysis_max_tokens_memories,
-            temperature=0.0
+        # Archivist step (two-pass)
+        profile = analysis_service.memory_profile_service.get_extraction_profile(character)
+        fact_enabled = bool(profile.get("extract_facts", True))
+        non_fact_enabled = any([
+            profile.get("extract_projects", False),
+            profile.get("extract_experiences", False),
+            profile.get("extract_stories", False),
+            profile.get("extract_relationship", False),
+        ])
+
+        fact_system_prompt = ""
+        fact_user_prompt = ""
+        fact_response = ""
+        non_fact_system_prompt = ""
+        non_fact_user_prompt = ""
+        non_fact_response = ""
+        fact_attempts: list[dict] = []
+        non_fact_attempts: list[dict] = []
+        fact_memories = []
+        non_fact_memories = []
+
+        if fact_enabled or non_fact_enabled:
+            non_fact_system_prompt, _ = analysis_service._build_archivist_non_fact_prompt(
+                conversation_text=conversation_text,
+                token_count=token_count,
+                character=character
+            )
+            conversation_text, token_count, filtered_messages, guard_stats, non_fact_user_prompt = analysis_service._apply_context_guard(
+                build_prompt_fn=lambda text, tokens: analysis_service._build_archivist_non_fact_prompt(text, tokens, character)[1],
+                system_prompt=non_fact_system_prompt,
+                conversation_text=conversation_text,
+                token_count=token_count,
+                filtered_messages=filtered_messages,
+                name_map=name_map
+            )
+            if guard_stats:
+                filter_stats.update(guard_stats)
+
+            user_only_messages = filter_archivist_messages_by_role(filtered_messages, {"user"})
+            user_only_text = format_archivist_transcript_json(user_only_messages, name_map=name_map)
+            user_only_token_count = analysis_service.token_counter.count_tokens(user_only_text)
+            fact_system_prompt, fact_user_prompt = analysis_service._build_archivist_fact_prompt(
+                conversation_text=user_only_text,
+                token_count=user_only_token_count,
+                character=character
+            )
+
+            if fact_enabled and user_only_messages:
+                fact_memories, fact_response, fact_attempts = await run_with_retries(
+                    task_label="archivist_fact",
+                    system_prompt=fact_system_prompt,
+                    user_prompt=fact_user_prompt,
+                    parser=lambda response: analysis_service._parse_archivist_response(
+                        response,
+                        character,
+                        allowed_types_override={MemoryType.FACT},
+                        parse_mode_label="archivist_fact"
+                    ),
+                    max_tokens=archivist_max_tokens or analysis_service.analysis_max_tokens_memories,
+                    temperature=0.0
+                )
+                if fact_memories:
+                    for mem in fact_memories:
+                        mem.pattern_eligible = False
+
+            if non_fact_enabled:
+                non_fact_allowed = {
+                    MemoryType.PROJECT,
+                    MemoryType.EXPERIENCE,
+                    MemoryType.STORY,
+                    MemoryType.RELATIONSHIP
+                }
+                non_fact_memories, non_fact_response, non_fact_attempts = await run_with_retries(
+                    task_label="archivist_non_fact",
+                    system_prompt=non_fact_system_prompt,
+                    user_prompt=non_fact_user_prompt,
+                    parser=lambda response: analysis_service._parse_archivist_response(
+                        response,
+                        character,
+                        allowed_types_override=non_fact_allowed,
+                        parse_mode_label="archivist_non_fact"
+                    ),
+                    max_tokens=archivist_max_tokens or analysis_service.analysis_max_tokens_memories,
+                    temperature=0.0
+                )
+
+        memories = analysis_service._merge_archivist_memories(
+            fact_memories or [],
+            non_fact_memories or []
         )
 
         analysis = {
@@ -279,20 +351,32 @@ async def run_analysis(
                     "user": summary_user_prompt
                 },
                 "archivist": {
-                    "system": archivist_system_prompt,
-                    "user": archivist_user_prompt
+                    "system": "",
+                    "user": ""
+                },
+                "archivist_fact": {
+                    "system": fact_system_prompt,
+                    "user": fact_user_prompt
+                },
+                "archivist_non_fact": {
+                    "system": non_fact_system_prompt,
+                    "user": non_fact_user_prompt
                 }
             }
 
         if include_raw:
             data["raw_responses"] = {
                 "summary": summary_response,
-                "archivist": archivist_response
+                "archivist": "",
+                "archivist_fact": fact_response,
+                "archivist_non_fact": non_fact_response
             }
 
         data["parse_diagnostics"] = {
             "summary": summary_attempts,
-            "archivist": archivist_attempts
+            "archivist": [],
+            "archivist_fact": fact_attempts,
+            "archivist_non_fact": non_fact_attempts
         }
         data["filter_stats"] = filter_stats
 

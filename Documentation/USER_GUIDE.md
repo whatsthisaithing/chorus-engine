@@ -335,7 +335,7 @@ Scene Capture allows you to manually generate an image of the current conversati
 
 **Availability**:
 - The scene capture button (📷 camera icon) appears in the chat interface
-- Only visible for characters with **unbounded immersion level**
+- Only visible for characters with **full or unbounded immersion level**
 - Located next to other chat controls
 
 **Using Scene Capture**:
@@ -421,7 +421,7 @@ This differs from conversational images where the character describes what they'
 - Gallery loads all images - performance may slow with 100+ images
 
 **Character Requirements**:
-- Scene capture requires **unbounded immersion** characters
+- Scene capture requires **full or unbounded immersion** characters
 - These characters have deeper contextual awareness
 - Lower immersion characters don't have scene capture enabled
 

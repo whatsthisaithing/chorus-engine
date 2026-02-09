@@ -3178,12 +3178,16 @@ async def get_analysis_history(
             memory_counts[mem_type] = memory_counts.get(mem_type, 0) + 1
             
             if include_memories:
+                meta = memory.meta_data if isinstance(memory.meta_data, dict) else {}
                 analysis_memories.append({
                     "id": memory.id,
                     "type": mem_type,
                     "category": memory.category,
                     "content": memory.content,
                     "confidence": memory.confidence,
+                    "reasoning": meta.get("reasoning"),
+                    "durability": getattr(memory, "durability", None),
+                    "pattern_eligible": getattr(memory, "pattern_eligible", None),
                     "emotional_weight": memory.emotional_weight,
                     "created_at": memory.created_at.isoformat() if memory.created_at else None
                 })
@@ -5134,11 +5138,11 @@ async def generate_scene_capture_prompt(
     
     character = app_state["characters"][character_id]
     
-    # Verify character supports scene capture (unbounded only)
-    if character.immersion_level != "unbounded":
+    # Verify character supports scene capture (full/unbounded only)
+    if character.immersion_level not in ("full", "unbounded"):
         raise HTTPException(
             status_code=400,
-            detail="Scene capture only available for unbounded immersion level"
+            detail="Scene capture only available for full or unbounded immersion level"
         )
     
     if not character.image_generation.enabled:
@@ -5294,10 +5298,10 @@ async def capture_scene(
     character = app_state["characters"][character_id]
     
     # Verify character supports scene capture
-    if character.immersion_level != "unbounded":
+    if character.immersion_level not in ("full", "unbounded"):
         raise HTTPException(
             status_code=400,
-            detail="Scene capture only available for unbounded immersion level"
+            detail="Scene capture only available for full or unbounded immersion level"
         )
     
     if not character.image_generation.enabled:
@@ -6842,10 +6846,10 @@ async def generate_video_scene_capture_prompt(
     character = app_state["characters"][character_id]
     
     # Verify character supports video scene capture
-    if character.immersion_level != "unbounded":
+    if character.immersion_level not in ("full", "unbounded"):
         raise HTTPException(
             status_code=400,
-            detail="Scene capture only available for unbounded immersion level"
+            detail="Scene capture only available for full or unbounded immersion level"
         )
     
     video_config = getattr(character, 'video_generation', None)

@@ -1442,6 +1442,22 @@ window.App = {
             
             // Hide loading spinner
             loadingSpinner.style.display = 'none';
+
+            if (!result || result.status === 'error') {
+                const errorMessage = result && result.message ? result.message : 'Analysis failed or was refused.';
+                errorDiv.textContent = errorMessage;
+                errorDiv.style.display = 'block';
+                UI.showToast(errorMessage, 'error');
+                return;
+            }
+
+            if (result.status && result.status !== 'success') {
+                const noticeMessage = result.message || 'Analysis was not completed.';
+                errorDiv.textContent = noticeMessage;
+                errorDiv.style.display = 'block';
+                UI.showToast(noticeMessage, 'warning');
+                return;
+            }
             
             // Populate summary
             document.getElementById('analysisSummary').textContent = result.summary || 'No summary available';
@@ -1461,7 +1477,7 @@ window.App = {
                     `<span class="analysis-pill">${this.escapeHtml(topic)}</span>`
                 ).join('');
             } else {
-                keyTopicsDiv.innerHTML = '<span class="text-muted">No key topics</span>';
+                keyTopicsDiv.innerHTML = '<span class="text-theme-secondary">No key topics</span>';
             }
             
             // Populate participants
@@ -1479,7 +1495,7 @@ window.App = {
                     `<span class="badge bg-secondary me-1">${name}</span>`
                 ).join('');
             } else {
-                participantsDiv.innerHTML = '<span class="text-muted">No participants listed</span>';
+                participantsDiv.innerHTML = '<span class="text-theme-secondary">No participants listed</span>';
             }
             
             // Populate open questions
@@ -1497,7 +1513,7 @@ window.App = {
                     `<li>${question}</li>`
                 ).join('');
             } else {
-                openQuestionsList.innerHTML = '<li class="text-muted">No open questions</li>';
+                openQuestionsList.innerHTML = '<li class="text-theme-secondary">No open questions</li>';
             }
             
             // Populate emotional arc
@@ -1523,7 +1539,7 @@ window.App = {
             } else if (typeof emotionalArc === 'string' && emotionalArc.trim().length > 0) {
                 emotionalArcDiv.textContent = emotionalArc;
             } else {
-                emotionalArcDiv.innerHTML = '<span class="text-muted">No emotional arc data</span>';
+                emotionalArcDiv.innerHTML = '<span class="text-theme-secondary">No emotional arc data</span>';
             }
 
             // Populate tone
@@ -1535,7 +1551,7 @@ window.App = {
             if (typeof tone === 'string' && tone.trim().length > 0) {
                 toneDiv.innerHTML = `<span class="analysis-pill tone">${this.escapeHtml(tone)}</span>`;
             } else {
-                toneDiv.innerHTML = '<span class="text-muted">No tone available</span>';
+                toneDiv.innerHTML = '<span class="text-theme-secondary">No tone available</span>';
             }
             
             // Populate memory counts
@@ -1560,7 +1576,7 @@ window.App = {
                 countsDiv.innerHTML = badges;
                 totalBadge.textContent = total;
             } else {
-                countsDiv.innerHTML = '<span class="text-muted">No memories extracted</span>';
+                countsDiv.innerHTML = '<span class="text-theme-secondary">No memories extracted</span>';
                 totalBadge.textContent = '0';
             }
             
@@ -1800,7 +1816,7 @@ window.App = {
                     `<span class="analysis-pill">${this.escapeHtml(topic)}</span>`
                 ).join('');
             } else {
-                keyTopicsDiv.innerHTML = '<span class="text-muted">No key topics</span>';
+                keyTopicsDiv.innerHTML = '<span class="text-theme-secondary">No key topics</span>';
             }
             
             // Populate participants
@@ -1818,7 +1834,7 @@ window.App = {
                     `<span class="badge bg-secondary me-1">${name}</span>`
                 ).join('');
             } else {
-                participantsDiv.innerHTML = '<span class="text-muted">No participants listed</span>';
+                participantsDiv.innerHTML = '<span class="text-theme-secondary">No participants listed</span>';
             }
             
             // Populate open questions
@@ -1836,7 +1852,7 @@ window.App = {
                     `<li>${question}</li>`
                 ).join('');
             } else {
-                openQuestionsList.innerHTML = '<li class="text-muted">No open questions</li>';
+                openQuestionsList.innerHTML = '<li class="text-theme-secondary">No open questions</li>';
             }
             
             // Populate emotional arc
@@ -1862,7 +1878,7 @@ window.App = {
             } else if (typeof emotionalArc === 'string' && emotionalArc.trim().length > 0) {
                 emotionalArcDiv.textContent = emotionalArc;
             } else {
-                emotionalArcDiv.innerHTML = '<span class="text-muted">No emotional arc data</span>';
+                emotionalArcDiv.innerHTML = '<span class="text-theme-secondary">No emotional arc data</span>';
             }
 
             // Populate tone
@@ -1874,7 +1890,7 @@ window.App = {
             if (typeof tone === 'string' && tone.trim().length > 0) {
                 toneDiv.innerHTML = `<span class="analysis-pill tone">${this.escapeHtml(tone)}</span>`;
             } else {
-                toneDiv.innerHTML = '<span class="text-muted">No tone available</span>';
+                toneDiv.innerHTML = '<span class="text-theme-secondary">No tone available</span>';
             }
             
             // Populate memory counts
@@ -1899,7 +1915,7 @@ window.App = {
                 countsDiv.innerHTML = badges;
                 totalBadge.textContent = total;
             } else {
-                countsDiv.innerHTML = '<span class="text-muted">No memories extracted</span>';
+                countsDiv.innerHTML = '<span class="text-theme-secondary">No memories extracted</span>';
                 totalBadge.textContent = '0';
             }
             
@@ -2739,9 +2755,9 @@ window.App = {
             threadId: this.state.selectedThreadId
         });
         
-        // Show image button for unbounded characters with image generation enabled and active conversation
+        // Show image button for full/unbounded characters with image generation enabled and active conversation
         if (imageBtn) {
-            if (character && character.immersion_level === 'unbounded' && 
+            if (character && ['full', 'unbounded'].includes(character.immersion_level) && 
                 character.capabilities?.image_generation && this.state.selectedThreadId) {
                 imageBtn.style.display = 'inline-block';
                 imageBtn.disabled = false;
@@ -2750,16 +2766,16 @@ window.App = {
                 imageBtn.style.display = 'none';
                 imageBtn.disabled = true;
                 console.log('✗ Image scene capture button hidden:', {
-                    isUnbounded: character?.immersion_level === 'unbounded',
+                    isFullOrUnbounded: ['full', 'unbounded'].includes(character?.immersion_level),
                     imageGen: character?.capabilities?.image_generation,
                     hasThread: !!this.state.selectedThreadId
                 });
             }
         }
         
-        // Show video button for unbounded characters with video generation enabled and active conversation
+        // Show video button for full/unbounded characters with video generation enabled and active conversation
         if (videoBtn) {
-            if (character && character.immersion_level === 'unbounded' && 
+            if (character && ['full', 'unbounded'].includes(character.immersion_level) && 
                 character.capabilities?.video_generation && this.state.selectedThreadId) {
                 videoBtn.style.display = 'inline-block';
                 videoBtn.disabled = false;
@@ -2768,7 +2784,7 @@ window.App = {
                 videoBtn.style.display = 'none';
                 videoBtn.disabled = true;
                 console.log('✗ Video scene capture button hidden:', {
-                    isUnbounded: character?.immersion_level === 'unbounded',
+                    isFullOrUnbounded: ['full', 'unbounded'].includes(character?.immersion_level),
                     videoGen: character?.capabilities?.video_generation,
                     hasThread: !!this.state.selectedThreadId
                 });

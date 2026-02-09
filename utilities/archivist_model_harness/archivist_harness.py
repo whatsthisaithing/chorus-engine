@@ -28,6 +28,11 @@ from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
 from chorus_engine.services.json_extraction import extract_json_block
+from chorus_engine.services.archivist_transcript import (
+    filter_archivist_messages,
+    filter_archivist_messages_by_role,
+    format_archivist_transcript_json,
+)
 
 
 SUMMARY_TASK = "summary"
@@ -466,14 +471,36 @@ async def _run_harness(args: argparse.Namespace) -> int:
                         )
                 continue
 
-            token_count = analysis_service._count_tokens(messages)
-            conversation_text = analysis_service._format_conversation(messages)
+            filtered_messages, _ = filter_archivist_messages(messages)
+            name_map = {}
+            if getattr(character, "name", None):
+                name_map["assistant"] = character.name
+            conversation_text = format_archivist_transcript_json(filtered_messages, name_map=name_map)
+            token_count = analysis_service.token_counter.count_tokens(conversation_text)
 
             summary_system_prompt, summary_user_prompt = analysis_service._build_summary_prompt(
                 conversation_text=conversation_text,
                 token_count=token_count,
             )
-            archivist_system_prompt, archivist_user_prompt = analysis_service._build_archivist_prompt(
+            profile = analysis_service.memory_profile_service.get_extraction_profile(character)
+            fact_enabled = bool(profile.get("extract_facts", True))
+            non_fact_enabled = any([
+                profile.get("extract_projects", False),
+                profile.get("extract_experiences", False),
+                profile.get("extract_stories", False),
+                profile.get("extract_relationship", False),
+            ])
+
+            user_only_messages = filter_archivist_messages_by_role(filtered_messages, {"user"})
+            user_only_text = format_archivist_transcript_json(user_only_messages, name_map=name_map)
+            user_only_token_count = analysis_service.token_counter.count_tokens(user_only_text)
+
+            archivist_fact_system_prompt, archivist_fact_user_prompt = analysis_service._build_archivist_fact_prompt(
+                conversation_text=user_only_text,
+                token_count=user_only_token_count,
+                character=character,
+            )
+            archivist_non_fact_system_prompt, archivist_non_fact_user_prompt = analysis_service._build_archivist_non_fact_prompt(
                 conversation_text=conversation_text,
                 token_count=token_count,
                 character=character,
@@ -481,9 +508,6 @@ async def _run_harness(args: argparse.Namespace) -> int:
 
             for model_id in model_ids:
                 for task in (SUMMARY_TASK, MEMORIES_TASK):
-                    system_prompt = summary_system_prompt if task == SUMMARY_TASK else archivist_system_prompt
-                    user_prompt = summary_user_prompt if task == SUMMARY_TASK else archivist_user_prompt
-
                     for temperature in temps:
                         for attempt in range(1, retries + 2):
                             start = time.perf_counter()
@@ -495,23 +519,69 @@ async def _run_harness(args: argparse.Namespace) -> int:
                             parsed: Any = None
 
                             try:
-                                response = await llm_client.generate(
-                                    prompt=user_prompt,
-                                    system_prompt=system_prompt,
-                                    model=model_id,
-                                    temperature=temperature,
-                                    max_tokens=max_tokens,
-                                )
-                                response_text = response.content
-
                                 if task == SUMMARY_TASK:
+                                    response = await llm_client.generate(
+                                        prompt=summary_user_prompt,
+                                        system_prompt=summary_system_prompt,
+                                        model=model_id,
+                                        temperature=temperature,
+                                        max_tokens=max_tokens,
+                                    )
+                                    response_text = response.content
                                     parsed, success_json = _parse_summary_json(response_text)
                                     if success_json and parsed is not None:
                                         success_schema = _validate_summary_schema(parsed)
                                 else:
-                                    parsed, success_json = _parse_memories_json(response_text)
-                                    if success_json and parsed is not None:
+                                    fact_parsed = []
+                                    non_fact_parsed = []
+                                    fact_response_text = ""
+                                    non_fact_response_text = ""
+                                    success_json_fact = True
+                                    success_json_non_fact = True
+
+                                    if fact_enabled and user_only_messages:
+                                        fact_response = await llm_client.generate(
+                                            prompt=archivist_fact_user_prompt,
+                                            system_prompt=archivist_fact_system_prompt,
+                                            model=model_id,
+                                            temperature=temperature,
+                                            max_tokens=max_tokens,
+                                        )
+                                        fact_response_text = fact_response.content
+                                        fact_parsed, success_json_fact = _parse_memories_json(fact_response_text)
+
+                                    if non_fact_enabled:
+                                        non_fact_response = await llm_client.generate(
+                                            prompt=archivist_non_fact_user_prompt,
+                                            system_prompt=archivist_non_fact_system_prompt,
+                                            model=model_id,
+                                            temperature=temperature,
+                                            max_tokens=max_tokens,
+                                        )
+                                        non_fact_response_text = non_fact_response.content
+                                        non_fact_parsed, success_json_non_fact = _parse_memories_json(non_fact_response_text)
+
+                                    if success_json_fact and success_json_non_fact:
+                                        combined: list[dict[str, Any]] = []
+                                        if isinstance(fact_parsed, list):
+                                            combined.extend([
+                                                mem for mem in fact_parsed
+                                                if str(mem.get("type", "")).strip().lower() == "fact"
+                                            ])
+                                        if isinstance(non_fact_parsed, list):
+                                            combined.extend([
+                                                mem for mem in non_fact_parsed
+                                                if str(mem.get("type", "")).strip().lower() != "fact"
+                                            ])
+                                        parsed = combined
+                                        response_text = json.dumps(combined)
+                                        success_json = True
                                         success_schema = _validate_memories_schema(parsed)
+                                    else:
+                                        response_text = json.dumps({
+                                            "fact_response": fact_response_text,
+                                            "non_fact_response": non_fact_response_text
+                                        })
                             except Exception as e:
                                 error_type = e.__class__.__name__
                                 error_message = str(e)

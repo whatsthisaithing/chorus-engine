@@ -69,7 +69,7 @@ class ConversationRepository:
         """
         return (
             self.db.query(Conversation)
-            .order_by(Conversation.updated_at.desc())
+            .order_by(Conversation.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
@@ -90,7 +90,7 @@ class ConversationRepository:
         return (
             self.db.query(Conversation)
             .filter(Conversation.character_id == character_id)
-            .order_by(Conversation.updated_at.desc())
+            .order_by(Conversation.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()

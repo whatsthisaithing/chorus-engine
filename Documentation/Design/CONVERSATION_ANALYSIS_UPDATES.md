@@ -2,7 +2,7 @@
 
 ## Summary
 
-This document describes the changes made to the conversation analysis and memory extraction pipeline. The system now uses a unified, two-step analysis cycle that separates narrative summarization from durable memory extraction, and removes per-message/background LLM extraction.
+This document describes the changes made to the conversation analysis and memory extraction pipeline. The system now uses a two-step analysis cycle that separates narrative summarization from durable memory extraction, and removes per-message/background LLM extraction. Archivist extraction is now a two-pass process (FACT-only + NON-FACT) with JSON transcript role binding.
 
 The updated design follows the ImprovedConversationAnalysis direction and is implemented directly in the production services. This document is intended for maintainers and reviewers.
 
@@ -28,15 +28,17 @@ Conversation analysis now runs two independent LLM calls:
    - Narrative, assistant-neutral summary
    - Produces `summary`, `key_topics`, `tone`, `participants`, `emotional_arc`, `open_questions`
 
-2. **Archivist Memory Extraction**
-   - Durable, assistant-neutral memory extraction
+2. **Archivist Memory Extraction (Two-Pass)**
+   - **Pass A (FACT-only):** user-only messages, extracts FACTs only
+   - **Pass B (NON-FACT):** full transcript, extracts project/experience/story/relationship
+   - Results are merged (FACTs first) and de-duplicated
    - Produces memories with `durability`, `pattern_eligible`, and `reasoning`
 
 These two calls are executed in `ConversationAnalysisService.analyze_conversation()`.
 
 ### 1.1 Dedicated Archivist Model (System Config)
 
-Conversation analysis can now use a dedicated archivist LLM model configured in system settings (`llm.archivist_model`). When set, this model is used for both the summary and archivist memory extraction steps, decoupling analysis quality and cost from the primary character model.
+Conversation analysis can now use a dedicated archivist LLM model configured in system settings (`llm.archivist_model`). When set, this model is used for summary and both archivist passes, decoupling analysis quality and cost from the primary character model.
 
 ### 2. Background Extraction Sunset
 
@@ -85,12 +87,13 @@ Conversation summary vectors now include:
 
 ### `ConversationAnalysisService`
 
-- Split into summary and archivist calls
-- New prompt templates embedded in code
-- JSON parsing for separate responses
+- Split into summary + two-pass archivist calls
+- New prompt templates embedded in code (FACT-only and NON-FACT)
+- JSON transcript role binding for both summary and archivist prompts
+- Two-pass merge + de-duplication (FACTs first)
 - Retry-on-failure with fallback model
 - Uses shared LLM usage lock
-- Updated debug logs for separate prompts and responses
+- Debug logs include summary + both archivist prompts and responses
 
 ### `IntentDetectionService`
 
@@ -119,7 +122,7 @@ Conversation summary vectors now include:
 
 - Manual analysis responses now return `open_questions` and memory durability fields
 - Conversation search results include `open_questions`
-- Added a utility runner to execute analysis without persisting results
+- Analysis utility runner and archivist harness updated to two-pass extraction
 
 ---
 
@@ -137,7 +140,8 @@ Existing data is preserved. New fields default safely.
 
 - Per-message extraction is gone; memory updates are now periodic via analysis cycles
 - Analysis is more consistent because summary and memory extraction are decoupled
-- Debug logging now records prompts and responses for both steps
+- Archivist extraction is two-pass with user-only FACTs
+- Debug logging now records prompts and responses for summary + both archivist passes
 
 ---
 
@@ -145,7 +149,7 @@ Existing data is preserved. New fields default safely.
 
 Recommended checks after deployment:
 
-1. Manual analysis produces summary + archivist results
+1. Manual analysis produces summary + archivist results (two-pass)
 2. Memories include durability and pattern eligibility
 3. Ephemeral memories are not persisted
 4. Summary vectors include `open_questions`

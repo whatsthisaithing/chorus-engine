@@ -376,7 +376,7 @@ shadows across both figures. A wicker picnic basket rests at their feet..."
 ### 1. Scene Capture Button
 
 **Location**: Conversation interface, near image gallery button  
-**Availability**: Only for characters with `unbounded` immersion level  
+**Availability**: Only for characters with `full` or `unbounded` immersion level  
 **Reason**: Scene capture makes sense for immersive roleplay, not assistants
 
 ### 2. Prompt Generation
@@ -508,13 +508,13 @@ Scene captures use identical styling to normal images:
 
 ### Character Requirements
 
-**Immersion Level**: Must be `unbounded`  
+**Immersion Level**: Must be `full` or `unbounded`  
 **Reason**: Scene capture is for immersive roleplay, not Q&A assistants
 
 **Check**:
 ```python
-if character.immersion_level != "unbounded":
-    raise HTTPException(400, "Scene capture only for unbounded characters")
+if character.immersion_level not in ("full", "unbounded"):
+    raise HTTPException(400, "Scene capture only for full or unbounded characters")
 ```
 
 **Image Generation**: Must be enabled  
