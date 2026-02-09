@@ -203,7 +203,10 @@ const UI = {
     renderMessages(messages) {
         const container = document.getElementById('messagesContainer');
         
-        // Clear only message divs, not the empty state
+        // Clear only message rows, not the empty state
+        const messageRows = container.querySelectorAll('.message-row');
+        messageRows.forEach(el => el.remove());
+        // Remove any standalone message elements (e.g., typing indicators)
         const messageElements = container.querySelectorAll('.message');
         messageElements.forEach(el => el.remove());
         
@@ -334,7 +337,7 @@ const UI = {
         }
         
         // Append the text message
-        container.appendChild(messageDiv);
+        this._appendMessageRow(container, message, messageDiv);
         
         // Add image as a SEPARATE message bubble if metadata includes image_id
         if (message.role === 'assistant' && message.metadata && message.metadata.image_id) {
@@ -380,7 +383,8 @@ const UI = {
                     </div>
                 </div>
             `;
-            container.appendChild(imageDiv);
+            imageDiv.setAttribute('data-message-id', message.id);
+            this._appendMessageRow(container, message, imageDiv);
         }
         
         // Add video as a SEPARATE message bubble if metadata includes video_id
@@ -436,7 +440,8 @@ const UI = {
                     </div>
                 </div>
             `;
-            container.appendChild(videoDiv);
+            videoDiv.setAttribute('data-message-id', message.id);
+            this._appendMessageRow(container, message, videoDiv);
         }
         
         return messageDiv;
@@ -496,7 +501,49 @@ const UI = {
             </div>
         `;
         
-        container.appendChild(imageDiv);
+        this._appendMessageRow(container, message, imageDiv);
+    },
+    
+    _appendMessageRow(container, message, messageDiv) {
+        const row = document.createElement('div');
+        const roleClass = message.role === 'user' ? 'user-row' : 'assistant-row';
+        row.className = `message-row ${roleClass}`;
+        
+        if (message.id) {
+            row.setAttribute('data-message-id', message.id);
+            const selectWrapper = document.createElement('div');
+            selectWrapper.className = 'message-select';
+            selectWrapper.innerHTML = `
+                <input type="checkbox" class="message-select-input" data-message-id="${message.id}">
+            `;
+            row.appendChild(selectWrapper);
+        }
+        
+        row.appendChild(messageDiv);
+        container.appendChild(row);
+        return row;
+    },
+
+    attachMessageId(messageElement, messageId, role = 'assistant') {
+        if (!messageElement || !messageId) return;
+        
+        messageElement.setAttribute('data-message-id', messageId);
+        const row = messageElement.closest('.message-row');
+        if (row) {
+            row.setAttribute('data-message-id', messageId);
+            if (!row.querySelector('.message-select-input')) {
+                const selectWrapper = document.createElement('div');
+                selectWrapper.className = 'message-select';
+                selectWrapper.innerHTML = `
+                    <input type="checkbox" class="message-select-input" data-message-id="${messageId}">
+                `;
+                row.prepend(selectWrapper);
+            }
+            if (role === 'user') {
+                row.classList.add('user-row');
+                row.classList.remove('assistant-row');
+            }
+        }
     },
     
     /**
@@ -970,7 +1017,7 @@ const UI = {
             </div>
         `;
         
-        container.appendChild(videoDiv);
+        this._appendMessageRow(container, message, videoDiv);
         this.scrollToBottom();
     },
     

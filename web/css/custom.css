@@ -457,6 +457,65 @@ html, body {
     animation: fadeIn 0.3s ease-in;
 }
 
+/* Message rows for hover selection */
+.message-row {
+    position: relative;
+    width: 100%;
+    display: flex;
+    padding: 0.1rem 0;
+}
+
+.message-row.user-row {
+    justify-content: flex-end;
+}
+
+.message-row.assistant-row {
+    justify-content: flex-start;
+}
+
+.message-row.selected {
+    background-color: rgba(212, 175, 55, 0.08);
+    border-radius: 0.5rem;
+}
+
+.message-select {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+}
+
+.message-row.user-row .message-select {
+    left: 0;
+}
+
+.message-row.assistant-row .message-select {
+    right: 0;
+}
+
+.message-row:hover .message-select,
+.message-row.selected .message-select {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.message-select input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-secondary);
+}
+
+.message-delete-bar {
+    background-color: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.5rem 1rem;
+    display: flex;
+    justify-content: flex-end;
+}
+
 /* Image-only messages should fit the image width */
 .message.image-only-message {
     max-width: fit-content;

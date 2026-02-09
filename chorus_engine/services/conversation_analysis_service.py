@@ -1102,6 +1102,7 @@ class ConversationAnalysisService:
         messages = (
             self.db.query(Message)
             .filter(Message.thread_id.in_(thread_ids))
+            .filter(Message.deleted_at.is_(None))
             .order_by(Message.created_at)
             .all()
         )

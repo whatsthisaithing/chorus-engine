@@ -70,7 +70,9 @@ class ConversationExportService:
             lines.append(f"**Last Updated:** {self._format_datetime(conversation.updated_at)}")
             
             # Message count
-            message_count = sum(len(thread.messages) for thread in conversation.threads)
+            message_count = sum(
+                1 for thread in conversation.threads for m in thread.messages if m.deleted_at is None
+            )
             lines.append(f"**Messages:** {message_count}")
             
             lines.append("")
@@ -132,7 +134,7 @@ class ConversationExportService:
         # Get all messages sorted by time
         all_messages = []
         for thread in conversation.threads:
-            all_messages.extend(thread.messages)
+            all_messages.extend([m for m in thread.messages if m.deleted_at is None])
         all_messages.sort(key=lambda m: m.created_at)
         
         # Format messages
@@ -180,7 +182,9 @@ class ConversationExportService:
             lines.append(f"Started: {self._format_datetime(conversation.created_at)}")
             lines.append(f"Last Updated: {self._format_datetime(conversation.updated_at)}")
             
-            message_count = sum(len(thread.messages) for thread in conversation.threads)
+            message_count = sum(
+                1 for thread in conversation.threads for m in thread.messages if m.deleted_at is None
+            )
             lines.append(f"Messages: {message_count}")
             
             lines.append("")
@@ -190,7 +194,7 @@ class ConversationExportService:
         # Get all messages sorted by time
         all_messages = []
         for thread in conversation.threads:
-            all_messages.extend(thread.messages)
+            all_messages.extend([m for m in thread.messages if m.deleted_at is None])
         all_messages.sort(key=lambda m: m.created_at)
         
         # Format messages

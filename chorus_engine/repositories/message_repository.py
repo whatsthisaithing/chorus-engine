@@ -1,7 +1,8 @@
 """Repository for message operations."""
 
 import logging
-from typing import List, Optional, Dict, Any
+from datetime import datetime
+from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
 from chorus_engine.models.conversation import Message, MessageRole
@@ -76,6 +77,7 @@ class MessageRepository:
         messages = (
             self.db.query(Message)
             .filter(Message.thread_id == thread_id)
+            .filter(Message.deleted_at.is_(None))
             .order_by(Message.created_at.desc())
             .offset(skip)
             .limit(limit)
@@ -98,7 +100,12 @@ class MessageRepository:
         """
         if limit:
             # Get total count first
-            total = self.db.query(Message).filter(Message.thread_id == thread_id).count()
+            total = (
+                self.db.query(Message)
+                .filter(Message.thread_id == thread_id)
+                .filter(Message.deleted_at.is_(None))
+                .count()
+            )
             skip = max(0, total - limit)
             messages = self.list_by_thread(thread_id, skip=skip, limit=limit)
         else:
@@ -140,7 +147,12 @@ class MessageRepository:
         Returns:
             Number of messages
         """
-        return self.db.query(Message).filter(Message.thread_id == thread_id).count()
+        return (
+            self.db.query(Message)
+            .filter(Message.thread_id == thread_id)
+            .filter(Message.deleted_at.is_(None))
+            .count()
+        )
     
     def get_thread_history_objects(self, thread_id: str) -> List[Message]:
         """
@@ -153,3 +165,43 @@ class MessageRepository:
             List of Message objects, ordered by creation time
         """
         return self.list_by_thread(thread_id)
+
+    def soft_delete(self, message_ids: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        Soft delete messages by setting deleted_at.
+        
+        Args:
+            message_ids: List of message IDs
+        
+        Returns:
+            Tuple of (deleted_ids, skipped_ids)
+        """
+        if not message_ids:
+            return [], []
+        
+        messages = (
+            self.db.query(Message)
+            .filter(Message.id.in_(message_ids))
+            .all()
+        )
+        message_map = {msg.id: msg for msg in messages}
+        
+        deleted_ids: List[str] = []
+        skipped_ids: List[str] = []
+        
+        now = datetime.utcnow()
+        for message_id in message_ids:
+            message = message_map.get(message_id)
+            if not message:
+                skipped_ids.append(message_id)
+                continue
+            if message.deleted_at is not None:
+                skipped_ids.append(message_id)
+                continue
+            message.deleted_at = now
+            deleted_ids.append(message_id)
+        
+        if deleted_ids:
+            self.db.commit()
+        
+        return deleted_ids, skipped_ids

@@ -1031,6 +1031,11 @@ class MessageMetadataUpdate(BaseModel):
     metadata: dict
 
 
+class MessageSoftDeleteRequest(BaseModel):
+    """Soft delete messages request."""
+    message_ids: List[str]
+
+
 class ImageAttachmentResponse(BaseModel):
     """Image attachment response with vision analysis."""
     id: str
@@ -1413,7 +1418,7 @@ async def get_character_stats(character_id: str, db: Session = Depends(get_db)):
     for conv in conversations:
         threads = conv.threads
         for thread in threads:
-            message_count += len(thread.messages)
+            message_count += sum(1 for m in thread.messages if m.deleted_at is None)
     
     # Count memories (handle potential database enum errors)
     memory_count = 0
@@ -3451,6 +3456,56 @@ async def list_messages(
     repo = MessageRepository(db)
     messages = repo.list_by_thread(thread_id, skip=skip, limit=limit)
     return [MessageResponse.from_orm(msg, db_session=db) for msg in messages]
+
+
+@app.post("/threads/{thread_id}/messages/soft-delete")
+async def soft_delete_messages(
+    thread_id: str,
+    request: MessageSoftDeleteRequest,
+    db: Session = Depends(get_db)
+):
+    """Soft delete messages in a thread."""
+    if not request.message_ids:
+        raise HTTPException(status_code=400, detail="message_ids is required")
+    
+    from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+    
+    messages = (
+        db.query(MessageModel)
+        .filter(MessageModel.id.in_(request.message_ids))
+        .all()
+    )
+    message_map = {msg.id: msg for msg in messages}
+    
+    invalid_thread_ids = [
+        msg_id for msg_id in request.message_ids
+        if msg_id in message_map and message_map[msg_id].thread_id != thread_id
+    ]
+    if invalid_thread_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="All message_ids must belong to the specified thread"
+        )
+    
+    invalid_role_ids = [
+        msg_id for msg_id in request.message_ids
+        if msg_id in message_map and message_map[msg_id].role == MessageRole.SYSTEM
+    ]
+    if invalid_role_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="System messages cannot be deleted"
+        )
+    
+    repo = MessageRepository(db)
+    deleted_ids, skipped_ids = repo.soft_delete(request.message_ids)
+    
+    return {
+        "success": True,
+        "deleted_ids": deleted_ids,
+        "skipped_ids": skipped_ids,
+        "message": f"Soft deleted {len(deleted_ids)} messages"
+    }
 
 
 @app.post("/threads/{thread_id}/messages", response_model=ChatInThreadResponse)
@@ -6309,12 +6364,36 @@ async def get_conversation_images(
 ):
     """Get all images for a conversation, including scene captures."""
     image_repo = ImageRepository(db)
-    msg_repo = MessageRepository(db)
     images = image_repo.get_by_conversation(conversation_id)
+    
+    # Build a set of image IDs referenced by non-deleted messages
+    from chorus_engine.models.conversation import Message as MessageModel, Thread
+    referenced_image_ids = set()
+    scene_capture_image_ids = set()
+    messages = (
+        db.query(MessageModel)
+        .join(Thread, Thread.id == MessageModel.thread_id)
+        .filter(Thread.conversation_id == conversation_id)
+        .filter(MessageModel.deleted_at.is_(None))
+        .all()
+    )
+    for msg in messages:
+        if msg.meta_data and msg.meta_data.get("image_id"):
+            image_id = msg.meta_data.get("image_id")
+            try:
+                image_id = int(image_id)
+            except (TypeError, ValueError):
+                continue
+            referenced_image_ids.add(image_id)
+            if msg.role == MessageRole.SCENE_CAPTURE:
+                scene_capture_image_ids.add(image_id)
     
     result_images = []
     for img in images:
         try:
+            if img.id not in referenced_image_ids:
+                continue
+            
             # Check if file exists
             full_path = Path(img.file_path)
             if not full_path.exists():
@@ -6344,11 +6423,7 @@ async def get_conversation_images(
                     http_thumb_path = f"/images/{relative_thumb.as_posix() if hasattr(relative_thumb, 'as_posix') else relative_thumb}"
             
             # Check if this is a scene capture
-            is_scene = False
-            if img.message_id:
-                msg = msg_repo.get_by_id(img.message_id)
-                if msg and msg.role == MessageRole.SCENE_CAPTURE:
-                    is_scene = True
+            is_scene = img.id in scene_capture_image_ids
             
             result_images.append({
                 "id": img.id,
@@ -6428,9 +6503,30 @@ async def get_conversation_videos(
     videos = video_repo.get_by_conversation(conversation_id)
     logger.info(f"[VIDEO GALLERY] Fetching videos for conversation {conversation_id}, found {len(videos)} videos")
     
+    # Build a set of video IDs referenced by non-deleted messages
+    from chorus_engine.models.conversation import Message as MessageModel, Thread
+    referenced_video_ids = set()
+    scene_capture_video_ids = set()
+    messages = (
+        db.query(MessageModel)
+        .join(Thread, Thread.id == MessageModel.thread_id)
+        .filter(Thread.conversation_id == conversation_id)
+        .filter(MessageModel.deleted_at.is_(None))
+        .all()
+    )
+    for msg in messages:
+        if msg.meta_data and msg.meta_data.get("video_id"):
+            video_id = msg.meta_data.get("video_id")
+            referenced_video_ids.add(video_id)
+            if msg.role == MessageRole.SCENE_CAPTURE:
+                scene_capture_video_ids.add(video_id)
+    
     result_videos = []
     for vid in videos:
         try:
+            if vid.id not in referenced_video_ids:
+                continue
+            
             # Check if file exists
             video_path = Path(vid.file_path)
             if not video_path.exists():
@@ -6463,20 +6559,7 @@ async def get_conversation_videos(
                         http_thumb_path = "/videos/" + thumb_path_str
             
             # Check if this is a scene capture by looking for associated SCENE_CAPTURE message
-            # Query all SCENE_CAPTURE messages in the conversation
-            is_scene = False
-            from chorus_engine.models.conversation import Message as MessageModel, Thread
-            scene_messages = (
-                db.query(MessageModel)
-                .join(Thread, Thread.id == MessageModel.thread_id)
-                .filter(Thread.conversation_id == conversation_id)
-                .filter(MessageModel.role == MessageRole.SCENE_CAPTURE)
-                .all()
-            )
-            for msg in scene_messages:
-                if msg.meta_data and msg.meta_data.get("video_id") == vid.id:
-                    is_scene = True
-                    break
+            is_scene = vid.id in scene_capture_video_ids
             
             result_videos.append({
                 "id": vid.id,

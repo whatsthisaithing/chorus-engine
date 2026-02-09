@@ -14,6 +14,7 @@ window.App = {
         threads: [],
         selectedThreadId: null,
         messages: [],
+        selectedMessageIds: new Set(),
         lastMemoryCount: {}, // Track memory counts per character for sparkle effect
         memoryPollTimer: null, // Timer for memory polling
         ttsEnabled: false, // Phase 6: TTS status for current conversation
@@ -163,6 +164,26 @@ window.App = {
         document.getElementById('messageForm').addEventListener('submit', (e) => {
             e.preventDefault();
             this.sendMessage();
+        });
+
+        // Message selection (checkboxes)
+        const messagesContainer = document.getElementById('messagesContainer');
+        messagesContainer.addEventListener('change', (e) => {
+            if (e.target && e.target.classList.contains('message-select-input')) {
+                const messageId = e.target.getAttribute('data-message-id');
+                const isChecked = e.target.checked;
+                this.toggleMessageSelection(messageId, isChecked);
+            }
+        });
+        
+        // Delete selected messages button
+        document.getElementById('deleteSelectedMessagesBtn').addEventListener('click', () => {
+            this.showDeleteMessagesModal();
+        });
+        
+        // Confirm delete selected messages
+        document.getElementById('confirmDeleteMessages').addEventListener('click', () => {
+            this.confirmDeleteMessages();
         });
         
         // Export confirmation button
@@ -473,6 +494,7 @@ window.App = {
         
         // Clear all conversation UI components
         UI.renderMessages([]);  // Clear messages properly
+        this.clearMessageSelection();
         UI.renderThreads([], null);  // Clear thread tabs
         UI.updateHeader('No conversation selected', '');  // Clear header
         
@@ -652,6 +674,8 @@ window.App = {
             } else {
                 // No threads, clear messages
                 UI.renderMessages([]);
+                this.state.messages = [];
+                this.clearMessageSelection();
             }
             
             // Update conversation list highlighting
@@ -696,6 +720,7 @@ window.App = {
             UI.updateHeader(conversation.title, character ? character.name : '');
             UI.renderThreads(this.state.threads, threadId);
             UI.renderMessages(messages);
+            this.clearMessageSelection();
             
             // Load privacy status for conversation
             await this.loadConversationPrivacy();
@@ -706,6 +731,101 @@ window.App = {
         } catch (error) {
             console.error('Failed to select thread:', error);
             UI.showToast('Failed to load thread', 'error');
+        }
+    },
+    
+    clearMessageSelection() {
+        this.state.selectedMessageIds.clear();
+        document.querySelectorAll('.message-row.selected').forEach((row) => {
+            row.classList.remove('selected');
+        });
+        document.querySelectorAll('.message-select-input').forEach((checkbox) => {
+            checkbox.checked = false;
+        });
+        this.updateMessageDeleteBar();
+    },
+    
+    toggleMessageSelection(messageId, isSelected) {
+        if (!messageId) return;
+        
+        if (isSelected) {
+            this.state.selectedMessageIds.add(messageId);
+        } else {
+            this.state.selectedMessageIds.delete(messageId);
+        }
+        
+        this.updateMessageSelectionUI(messageId, isSelected);
+        this.updateMessageDeleteBar();
+    },
+    
+    updateMessageSelectionUI(messageId, isSelected) {
+        const rows = document.querySelectorAll(`.message-row[data-message-id="${messageId}"]`);
+        rows.forEach((row) => {
+            row.classList.toggle('selected', isSelected);
+        });
+        
+        const checkboxes = document.querySelectorAll(`.message-select-input[data-message-id="${messageId}"]`);
+        checkboxes.forEach((checkbox) => {
+            if (checkbox.checked !== isSelected) {
+                checkbox.checked = isSelected;
+            }
+        });
+    },
+    
+    updateMessageDeleteBar() {
+        const bar = document.getElementById('messageDeleteBar');
+        const countEl = document.getElementById('deleteSelectedCount');
+        const count = this.state.selectedMessageIds.size;
+        
+        if (count > 0) {
+            bar.style.display = 'flex';
+            countEl.textContent = count;
+        } else {
+            bar.style.display = 'none';
+            countEl.textContent = '0';
+        }
+    },
+    
+    showDeleteMessagesModal() {
+        if (this.state.selectedMessageIds.size === 0) return;
+        const countEl = document.getElementById('deleteMessagesCount');
+        countEl.textContent = this.state.selectedMessageIds.size;
+        const modal = new bootstrap.Modal(document.getElementById('deleteMessagesModal'));
+        modal.show();
+    },
+    
+    async confirmDeleteMessages() {
+        if (!this.state.selectedThreadId) return;
+        if (this.state.selectedMessageIds.size === 0) return;
+        
+        try {
+            const messageIds = Array.from(this.state.selectedMessageIds);
+            const response = await API.softDeleteMessages(this.state.selectedThreadId, messageIds);
+            
+            // Remove deleted messages from state and DOM
+            const deletedIds = response.deleted_ids || [];
+            deletedIds.forEach((id) => {
+                document.querySelectorAll(`.message-row[data-message-id="${id}"]`).forEach((row) => {
+                    row.remove();
+                });
+            });
+            
+            this.state.messages = this.state.messages.filter((msg) => !deletedIds.includes(msg.id));
+            UI.showEmptyState(this.state.messages.length === 0);
+            
+            // Refresh gallery to remove media tied to deleted messages
+            await this.loadImageGallery();
+            
+            this.clearMessageSelection();
+            
+            const modalEl = document.getElementById('deleteMessagesModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+            
+            UI.showToast(response.message || 'Messages deleted', 'success');
+        } catch (error) {
+            console.error('Failed to delete messages:', error);
+            UI.showToast(error.message || 'Failed to delete messages', 'error');
         }
     },
     
@@ -806,23 +926,24 @@ window.App = {
             
             // Task 1.9: Add user message callback to update with attachment data
             onChunk.userMessageCallback = (userData) => {
-                if (userData.attachments && userData.attachments.length > 0 && userMessageElement) {
+                if (userMessageElement && userData.id) {
                     // Update the user message in state
+                    const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
+                    if (msgIndex !== -1) {
+                        this.state.messages[msgIndex].id = userData.id;
+                    }
+                    
+                    UI.attachMessageId(userMessageElement, userData.id, 'user');
+                }
+                
+                if (userData.attachments && userData.attachments.length > 0 && userMessageElement) {
+                    // Update the user message in state with attachments
                     const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
                     if (msgIndex !== -1) {
                         this.state.messages[msgIndex].attachments = userData.attachments;
                     }
                     
                     // Re-render the user message element with attachments
-                    const updatedMsg = {
-                        role: 'user',
-                        content: message,
-                        created_at: userMsg.created_at,
-                        id: userData.id,
-                        attachments: userData.attachments
-                    };
-                    
-                    // Replace the message element content
                     const contentDiv = userMessageElement.querySelector('.message-content');
                     if (contentDiv) {
                         contentDiv.innerHTML = UI.renderMarkdown(message);
@@ -865,7 +986,7 @@ window.App = {
                     
                     // Update the message element with the actual message ID
                     if (assistantMessageElement) {
-                        assistantMessageElement.setAttribute('data-message-id', messageId);
+                        UI.attachMessageId(assistantMessageElement, messageId, 'assistant');
                     }
                     
                     // Phase 6: Auto-generate audio if TTS is enabled
@@ -1071,6 +1192,7 @@ window.App = {
             UI.renderMessages([]);
             UI.showEmptyState(true);
             UI.setInputEnabled(false);
+            this.clearMessageSelection();
             
             UI.showToast('Conversation deleted', 'success');
             
@@ -1190,6 +1312,7 @@ window.App = {
                 const messages = await API.listMessages(this.state.selectedThreadId);
                 this.state.messages = messages;
                 UI.renderMessages(messages);
+                this.clearMessageSelection();
             }
         } catch (error) {
             console.error('Failed to set TTS:', error);
@@ -2036,6 +2159,7 @@ window.App = {
             
             // Clear UI
             UI.renderMessages([]);
+            this.clearMessageSelection();
             document.getElementById('conversationList').innerHTML = '';
             document.getElementById('characterSelect').value = '';
             

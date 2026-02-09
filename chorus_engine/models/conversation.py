@@ -196,6 +196,9 @@ class Message(Base):
     summary = Column(String(500), nullable=True)  # Brief summary for compressed context
     preserve_full_text = Column(String(10), nullable=False, default="true")  # Whether to keep full text in context
     
+    # Soft delete timestamp (NULL = active)
+    deleted_at = Column(DateTime, nullable=True, default=None)
+    
     # Relationships
     thread = relationship("Thread", back_populates="messages")
     

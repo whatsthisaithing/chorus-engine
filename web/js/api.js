@@ -237,6 +237,13 @@ class API {
         return this.request(`/threads/${threadId}/messages?skip=${skip}&limit=${limit}`);
     }
     
+    static async softDeleteMessages(threadId, messageIds) {
+        return this.request(`/threads/${threadId}/messages/soft-delete`, {
+            method: 'POST',
+            body: JSON.stringify({ message_ids: messageIds }),
+        });
+    }
+    
     static async sendMessage(threadId, message) {
         // Get user metadata if UserManager is available
         const payload = { message };
