@@ -86,6 +86,11 @@ class Conversation(Base):
     last_analyzed_at = Column(DateTime, nullable=True, default=None)
     last_summary_analyzed_at = Column(DateTime, nullable=True, default=None)
     last_memories_analyzed_at = Column(DateTime, nullable=True, default=None)
+
+    # Continuity bootstrapping (single-user)
+    continuity_mode = Column(String(10), nullable=False, default="ask")  # ask | use | fresh
+    continuity_choice_remembered = Column(String(10), nullable=False, default="false")
+    primary_user = Column(String(200), nullable=True, default=None)
     
     # Auto-generated title tracking (1 = auto-generated, 0 = user-set, NULL = old data)
     title_auto_generated = Column(Integer, nullable=True, default=1)

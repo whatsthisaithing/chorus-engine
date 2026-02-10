@@ -470,6 +470,17 @@ window.App = {
                 }
             }
         });
+        
+        // Continuity preview modal actions
+        document.getElementById('continueWithContextBtn').addEventListener('click', () => {
+            this.setContinuityChoice('use');
+        });
+        document.getElementById('startFreshBtn').addEventListener('click', () => {
+            this.setContinuityChoice('fresh');
+        });
+        document.getElementById('refreshContinuityBtn').addEventListener('click', () => {
+            this.refreshContinuityPreview();
+        });
     },
     
     /**
@@ -642,7 +653,7 @@ window.App = {
             const character = this.state.characters.find(c => c.id === this.state.selectedCharacterId);
             const title = `Chat with ${character.name}`;
             
-            const conversation = await API.createConversation(this.state.selectedCharacterId, title);
+            const conversation = await API.createConversation(this.state.selectedCharacterId, title, 'web', null);
             
             // Reload conversations
             await this.loadConversations();
@@ -693,9 +704,77 @@ window.App = {
             // Phase 9: Update scene capture button visibility
             this.updateSceneCaptureButton();
             
+            // Continuity preview for new conversations
+            await this.maybeShowContinuityPreview();
+            
         } catch (error) {
             console.error('Failed to select conversation:', error);
             UI.showToast('Failed to load conversation', 'error');
+        }
+    },
+    
+    async maybeShowContinuityPreview() {
+        if (!this.state.selectedConversationId || !this.state.selectedCharacterId) return;
+        if (this.state.messages && this.state.messages.length > 0) return;
+        
+        try {
+            const preview = await API.getContinuityPreview(
+                this.state.selectedCharacterId,
+                this.state.selectedConversationId
+            );
+            if (!preview) return;
+            
+            const preference = preview.preference || { default_mode: 'ask', skip_preview: false };
+            
+            if (preference.skip_preview && preference.default_mode !== 'ask') {
+                await API.setContinuityChoice(
+                    this.state.selectedConversationId,
+                    preference.default_mode,
+                    true,
+                    true
+                );
+                return;
+            }
+            
+            const previewText = preview.preview || "No continuity context is available yet.";
+            const previewBox = document.getElementById('continuityPreviewText');
+            previewBox.textContent = previewText;
+            document.getElementById('rememberContinuityChoiceCheck').checked = false;
+            document.getElementById('skipContinuityPreviewCheck').checked = preference.skip_preview || false;
+            
+            const modal = new bootstrap.Modal(document.getElementById('continuityPreviewModal'));
+            modal.show();
+        } catch (error) {
+            console.error('Failed to load continuity preview:', error);
+        }
+    },
+    
+    async setContinuityChoice(mode) {
+        try {
+            const remember = document.getElementById('rememberContinuityChoiceCheck').checked;
+            const skipPreview = document.getElementById('skipContinuityPreviewCheck').checked;
+            await API.setContinuityChoice(
+                this.state.selectedConversationId,
+                mode,
+                remember,
+                skipPreview
+            );
+            const modalEl = document.getElementById('continuityPreviewModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        } catch (error) {
+            console.error('Failed to set continuity choice:', error);
+            UI.showToast('Failed to save continuity choice', 'error');
+        }
+    },
+    
+    async refreshContinuityPreview() {
+        try {
+            await API.refreshContinuity(this.state.selectedCharacterId, true);
+            await this.maybeShowContinuityPreview();
+        } catch (error) {
+            console.error('Failed to refresh continuity preview:', error);
+            UI.showToast('Failed to refresh continuity', 'error');
         }
     },
     

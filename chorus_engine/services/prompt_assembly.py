@@ -19,7 +19,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
 from chorus_engine.config.loader import ConfigLoader
-from chorus_engine.models.conversation import Message, MessageRole
+from chorus_engine.models.conversation import Message, MessageRole, Conversation
 from chorus_engine.repositories.message_repository import MessageRepository
 from chorus_engine.services.token_counter import TokenCounter, get_token_counter
 from chorus_engine.services.memory_retrieval import MemoryRetrievalService
@@ -32,6 +32,7 @@ from chorus_engine.services.conversation_context_retrieval import (
     ConversationContextConfig as ServiceContextConfig
 )
 from chorus_engine.repositories.memory_repository import MemoryRepository as MemRepo
+from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 
@@ -314,8 +315,32 @@ class PromptAssemblyService:
                 logger.error(f"Failed to enrich messages with vision observations: {e}")
                 # Continue without vision enrichment if it fails
         
+        # Continuity bootstrap injection (only before first assistant response)
+        has_assistant = any(
+            (msg.role == MessageRole.ASSISTANT or str(msg.role) == MessageRole.ASSISTANT.value)
+            for msg in messages
+        )
+        bootstrap_injected = False
+        if messages and not has_assistant and conversation_id:
+            try:
+                continuity_repo = ContinuityRepository(self.db)
+                conversation = self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
+                if conversation and conversation.continuity_mode == "use":
+                    allow_injection = True
+                    if conversation.source != "web":
+                        if not primary_user or conversation.primary_user != primary_user:
+                            allow_injection = False
+                    if allow_injection:
+                        cache = continuity_repo.get_cache(self.character_id)
+                        if cache and cache.bootstrap_packet_internal:
+                            system_prompt += f"\n\n{cache.bootstrap_packet_internal}"
+                            bootstrap_injected = True
+            except Exception as e:
+                logger.warning(f"Failed to inject continuity bootstrap: {e}")
+
         # Phase 8: Add greeting context if this is the first message in conversation
-        if messages and len(messages) <= 2:  # First user message or first exchange
+        # Skip greeting context if continuity bootstrap is injected to avoid redundancy.
+        if not bootstrap_injected and messages and len(messages) <= 2:  # First user message or first exchange
             try:
                 greeting_context = self.greeting_service.build_greeting_context(
                     character_id=self.character_id,

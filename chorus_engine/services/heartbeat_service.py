@@ -154,6 +154,7 @@ class HeartbeatService:
         self.idle_threshold_minutes = self._config.get("idle_threshold_minutes", 5)
         self.resume_grace_seconds = self._config.get("resume_grace_seconds", 2)
         self.batch_size = self._config.get("analysis_batch_size", 3)
+        self.gpu_check_cooldown_seconds = self._config.get("gpu_check_cooldown_seconds", 0.5)
         
         # Task queue and handlers
         self._task_queue: List[BackgroundTask] = []
@@ -168,6 +169,7 @@ class HeartbeatService:
         self._current_task: Optional[BackgroundTask] = None
         self._task: Optional[asyncio.Task] = None
         self._app_state: Optional[Dict[str, Any]] = None
+        self._last_task_completed_at: Optional[datetime] = None
         
         # Statistics
         self._stats = {
@@ -418,6 +420,7 @@ class HeartbeatService:
         logger.info(f"[HEARTBEAT] Starting batch processing ({len(self._task_queue)} tasks queued)")
         
         while processed < self.batch_size and self._task_queue and self._running and not self._paused:
+            await self._apply_gpu_cooldown()
             # Check idle state before each task
             if not self._is_safe_to_process():
                 logger.info(f"[HEARTBEAT] System became active, stopping batch after {processed} tasks")
@@ -484,6 +487,7 @@ class HeartbeatService:
             logger.info(
                 f"[HEARTBEAT] Task {task.id} completed in {result.duration_seconds:.1f}s"
             )
+            self._last_task_completed_at = datetime.utcnow()
             
             return result
             
@@ -518,6 +522,21 @@ class HeartbeatService:
         
         finally:
             self._current_task = None
+
+    async def _apply_gpu_cooldown(self) -> None:
+        """Optional cooldown before checking GPU utilization after a task completes."""
+        if not self._config.get("gpu_check_enabled", False):
+            return
+        if not self._last_task_completed_at:
+            return
+        cooldown = float(self.gpu_check_cooldown_seconds or 0)
+        if cooldown <= 0:
+            return
+        elapsed = (datetime.utcnow() - self._last_task_completed_at).total_seconds()
+        remaining = cooldown - elapsed
+        if remaining > 0:
+            logger.debug(f"[HEARTBEAT] GPU check cooldown: waiting {remaining:.2f}s")
+            await asyncio.sleep(remaining)
     
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a pending task."""

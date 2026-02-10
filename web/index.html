@@ -656,6 +656,41 @@
         </div>
     </div>
 
+    <!-- Continuity Preview Modal -->
+    <div class="modal fade" id="continuityPreviewModal" tabindex="-1" aria-labelledby="continuityPreviewModalLabel">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="continuityPreviewModalLabel">
+                        <i class="bi bi-journal-bookmark me-2"></i>Continue With Context?
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-2">Here's what will carry into this conversation:</p>
+                    <div id="continuityPreviewText" class="continuity-preview-box"></div>
+                    <div class="form-check mt-3">
+                        <input class="form-check-input" type="checkbox" id="rememberContinuityChoiceCheck">
+                        <label class="form-check-label" for="rememberContinuityChoiceCheck">
+                            Remember my choice for this character
+                        </label>
+                    </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="skipContinuityPreviewCheck">
+                        <label class="form-check-label" for="skipContinuityPreviewCheck">
+                            Skip this preview next time
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-secondary" id="refreshContinuityBtn">Refresh Context</button>
+                    <button type="button" class="btn btn-secondary" id="startFreshBtn">Start Fresh</button>
+                    <button type="button" class="btn btn-primary" id="continueWithContextBtn">Continue With Context</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- System Settings Modal -->
     <div class="modal fade" id="systemSettingsModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">

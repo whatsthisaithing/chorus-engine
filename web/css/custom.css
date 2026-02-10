@@ -2333,6 +2333,18 @@ audio::-webkit-media-controls-time-remaining-display {
     display: block;
 }
 
+.continuity-preview-box {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    max-height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
 .analysis-topic-pills {
     display: flex;
     flex-wrap: wrap;

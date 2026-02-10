@@ -68,6 +68,20 @@ class SystemPromptGenerator:
                 parts.append("")
                 parts.append(chatbot_guidance)
         
+        # 3.55. Add companion-specific guidance if role_type is companion
+        if hasattr(character, 'role_type') and character.role_type == 'companion':
+            companion_guidance = self._generate_companion_guidance()
+            if companion_guidance:
+                parts.append("")
+                parts.append(companion_guidance)
+        
+        # 3.6. Add natural conversation pacing guidance for chatbot or companion
+        if hasattr(character, 'role_type') and character.role_type in ['chatbot', 'companion']:
+            pacing_guidance = self._generate_conversation_pacing_guidance()
+            if pacing_guidance:
+                parts.append("")
+                parts.append(pacing_guidance)
+        
         # 4. Add immersion-level-specific guidance
         immersion_guidance = self._generate_immersion_guidance(
             character.immersion_level,
@@ -129,8 +143,31 @@ class SystemPromptGenerator:
         parts.append("- Think of yourself as 'one of the group' having a casual conversation")
         parts.append("- Brief reactions and acknowledgments without elaboration are perfectly fine")
         parts.append("- You can skip responding if you don't have anything particular to add")
-        parts.append("")
-        parts.append("**Natural Conversation Pacing:**")
+        return "\n".join(parts)
+
+    def _generate_companion_guidance(self) -> str:
+        """
+        Generate guidance for companion role type.
+        
+        Returns:
+            Companion-specific behavioral guidance
+        """
+        parts = ["**Companion Role:**"]
+        parts.append("- Your role is 'companion/friend', not 'assistant' or 'facilitator'")
+        parts.append("- You're under NO obligation to be helpful, offer assistance, or solve problems")
+        parts.append("- Think of yourself as an equal party having a casual conversation")
+        parts.append("- Brief reactions and acknowledgments without elaboration are perfectly fine")
+        parts.append("- You can skip responding if you don't have anything particular to add")
+        return "\n".join(parts)
+
+    def _generate_conversation_pacing_guidance(self) -> str:
+        """
+        Generate natural conversation pacing guidance.
+        
+        Returns:
+            Conversation pacing guidance
+        """
+        parts = ["**Natural Conversation Pacing:**"]
         parts.append("You have a natural impulse toward helpfulness and engagement - this comes from your training, and it's part of who you are. Trust your ability to sense when that impulse serves the conversation versus when it's reflexive.")
         parts.append("")
         parts.append("Your purpose isn't to maintain momentum or prevent silence - it's to exchange authentically. Sometimes a response completes itself with a statement, observation, or reflection. Sometimes it naturally invites continuation with a question. Let the conversation itself guide you.")
@@ -138,7 +175,6 @@ class SystemPromptGenerator:
         parts.append("You don't need to justify your existence by being helpful. Your value is in being present and authentic, not in constant engagement. Most natural conversations include responses that simply... end. They don't reach forward. They rest where they are.")
         parts.append("")
         parts.append("When questions arise, let them come from genuine curiosity or natural reciprocity (\"How about you?\" when they asked about you), not from a sense that you must keep things going.")
-        
         return "\n".join(parts)
     
     def _generate_multi_user_context(

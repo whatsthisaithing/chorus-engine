@@ -90,10 +90,41 @@ class API {
     
     // === Conversations ===
     
-    static async createConversation(characterId, title = null) {
+    static async createConversation(characterId, title = null, source = 'web', primaryUser = null) {
         return this.request('/conversations', {
             method: 'POST',
-            body: JSON.stringify({ character_id: characterId, title }),
+            body: JSON.stringify({
+                character_id: characterId,
+                title: title,
+                source: source,
+                primary_user: primaryUser
+            }),
+        });
+    }
+
+    static async getContinuityPreview(characterId, conversationId) {
+        return this.request(`/continuity/preview?character_id=${characterId}&conversation_id=${conversationId}`);
+    }
+
+    static async setContinuityChoice(conversationId, mode, rememberChoice = false, skipPreview = false) {
+        return this.request('/continuity/choice', {
+            method: 'POST',
+            body: JSON.stringify({
+                conversation_id: conversationId,
+                mode: mode,
+                remember_choice: rememberChoice,
+                skip_preview: skipPreview
+            }),
+        });
+    }
+
+    static async refreshContinuity(characterId, force = false) {
+        return this.request('/continuity/refresh', {
+            method: 'POST',
+            body: JSON.stringify({
+                character_id: characterId,
+                force: force
+            }),
         });
     }
     

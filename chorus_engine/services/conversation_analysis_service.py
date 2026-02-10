@@ -875,7 +875,7 @@ class ConversationAnalysisService:
                 f"Saved analysis for {conversation_id[:8]}...: "
                 f"{len(saved_memories)} memories, summary created"
             )
-            
+
             return True
             
         except Exception as e:
@@ -946,7 +946,17 @@ class ConversationAnalysisService:
             )
             return True
         except Exception as e:
-            logger.error(f"Error saving memory analysis: {e}", exc_info=True)
+            memory_count = len(analysis.memories) if analysis and analysis.memories else 0
+            in_tx = self.db.in_transaction() if hasattr(self.db, "in_transaction") else None
+            logger.error(
+                "Error saving memory analysis: %s (conversation=%s, character=%s, memories=%s, in_tx=%s)",
+                e,
+                conversation_id[:8],
+                character_id,
+                memory_count,
+                in_tx,
+                exc_info=True
+            )
             self.db.rollback()
             return False
 

@@ -13,7 +13,15 @@ class ConversationRepository:
     def __init__(self, db: Session):
         self.db = db
     
-    def create(self, character_id: str, title: Optional[str] = None, source: str = "web", image_confirmation_disabled: Optional[bool] = None) -> Conversation:
+    def create(
+        self,
+        character_id: str,
+        title: Optional[str] = None,
+        source: str = "web",
+        image_confirmation_disabled: Optional[bool] = None,
+        primary_user: Optional[str] = None,
+        continuity_mode: Optional[str] = None
+    ) -> Conversation:
         """
         Create a new conversation.
         
@@ -34,6 +42,10 @@ class ConversationRepository:
             title=title,
             source=source
         )
+        if primary_user:
+            conversation.primary_user = primary_user
+        if continuity_mode:
+            conversation.continuity_mode = continuity_mode
         
         # Set image confirmation preference if provided (for bridge platforms)
         if image_confirmation_disabled is not None:

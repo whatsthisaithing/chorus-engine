@@ -28,6 +28,7 @@ from chorus_engine.repositories import (
     MessageRepository,
     MemoryRepository,
 )
+from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.services.core_memory_loader import CoreMemoryLoader
 from chorus_engine.services.prompt_assembly import PromptAssemblyService
 from chorus_engine.services.embedding_service import EmbeddingService
@@ -69,6 +70,7 @@ from chorus_engine.services.conversation_export_service import ConversationExpor
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
 from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
+from chorus_engine.services.continuity_bootstrap_service import ContinuityBootstrapService
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors, sync_memory_vectors
@@ -245,6 +247,14 @@ async def lifespan(app: FastAPI):
             analysis_context_window=system_config.llm.context_window
         )
         logger.info("✓ Conversation analysis service initialized")
+
+        continuity_service = ContinuityBootstrapService(
+            db=db_session,
+            llm_client=llm_client,
+            llm_usage_lock=llm_usage_lock,
+            max_tokens=1024
+        )
+        logger.info("✓ Continuity bootstrap service initialized")
         
         # Phase 5: Initialize image generation services
         comfyui_client = None
@@ -381,6 +391,7 @@ async def lifespan(app: FastAPI):
         app_state["audio_orchestrator"] = audio_orchestrator
         app_state["audio_storage"] = audio_storage
         app_state["analysis_service"] = analysis_service  # Phase 8
+        app_state["continuity_service"] = continuity_service
         app_state["db_session"] = db_session  # Store for cleanup on shutdown
         
         # Initialize document management service (Phase 1)
@@ -491,6 +502,7 @@ async def lifespan(app: FastAPI):
             from chorus_engine.services.conversation_analysis_task import (
                 ConversationAnalysisTaskHandler, StaleConversationFinder
             )
+            from chorus_engine.services.continuity_bootstrap_task import ContinuityBootstrapTaskHandler
             
             summary_batch_size = getattr(heartbeat_config, "analysis_summary_batch_size", heartbeat_config.analysis_batch_size)
             memories_batch_size = getattr(heartbeat_config, "analysis_memories_batch_size", heartbeat_config.analysis_batch_size)
@@ -509,6 +521,7 @@ async def lifespan(app: FastAPI):
             
             # Register task handlers
             heartbeat_service.register_handler(ConversationAnalysisTaskHandler())
+            heartbeat_service.register_handler(ContinuityBootstrapTaskHandler())
             
             # Create stale conversation finder
             stale_finder = StaleConversationFinder(
@@ -522,7 +535,7 @@ async def lifespan(app: FastAPI):
             
             # Register task finder to auto-discover stale conversations
             def find_stale_conversations_task(heartbeat_svc, app_st):
-                """Task finder that queues stale conversations for analysis."""
+                """Task finder that queues stale conversations for analysis and continuity."""
                 from chorus_engine.services.heartbeat_service import TaskPriority
                 
                 logger.info("[TASK FINDER] Starting stale conversation discovery...")
@@ -531,6 +544,7 @@ async def lifespan(app: FastAPI):
                 if not finder:
                     logger.warning("[TASK FINDER] No stale_finder in app_state")
                     return
+                continuity_service = app_st.get("continuity_service")
                 
                 # Get a fresh DB session
                 db_gen = get_db()
@@ -552,9 +566,21 @@ async def lifespan(app: FastAPI):
                         priority=TaskPriority.LOW,
                         analysis_kind="summary"
                     )
+                    queued_continuity = 0
+                    if continuity_service and queued_memories == 0 and queued_summary == 0:
+                        for character_id in app_st.get("characters", {}).keys():
+                            if continuity_service.is_bootstrap_stale(character_id):
+                                heartbeat_svc.queue_task(
+                                    task_type="continuity_bootstrap",
+                                    data={"character_id": character_id},
+                                    priority=TaskPriority.LOW,
+                                    task_id=f"continuity_{character_id}"
+                                )
+                                queued_continuity += 1
                     logger.info(
                         f"[TASK FINDER] Queued {queued_summary} summaries and "
-                        f"{queued_memories} memory extractions for analysis"
+                        f"{queued_memories} memory extractions for analysis "
+                        f"and {queued_continuity} continuity refresh(es)"
                     )
                 except Exception as e:
                     logger.error(f"[TASK FINDER] Error finding stale conversations: {e}", exc_info=True)
@@ -889,6 +915,7 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None
     source: Optional[str] = "web"  # "web", "discord", etc.
     image_confirmation_disabled: Optional[bool] = None  # Bypass image generation confirmation dialog
+    primary_user: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -2823,7 +2850,9 @@ async def create_conversation(
         character_id=request.character_id,
         title=request.title,
         source=request.source or "web",
-        image_confirmation_disabled=request.image_confirmation_disabled
+        image_confirmation_disabled=request.image_confirmation_disabled,
+        primary_user=request.primary_user,
+        continuity_mode="ask"
     )
     
     # Create default thread
@@ -2831,6 +2860,105 @@ async def create_conversation(
     thread_repo.create(conversation_id=conversation.id, title="Main Thread")
     
     return conversation
+
+
+class ContinuityChoiceRequest(BaseModel):
+    conversation_id: str
+    mode: str  # use | fresh
+    remember_choice: bool = False
+    skip_preview: bool = False
+
+
+class ContinuityRefreshRequest(BaseModel):
+    character_id: str
+    force: bool = False
+
+
+@app.get("/continuity/preview")
+async def get_continuity_preview(
+    character_id: str,
+    conversation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get cached continuity preview for a character."""
+    continuity_repo = ContinuityRepository(db)
+    cache = continuity_repo.get_cache(character_id)
+    pref = continuity_repo.get_preferences(character_id)
+    conversation_repo = ConversationRepository(db)
+    conversation = conversation_repo.get_by_id(conversation_id)
+
+    return {
+        "available": bool(cache and cache.bootstrap_packet_user_preview),
+        "preview": cache.bootstrap_packet_user_preview if cache else "",
+        "generated_at": cache.bootstrap_generated_at.isoformat() if cache and cache.bootstrap_generated_at else None,
+        "preference": {
+            "default_mode": pref.default_mode if pref else "ask",
+            "skip_preview": bool(pref.skip_preview) if pref else False
+        },
+        "conversation": {
+            "id": conversation.id if conversation else conversation_id,
+            "continuity_mode": conversation.continuity_mode if conversation else "ask",
+            "primary_user": conversation.primary_user if conversation else None,
+            "source": conversation.source if conversation else "web"
+        }
+    }
+
+
+@app.post("/continuity/choice")
+async def set_continuity_choice(
+    request: ContinuityChoiceRequest,
+    db: Session = Depends(get_db)
+):
+    """Save continuity choice for a conversation and optionally persist preference."""
+    conversation_repo = ConversationRepository(db)
+    continuity_repo = ContinuityRepository(db)
+    conversation = conversation_repo.get_by_id(request.conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if request.mode not in ["use", "fresh"]:
+        raise HTTPException(status_code=400, detail="Invalid continuity mode")
+
+    conversation.continuity_mode = request.mode
+    conversation.continuity_choice_remembered = "true" if request.remember_choice else "false"
+    conversation.updated_at = datetime.utcnow()
+    db.commit()
+
+    if request.remember_choice:
+        continuity_repo.upsert_preferences(
+            character_id=conversation.character_id,
+            default_mode=request.mode,
+            skip_preview=request.skip_preview
+        )
+
+    return {"success": True, "mode": request.mode}
+
+
+@app.post("/continuity/refresh")
+async def refresh_continuity(
+    request: ContinuityRefreshRequest,
+    db: Session = Depends(get_db)
+):
+    """Regenerate continuity cache immediately."""
+    config_loader = ConfigLoader()
+    character = config_loader.load_character(request.character_id)
+    continuity_service: ContinuityBootstrapService = app_state.get("continuity_service")
+    if not continuity_service:
+        raise HTTPException(status_code=503, detail="Continuity service not available")
+
+    try:
+        result = await continuity_service.generate_and_save(
+            character=character,
+            conversation_id=None,
+            force=request.force
+        )
+        return {
+            "success": True,
+            "skipped": bool(result and result.get("skipped")),
+        }
+    except Exception as e:
+        logger.error(f"Failed to refresh continuity: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Continuity refresh failed")
 
 
 @app.get("/conversations", response_model=List[ConversationResponse])

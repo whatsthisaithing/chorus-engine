@@ -182,6 +182,9 @@ class CharacterConfig(BaseModel):
     role: str
     system_prompt: str
     
+    # Role system (character archetype)
+    role_type: Literal["companion", "assistant", "analyst", "chatbot", "other"] = "assistant"
+    
     # Immersion configuration (Phase 3)
     immersion_level: Literal["minimal", "balanced", "full", "unbounded"] = "balanced"
     immersion_settings: ImmersionSettings = Field(default_factory=ImmersionSettings)
@@ -196,6 +199,114 @@ class CharacterConfig(BaseModel):
     # Core memories (immutable backstory)
     core_memories: List[str] = Field(default_factory=list)
 ```
+
+---
+
+## Role System (Current Behavior)
+
+The "role system" in Chorus Engine is split across three distinct concepts that are easy to confuse:
+
+1. `role` (character description field)
+2. `role_type` (character archetype for behavior guidance)
+3. message `role` (system/user/assistant/scene_capture)
+
+This section documents how each one works today and what it affects.
+
+### 1. `role` (Character Description)
+
+**What it is**: A short, human-readable role description on the character (e.g., "Creative Companion", "AI Assistant").
+
+**Where it is defined**:
+- `characters/*.yaml` as `role`
+- `CharacterConfig.role` in `chorus_engine/config/models.py`
+
+**What it affects**:
+- **Image/video/scene prompt generation**. The `role` text is injected as "Character Description" in the prompt services.
+  - `chorus_engine/services/image_prompt_service.py`
+  - `chorus_engine/services/video_prompt_service.py`
+  - `chorus_engine/services/scene_capture_prompt_service.py`
+  - `Documentation/Prompts/image_generation.md`
+  - `Documentation/Prompts/video_generation.md`
+  - `Documentation/Prompts/scene_capture.md`
+
+**What it does NOT affect**:
+- It does not change conversational behavior or immersion rules by itself.
+- It is not used for memory extraction or system prompt guidance.
+
+### 2. `role_type` (Character Archetype)
+
+**What it is**: A coarse behavioral archetype for the character. Current allowed values in code:
+`companion`, `assistant`, `analyst`, `chatbot`, `other`.
+
+**Where it is defined**:
+- `CharacterConfig.role_type` in `chorus_engine/config/models.py`
+- Optional in character cards import/export (`chorus_engine/services/character_cards/*`)
+
+**What it affects today**:
+- **Only one runtime behavior**: if `role_type == "chatbot"`, the system prompt generator adds chatbot-specific guidance.
+  - `chorus_engine/services/system_prompt_generator.py` (`_generate_chatbot_guidance`)
+  - See `Documentation/Prompts/conversational_system_prompts.md` for the exact injected text.
+  - The guidance is skipped when the system is interpreting generated media (image/video) to avoid contaminating descriptions.
+
+**What it does NOT affect (yet)**:
+- No special behavior for `assistant`, `companion`, `analyst`, or `other` beyond being stored/exported.
+- No change to immersion levels, memory extraction, or UI behavior (other than display).
+
+### 3. Message `role` (Conversation Layer)
+
+**What it is**: Per-message author type: `system`, `user`, `assistant`, and `scene_capture`.
+
+**Where it is defined**:
+- `chorus_engine/models/conversation.py` (`MessageRole`)
+- Stored on each message row in the database
+
+**What it affects**:
+- **Prompt assembly**: `scene_capture` messages are filtered out; `system/user/assistant` are passed through.
+  - `chorus_engine/services/prompt_assembly.py`
+- **Conversation analysis**: many analysis and archivist prompts depend on message role binding.
+  - `chorus_engine/services/conversation_analysis_service.py`
+  - `chorus_engine/services/archivist_transcript.py`
+- **Token counting**: role labels are included in formatted message overhead.
+  - `chorus_engine/services/token_counter.py`
+
+---
+
+## User Identity "Role" (In-Universe Name Override)
+
+The character-level `user_identity` override is a separate, runtime-only identity system that can masquerade the user as an in-universe role.
+
+**Where it is defined**:
+- `characters/*.yaml`
+  ```yaml
+  user_identity:
+    mode: canonical | masked | role
+    role_name: "Sir Rowan"
+    role_aliases: ["Rowan"]
+  ```
+- `UserIdentityOverrideConfig` in `chorus_engine/config/models.py`
+
+**What it affects**:
+- **System prompt headers only** (web UI only). When `mode: role`, the prompt instructs the model to address the user by `role_name` and only use `role_aliases` if they appear as the speaker in metadata.
+  - `chorus_engine/services/prompt_assembly.py` (`_build_identity_header`)
+
+**What it does NOT affect**:
+- Does not change memory extraction or archivist analysis (those use actual message roles and content).
+- Does not apply to bridge platforms (`conversation_source != "web"`), where username metadata is used instead.
+
+---
+
+## Related Documentation (Existing)
+
+- Chatbot guidance and injection logic:
+  - `Documentation/Prompts/conversational_system_prompts.md`
+  - `Documentation/Design/CONVERSATIONAL_AUTONOMY_APPROACH.md`
+- User identity override:
+  - `Documentation/CHARACTER_CONFIGURATION.md` (User Identity Override section)
+- Character card import/export (role_type field present):
+  - `Documentation/API_CHARACTER_CARDS.md`
+  - `Documentation/Specifications/chorus_character_card_format_v1.md`
+
+Note: Some external-facing docs currently list older `role_type` enums (e.g., "assistant | companion | character") that no longer match the code. See `chorus_engine/config/models.py` for the authoritative list.
 
 ---
 
