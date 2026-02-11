@@ -407,6 +407,23 @@ window.App = {
             this.setConversationTTS(e.target.checked);
         });
         
+        // Structured response filters
+        const innerThoughtToggle = document.getElementById('innerThoughtToggle');
+        const physicalActionToggle = document.getElementById('physicalActionToggle');
+        if (innerThoughtToggle && physicalActionToggle) {
+            // Load saved preferences
+            this.loadStructuredFilterSettings();
+            
+            innerThoughtToggle.addEventListener('change', () => {
+                localStorage.setItem('show_innerthought', innerThoughtToggle.checked ? 'true' : 'false');
+                this.applyStructuredFilters();
+            });
+            physicalActionToggle.addEventListener('change', () => {
+                localStorage.setItem('show_physicalaction', physicalActionToggle.checked ? 'true' : 'false');
+                this.applyStructuredFilters();
+            });
+        }
+        
         // Reset confirmation input
         document.getElementById('resetConfirmInput').addEventListener('input', (e) => {
             const confirmBtn = document.getElementById('confirmResetBtn');
@@ -481,6 +498,42 @@ window.App = {
         document.getElementById('refreshContinuityBtn').addEventListener('click', () => {
             this.refreshContinuityPreview();
         });
+    },
+    
+    /**
+     * Load structured response filter settings from localStorage
+     */
+    loadStructuredFilterSettings() {
+        const innerThoughtToggle = document.getElementById('innerThoughtToggle');
+        const physicalActionToggle = document.getElementById('physicalActionToggle');
+        if (!innerThoughtToggle || !physicalActionToggle) return;
+        
+        const showInner = localStorage.getItem('show_innerthought');
+        const showPhysical = localStorage.getItem('show_physicalaction');
+        
+        if (showInner !== null) {
+            innerThoughtToggle.checked = showInner === 'true';
+        }
+        if (showPhysical !== null) {
+            physicalActionToggle.checked = showPhysical === 'true';
+        }
+        
+        this.applyStructuredFilters();
+    },
+    
+    /**
+     * Apply structured response filters to the message container
+     */
+    applyStructuredFilters() {
+        const container = document.getElementById('messagesContainer');
+        if (!container) return;
+        
+        const innerThoughtToggle = document.getElementById('innerThoughtToggle');
+        const physicalActionToggle = document.getElementById('physicalActionToggle');
+        if (!innerThoughtToggle || !physicalActionToggle) return;
+        
+        container.classList.toggle('hide-innerthought', !innerThoughtToggle.checked);
+        container.classList.toggle('hide-physicalaction', !physicalActionToggle.checked);
     },
     
     /**
@@ -724,13 +777,12 @@ window.App = {
             );
             if (!preview) return;
             
-            const preference = preview.preference || { default_mode: 'ask', skip_preview: false };
+            const preference = preview.preference || { default_mode: 'ask' };
             
-            if (preference.skip_preview && preference.default_mode !== 'ask') {
+            if (preference.default_mode !== 'ask') {
                 await API.setContinuityChoice(
                     this.state.selectedConversationId,
                     preference.default_mode,
-                    true,
                     true
                 );
                 return;
@@ -740,7 +792,6 @@ window.App = {
             const previewBox = document.getElementById('continuityPreviewText');
             previewBox.textContent = previewText;
             document.getElementById('rememberContinuityChoiceCheck').checked = false;
-            document.getElementById('skipContinuityPreviewCheck').checked = preference.skip_preview || false;
             
             const modal = new bootstrap.Modal(document.getElementById('continuityPreviewModal'));
             modal.show();
@@ -752,12 +803,10 @@ window.App = {
     async setContinuityChoice(mode) {
         try {
             const remember = document.getElementById('rememberContinuityChoiceCheck').checked;
-            const skipPreview = document.getElementById('skipContinuityPreviewCheck').checked;
             await API.setContinuityChoice(
                 this.state.selectedConversationId,
                 mode,
-                remember,
-                skipPreview
+                remember
             );
             const modalEl = document.getElementById('continuityPreviewModal');
             const modal = bootstrap.Modal.getInstance(modalEl);
@@ -958,78 +1007,34 @@ window.App = {
             // Show typing indicator
             UI.showTypingIndicator();
             
-            // Use streaming API for real-time response
-            let assistantContent = '';
-            let assistantMessageElement = null;
+            // Non-streaming: show typing indicator, then render full response
             let imagePromptPreview = null;
-            
-            // Create callback for image requests
-            const onChunk = (chunk) => {
-                assistantContent += chunk;
-                if (!assistantMessageElement) {
-                    // Create message element on first chunk
-                    const tempMsg = {
-                        role: 'assistant',
-                        content: assistantContent,
-                        created_at: new Date().toISOString()
-                    };
-                    assistantMessageElement = UI.appendMessage(tempMsg);
-                    UI.hideTypingIndicator();
-                } else {
-                    // Update existing message content
-                    const contentDiv = assistantMessageElement.querySelector('.message-content');
-                    if (contentDiv) {
-                        // Re-render markdown for assistant messages
-                        contentDiv.innerHTML = UI.renderMarkdown(assistantContent);
-                    }
-                }
-                UI.scrollToBottom();
-            };
-            
-            // Add image callback to onChunk function
-            onChunk.imageCallback = (imageInfo) => {
-                imagePromptPreview = imageInfo;
-            };
-            
-            // Add video callback to onChunk function
             let videoPromptPreview = null;
-            onChunk.videoCallback = (videoInfo) => {
-                videoPromptPreview = videoInfo;
-            };
             
-            // Add title update callback
-            onChunk.titleCallback = (newTitle) => {
-                // Update conversation title in sidebar and header
-                this.updateConversationTitle(this.state.selectedConversationId, newTitle);
-            };
+            const response = await API.sendMessage(
+                this.state.selectedThreadId,
+                message,
+                attachmentIds.length > 0 ? attachmentIds : null
+            );
             
-            // Task 1.9: Add user message callback to update with attachment data
-            onChunk.userMessageCallback = (userData) => {
-                if (userMessageElement && userData.id) {
-                    // Update the user message in state
+            UI.hideTypingIndicator();
+            
+            // Update user message with ID and attachments
+            if (response.user_message) {
+                if (userMessageElement && response.user_message.id) {
                     const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
                     if (msgIndex !== -1) {
-                        this.state.messages[msgIndex].id = userData.id;
+                        this.state.messages[msgIndex].id = response.user_message.id;
+                        this.state.messages[msgIndex].attachments = response.user_message.attachments || [];
                     }
                     
-                    UI.attachMessageId(userMessageElement, userData.id, 'user');
-                }
-                
-                if (userData.attachments && userData.attachments.length > 0 && userMessageElement) {
-                    // Update the user message in state with attachments
-                    const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
-                    if (msgIndex !== -1) {
-                        this.state.messages[msgIndex].attachments = userData.attachments;
-                    }
+                    UI.attachMessageId(userMessageElement, response.user_message.id, 'user');
                     
-                    // Re-render the user message element with attachments
-                    const contentDiv = userMessageElement.querySelector('.message-content');
-                    if (contentDiv) {
-                        contentDiv.innerHTML = UI.renderMarkdown(message);
-                        
-                        // Add attachments section (without badge - cleaner immediate feedback)
-                        if (userData.attachments && userData.attachments.length > 0) {
-                            const attachmentsHtml = userData.attachments.map(attachment => {
+                    if (response.user_message.attachments && response.user_message.attachments.length > 0) {
+                        const contentDiv = userMessageElement.querySelector('.message-content');
+                        if (contentDiv) {
+                            contentDiv.innerHTML = UI.renderMarkdown(message);
+                            const attachmentsHtml = response.user_message.attachments.map(attachment => {
                                 return `
                                     <div class="image-attachment" 
                                          data-attachment-id="${attachment.id}"
@@ -1041,68 +1046,59 @@ window.App = {
                                     </div>
                                 `;
                             }).join('');
-                            
                             contentDiv.insertAdjacentHTML('afterend', `<div class="message-attachments">${attachmentsHtml}</div>`);
                         }
+                        setTimeout(() => UI.scrollToBottom(), 0);
                     }
                 }
-            };
+            }
             
-            // Task 1.8 & 3.1: Include attachment_ids array if present
-            await API.sendMessageStream(
-                this.state.selectedThreadId,
-                message,
-                onChunk,
-                // onComplete
-                async (messageId) => {
-                    const assistantMsg = {
-                        role: 'assistant',
-                        content: assistantContent,
-                        created_at: new Date().toISOString(),
-                        id: messageId
-                    };
-                    this.state.messages.push(assistantMsg);
-                    
-                    // Update the message element with the actual message ID
-                    if (assistantMessageElement) {
-                        UI.attachMessageId(assistantMessageElement, messageId, 'assistant');
-                    }
-                    
-                    // Phase 6: Auto-generate audio if TTS is enabled
-                    if (this.state.ttsEnabled) {
-                        this.autoGenerateAudio(messageId);
-                    }
-                    
-                    // Check for image request
-                    if (imagePromptPreview) {
-                        if (imagePromptPreview.needs_confirmation) {
-                            await this.showImageConfirmDialog(imagePromptPreview);
-                        } else {
-                            this.autoGenerateImage(imagePromptPreview);
-                        }
-                    }
-                    
-                    // Check for video request
-                    if (videoPromptPreview) {
-                        if (videoPromptPreview.needs_confirmation) {
-                            await this.showVideoConfirmDialog(videoPromptPreview);
-                        } else {
-                            this.autoGenerateVideo(videoPromptPreview);
-                        }
-                    }
-                    
-                    // Start polling for new implicit memories (they're extracted in background)
-                    this.startMemoryPolling();
-                },
-                // onError
-                (error) => {
-                    console.error('Streaming error:', error);
-                    UI.hideTypingIndicator();
-                    UI.showToast('Failed to send message: ' + error.message, 'error');
-                },
-                // Pass attachment_ids array if present (Phase 3.1 multi-image support)
-                attachmentIds.length > 0 ? attachmentIds : null
-            );
+            // Render assistant message
+            if (response.assistant_message) {
+                const assistantMsg = {
+                    role: 'assistant',
+                    content: response.assistant_message.content,
+                    created_at: response.assistant_message.created_at || new Date().toISOString(),
+                    id: response.assistant_message.id
+                };
+                this.state.messages.push(assistantMsg);
+                const assistantMessageElement = UI.appendMessage(assistantMsg);
+                if (assistantMessageElement && response.assistant_message.id) {
+                    UI.attachMessageId(assistantMessageElement, response.assistant_message.id, 'assistant');
+                }
+                setTimeout(() => UI.scrollToBottom(), 0);
+                
+                // Phase 6: Auto-generate audio if TTS is enabled
+                if (this.state.ttsEnabled && response.assistant_message.id) {
+                    this.autoGenerateAudio(response.assistant_message.id);
+                }
+            }
+            
+            // Image / video requests
+            if (response.image_request_detected && response.image_prompt_preview) {
+                imagePromptPreview = response.image_prompt_preview;
+                if (imagePromptPreview.needs_confirmation) {
+                    await this.showImageConfirmDialog(imagePromptPreview);
+                } else {
+                    this.autoGenerateImage(imagePromptPreview);
+                }
+            }
+            
+            if (response.video_request_detected && response.video_prompt_preview) {
+                videoPromptPreview = response.video_prompt_preview;
+                if (videoPromptPreview.needs_confirmation) {
+                    await this.showVideoConfirmDialog(videoPromptPreview);
+                } else {
+                    this.autoGenerateVideo(videoPromptPreview);
+                }
+            }
+            
+            if (response.conversation_title_updated) {
+                this.updateConversationTitle(this.state.selectedConversationId, response.conversation_title_updated);
+            }
+            
+            // Start polling for new implicit memories
+            this.startMemoryPolling();
             
         } catch (error) {
             console.error('Failed to send message:', error);

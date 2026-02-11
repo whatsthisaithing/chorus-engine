@@ -171,6 +171,42 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to add memories: {e}")
             return False
+
+    def upsert_memories(
+        self,
+        character_id: str,
+        memory_ids: List[str],
+        contents: List[str],
+        embeddings: List[List[float]],
+        metadatas: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
+        """
+        Upsert memories in a character's collection.
+        
+        Args:
+            character_id: Character identifier
+            memory_ids: List of unique memory IDs
+            contents: List of memory content strings
+            embeddings: List of embedding vectors
+            metadatas: Optional list of metadata dicts
+            
+        Returns:
+            True if successful
+        """
+        collection = self.get_or_create_collection(character_id)
+        
+        try:
+            collection.upsert(
+                ids=memory_ids,
+                documents=contents,
+                embeddings=embeddings,
+                metadatas=metadatas
+            )
+            logger.debug(f"Upserted {len(memory_ids)} memories to '{character_id}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upsert memories: {e}")
+            return False
     
     def query_memories(
         self,

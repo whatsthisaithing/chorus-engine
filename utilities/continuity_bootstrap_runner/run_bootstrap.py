@@ -19,6 +19,7 @@ from chorus_engine.db.database import SessionLocal
 from chorus_engine.config.loader import ConfigLoader
 from chorus_engine.llm.client import create_llm_client
 from chorus_engine.services.continuity_bootstrap_service import ContinuityBootstrapService
+from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MemoryType
 
 
 async def run_bootstrap(
@@ -46,9 +47,63 @@ async def run_bootstrap(
             print("Continuity generation failed.")
             return None
 
+        summaries = (
+            db.query(ConversationSummary, Conversation)
+            .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
+            .filter(Conversation.character_id == character_id)
+            .order_by(ConversationSummary.created_at.desc())
+            .limit(5)
+            .all()
+        )
+
+        memories = (
+            db.query(Memory, Conversation)
+            .outerjoin(Conversation, Memory.conversation_id == Conversation.id)
+            .filter(
+                Memory.character_id == character_id,
+                Memory.status.in_(["approved", "auto_approved"]),
+                Memory.memory_type.in_([
+                    MemoryType.FACT,
+                    MemoryType.PROJECT,
+                    MemoryType.EXPERIENCE,
+                    MemoryType.STORY,
+                    MemoryType.RELATIONSHIP
+                ])
+            )
+            .order_by(Memory.created_at.desc())
+            .limit(50)
+            .all()
+        )
+
         data = {
             "character_id": character_id,
             "generated_at": datetime.utcnow().isoformat(),
+            "input_summaries": [
+                {
+                    "conversation_id": conv.id,
+                    "conversation_title": conv.title,
+                    "summary_id": summary.id,
+                    "summary_type": summary.summary_type,
+                    "created_at": summary.created_at.isoformat() if summary.created_at else None,
+                    "message_range_start": summary.message_range_start,
+                    "message_range_end": summary.message_range_end,
+                    "message_count": summary.message_count,
+                    "summary": summary.summary
+                }
+                for summary, conv in summaries
+            ],
+            "input_memories": [
+                {
+                    "memory_id": mem.id,
+                    "conversation_id": mem.conversation_id,
+                    "conversation_title": conv.title if conv else None,
+                    "memory_type": mem.memory_type,
+                    "status": mem.status,
+                    "created_at": mem.created_at.isoformat() if mem.created_at else None,
+                    "content": mem.content
+                }
+                for mem, conv in memories
+            ],
             "relationship_state": result.get("relationship_state").__dict__ if result.get("relationship_state") else {},
             "arc_candidates": [
                 {

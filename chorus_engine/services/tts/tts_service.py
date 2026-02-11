@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .provider_factory import TTSProviderFactory
 from .base_provider import TTSRequest, TTSResult
 from ..audio_preprocessing import AudioPreprocessingService
+from ..structured_response import parse_structured_response, to_plain_text
 from ...config.models import CharacterConfig
 from ...repositories.voice_sample_repository import VoiceSampleRepository
 from ...repositories.workflow_repository import WorkflowRepository
@@ -57,8 +58,20 @@ class TTSService:
         Returns:
             TTSResult with audio filename and metadata
         """
-        # Step 1: Validate text
-        is_valid, reason = self.preprocessor.validate_text_for_tts(text)
+        # Step 1: Extract structured text for TTS if applicable
+        text_for_tts = text or ""
+        include_physical = False
+        if self.system_config and hasattr(self.system_config, "tts"):
+            include_physical = getattr(self.system_config.tts, "include_physicalaction", False)
+        
+        if "<assistant_response>" in text_for_tts:
+            parsed = parse_structured_response(text_for_tts)
+            extracted = to_plain_text(parsed.segments, include_physicalaction=include_physical)
+            if extracted:
+                text_for_tts = extracted
+        
+        # Step 2: Validate text
+        is_valid, reason = self.preprocessor.validate_text_for_tts(text_for_tts)
         if not is_valid:
             logger.warning(f"[TTS] Text validation failed for message {message_id}: {reason}")
             return TTSResult(
@@ -66,9 +79,9 @@ class TTSService:
                 error_message=f"Text not suitable for TTS: {reason}"
             )
         
-        # Step 2: Preprocess text
+        # Step 3: Preprocess text
         logger.info(f"[TTS] Preprocessing text for message {message_id}")
-        preprocessed_text = self.preprocessor.preprocess_for_tts(text)
+        preprocessed_text = self.preprocessor.preprocess_for_tts(text_for_tts)
         
         if not preprocessed_text:
             logger.warning(f"[TTS] No text remaining after preprocessing for message {message_id}")

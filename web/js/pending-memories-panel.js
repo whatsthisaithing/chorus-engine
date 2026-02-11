@@ -122,6 +122,28 @@ class PendingMemoriesPanel {
         
         this.list.innerHTML = this.memories.map(memory => this.renderMemoryCard(memory)).join('');
         this.updateBatchButtons();
+
+        // Edit handlers
+        this.list.querySelectorAll('[data-edit-memory]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.editMemory;
+                this.startEditMemory(memoryId);
+            });
+        });
+        
+        this.list.querySelectorAll('[data-save-edit]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.saveEdit;
+                this.saveEditMemory(memoryId);
+            });
+        });
+        
+        this.list.querySelectorAll('[data-cancel-edit]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.cancelEdit;
+                this.cancelEditMemory(memoryId);
+            });
+        });
     }
     
     renderMemoryCard(memory) {
@@ -156,6 +178,18 @@ class PendingMemoriesPanel {
                             
                             <p class="mb-2">${this.escapeHtml(memory.content)}</p>
                             
+                            <div class="memory-edit d-none">
+                                <textarea class="form-control form-control-sm mb-2" rows="3" data-edit-textarea>${this.escapeHtml(memory.content)}</textarea>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-sm btn-primary" data-save-edit="${memory.id}">
+                                        <i class="bi bi-save"></i> Save
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" data-cancel-edit="${memory.id}">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                            
                             ${memory.metadata?.reasoning ? `
                                 <small class="text-muted d-block mb-2">
                                     <i class="bi bi-lightbulb"></i> 
@@ -171,6 +205,12 @@ class PendingMemoriesPanel {
                                     <i class="bi bi-check-lg"></i> Approve
                                 </button>
                                 <button 
+                                    class="btn btn-sm btn-outline-secondary"
+                                    data-edit-memory="${memory.id}"
+                                >
+                                    <i class="bi bi-pencil"></i> Edit
+                                </button>
+                                <button 
                                     class="btn btn-sm btn-danger"
                                     onclick="pendingMemoriesPanel.reject('${memory.id}')"
                                 >
@@ -182,6 +222,50 @@ class PendingMemoriesPanel {
                 </div>
             </div>
         `;
+    }
+
+    startEditMemory(memoryId) {
+        const card = document.querySelector(`[data-memory-id="${memoryId}"]`);
+        if (!card) return;
+        
+        const content = card.querySelector('p.mb-2');
+        const edit = card.querySelector('.memory-edit');
+        
+        if (content) content.classList.add('d-none');
+        if (edit) edit.classList.remove('d-none');
+    }
+    
+    cancelEditMemory(memoryId) {
+        const card = document.querySelector(`[data-memory-id="${memoryId}"]`);
+        if (!card) return;
+        
+        const content = card.querySelector('p.mb-2');
+        const edit = card.querySelector('.memory-edit');
+        
+        if (edit) edit.classList.add('d-none');
+        if (content) content.classList.remove('d-none');
+    }
+    
+    async saveEditMemory(memoryId) {
+        const card = document.querySelector(`[data-memory-id="${memoryId}"]`);
+        if (!card) return;
+        
+        const textarea = card.querySelector('[data-edit-textarea]');
+        const newContent = textarea?.value?.trim();
+        
+        if (!newContent) {
+            UI.showToast('Memory content cannot be empty', 'warning');
+            return;
+        }
+        
+        try {
+            await API.updateMemory(memoryId, { content: newContent });
+            UI.showToast('Memory updated', 'success');
+            await this.load();
+        } catch (error) {
+            console.error('Error updating memory:', error);
+            UI.showToast('Failed to update memory', 'error');
+        }
     }
     
     getConfidenceClass(confidence) {

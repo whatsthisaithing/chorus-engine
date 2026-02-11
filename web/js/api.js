@@ -106,14 +106,13 @@ class API {
         return this.request(`/continuity/preview?character_id=${characterId}&conversation_id=${conversationId}`);
     }
 
-    static async setContinuityChoice(conversationId, mode, rememberChoice = false, skipPreview = false) {
+    static async setContinuityChoice(conversationId, mode, rememberChoice = false) {
         return this.request('/continuity/choice', {
             method: 'POST',
             body: JSON.stringify({
                 conversation_id: conversationId,
                 mode: mode,
-                remember_choice: rememberChoice,
-                skip_preview: skipPreview
+                remember_choice: rememberChoice
             }),
         });
     }
@@ -275,9 +274,13 @@ class API {
         });
     }
     
-    static async sendMessage(threadId, message) {
+    static async sendMessage(threadId, message, attachmentId = null) {
         // Get user metadata if UserManager is available
         const payload = { message };
+        
+        if (attachmentId) {
+            payload.image_attachment_ids = Array.isArray(attachmentId) ? attachmentId : [attachmentId];
+        }
         
         if (typeof userManager !== 'undefined') {
             payload.metadata = userManager.getUserMetadata();
@@ -375,7 +378,7 @@ class API {
                                 if (data.conversation_title_updated && onChunk.titleCallback) {
                                     onChunk.titleCallback(data.conversation_title_updated);
                                 }
-                                onComplete(data.message_id);
+                                onComplete(data.message_id, data.normalized_content);
                                 return;
                             } else if (data.type === 'error') {
                                 onError(new Error(data.error));
@@ -409,6 +412,13 @@ class API {
     static async deleteMemory(memoryId) {
         return this.request(`/memories/${memoryId}`, {
             method: 'DELETE',
+        });
+    }
+
+    static async updateMemory(memoryId, updates) {
+        return this.request(`/memories/${memoryId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
         });
     }
     

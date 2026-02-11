@@ -1,6 +1,7 @@
 """FastAPI application and routes."""
 
 import logging
+import uuid
 import asyncio
 import subprocess
 import json
@@ -71,6 +72,12 @@ from chorus_engine.services.conversation_analysis_service import ConversationAna
 from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
 from chorus_engine.services.continuity_bootstrap_service import ContinuityBootstrapService
+from chorus_engine.services.structured_response import (
+    parse_structured_response,
+    serialize_structured_response,
+    template_rules,
+    StructuredSegment,
+)
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors, sync_memory_vectors
@@ -125,6 +132,52 @@ def _media_interpretation_prefix(
     if image_request_detected:
         return f"{character_name} is sending the following image:\n\n"
     return ""
+
+
+def _get_effective_template(character) -> str:
+    if getattr(character, "response_template", None):
+        return character.response_template
+    level = getattr(character, "immersion_level", "balanced")
+    if level in ("full", "unbounded"):
+        return "A"
+    return "C"
+
+
+def _build_plain_citations(doc_context) -> str:
+    if not doc_context or not doc_context.has_content():
+        return ""
+    citations = doc_context.citations or []
+    if not citations:
+        return ""
+    if len(citations) == 1:
+        return f"\n\nSource: {citations[0]}"
+    return "\n\nSources: " + "; ".join(citations)
+
+
+def _apply_media_prefix(segments: list[StructuredSegment], media_prefix: str) -> list[StructuredSegment]:
+    if not media_prefix:
+        return segments
+    if not segments:
+        return [StructuredSegment(channel="speech", text=media_prefix.strip())]
+    for seg in segments:
+        if seg.channel == "speech":
+            seg.text = f"{media_prefix}{seg.text}".strip()
+            return segments
+    # No speech segment; prepend to first segment
+    segments[0].text = f"{media_prefix}{segments[0].text}".strip()
+    return segments
+
+
+def _append_citations_to_segments(segments: list[StructuredSegment], citations_text: str) -> list[StructuredSegment]:
+    if not citations_text:
+        return segments
+    for seg in segments:
+        if seg.channel == "speech":
+            seg.text = f"{seg.text}{citations_text}".strip()
+            return segments
+    # No speech segment; add optional speech for citations
+    segments.append(StructuredSegment(channel="speech", text=citations_text.strip()))
+    return segments
 
 
 # Global state
@@ -1131,6 +1184,8 @@ class ChatInThreadResponse(BaseModel):
     assistant_message: MessageResponse
     image_request_detected: bool = False
     image_prompt_preview: Optional[dict] = None
+    video_request_detected: bool = False
+    video_prompt_preview: Optional[dict] = None
     conversation_title_updated: Optional[str] = None  # New title if auto-generated
 
 
@@ -1142,6 +1197,11 @@ class MemoryCreate(BaseModel):
     thread_id: Optional[str] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = None
+
+
+class MemoryUpdate(BaseModel):
+    """Update memory request."""
+    content: str
 
 
 class MemoryResponse(BaseModel):
@@ -2866,7 +2926,6 @@ class ContinuityChoiceRequest(BaseModel):
     conversation_id: str
     mode: str  # use | fresh
     remember_choice: bool = False
-    skip_preview: bool = False
 
 
 class ContinuityRefreshRequest(BaseModel):
@@ -2883,7 +2942,9 @@ async def get_continuity_preview(
     """Get cached continuity preview for a character."""
     continuity_repo = ContinuityRepository(db)
     cache = continuity_repo.get_cache(character_id)
-    pref = continuity_repo.get_preferences(character_id)
+    config_loader = ConfigLoader()
+    character = config_loader.load_character(character_id)
+    pref = character.continuity_preferences if character else None
     conversation_repo = ConversationRepository(db)
     conversation = conversation_repo.get_by_id(conversation_id)
 
@@ -2892,8 +2953,7 @@ async def get_continuity_preview(
         "preview": cache.bootstrap_packet_user_preview if cache else "",
         "generated_at": cache.bootstrap_generated_at.isoformat() if cache and cache.bootstrap_generated_at else None,
         "preference": {
-            "default_mode": pref.default_mode if pref else "ask",
-            "skip_preview": bool(pref.skip_preview) if pref else False
+            "default_mode": pref.default_mode if pref else "ask"
         },
         "conversation": {
             "id": conversation.id if conversation else conversation_id,
@@ -2911,7 +2971,6 @@ async def set_continuity_choice(
 ):
     """Save continuity choice for a conversation and optionally persist preference."""
     conversation_repo = ConversationRepository(db)
-    continuity_repo = ContinuityRepository(db)
     conversation = conversation_repo.get_by_id(request.conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -2925,11 +2984,14 @@ async def set_continuity_choice(
     db.commit()
 
     if request.remember_choice:
-        continuity_repo.upsert_preferences(
-            character_id=conversation.character_id,
-            default_mode=request.mode,
-            skip_preview=request.skip_preview
-        )
+        config_loader = ConfigLoader()
+        character = config_loader.load_character(conversation.character_id)
+        character.continuity_preferences.default_mode = request.mode
+        config_loader.save_character(character)
+        try:
+            app_state.get("characters", {})[character.id] = character
+        except Exception:
+            pass
 
     return {"success": True, "mode": request.mode}
 
@@ -3824,23 +3886,31 @@ async def send_message(
                                             logger.warning(f"[VISION] No observation data returned from vision analysis")
                                             vision_data = {"description": "Image analyzed but no details available"}
                                         
-                                        # Build natural language description
-                                        parts = []
-                                        if vision_data.get("main_subject"):
-                                            parts.append(f"an image of {vision_data['main_subject']}")
-                                        
-                                        details = []
-                                        if vision_data.get("people") and isinstance(vision_data["people"], dict):
-                                            count = vision_data["people"].get("count", 0)
-                                            if count > 0:
-                                                details.append(f"{count} person" if count == 1 else f"{count} people")
-                                        if vision_data.get("mood"):
-                                            details.append(f"conveying a {vision_data['mood']} mood")
-                                        
-                                        content = f"User showed me {parts[0] if parts else 'an image'}"
-                                        if details:
-                                            content += f". The image with {', '.join(details)}"
-                                        content += "."
+                                        description_text = None
+                                        if isinstance(vision_data, dict):
+                                            description_text = vision_data.get("description")
+                                        if not description_text and result.observation:
+                                            description_text = result.observation
+                                        if description_text:
+                                            content = f"User showed me an image: {description_text.strip()}"
+                                        else:
+                                            # Build natural language description
+                                            parts = []
+                                            if vision_data.get("main_subject"):
+                                                parts.append(f"an image of {vision_data['main_subject']}")
+                                            
+                                            details = []
+                                            if vision_data.get("people") and isinstance(vision_data["people"], dict):
+                                                count = vision_data["people"].get("count", 0)
+                                                if count > 0:
+                                                    details.append(f"{count} person" if count == 1 else f"{count} people")
+                                            if vision_data.get("mood"):
+                                                details.append(f"conveying a {vision_data['mood']} mood")
+                                            
+                                            content = f"User showed me {parts[0] if parts else 'an image'}"
+                                            if details:
+                                                content += f". The image with {', '.join(details)}"
+                                            content += "."
                                         
                                         # Create memory
                                         memory = memory_repo.create(
@@ -4187,22 +4257,36 @@ async def send_message(
             }
         )
         
-        # Phase 1: Append citations to response if document context was used
+        # Normalize structured response and apply citations/media prefix
         response_content = response.content
-        if doc_conversation_service and doc_context and doc_context.has_content():
-            response_content = doc_conversation_service.append_citations_to_response(
-                response_content,
-                doc_context
-            )
-            logger.info(f"Appended {len(doc_context.citations)} citations to response")
+        if image_request_detected:
+            response_content = _strip_image_tags(response_content)
         
         media_prefix = _media_interpretation_prefix(
             character_name=character.name,
             image_request_detected=image_request_detected,
             video_request_detected=video_request_detected
         )
-        if media_prefix:
-            response_content = f"{media_prefix}{response_content}"
+        
+        template = _get_effective_template(character)
+        allowed_channels, required_channels = template_rules(template)
+        parsed = parse_structured_response(
+            response_content,
+            allowed_channels=allowed_channels,
+            required_channels=required_channels
+        )
+        
+        segments = parsed.segments
+        if parsed.had_untagged:
+            logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation.id}")
+        segments = _apply_media_prefix(segments, media_prefix)
+        
+        citations_text = _build_plain_citations(doc_context)
+        if citations_text:
+            logger.info(f"Appended {len(doc_context.citations)} citations to response")
+        segments = _append_citations_to_segments(segments, citations_text)
+        
+        response_content = serialize_structured_response(segments)
         
         # Save assistant message
         assistant_message = msg_repo.create(
@@ -4211,7 +4295,14 @@ async def send_message(
             content=response_content,  # Use response with citations
             metadata={
                 "model": app_state["system_config"].llm.model,
-                "character": character.name
+                "character": character.name,
+                "structured_response": {
+                    "is_fallback": parsed.is_fallback,
+                    "parse_error": parsed.parse_error,
+                    "had_untagged": parsed.had_untagged,
+                    "template": template,
+                    "raw_response": response.content
+                }
             }
         )
         
@@ -4305,19 +4396,13 @@ async def send_message(
                 logger.error(f"[TTS] Failed to generate audio: {tts_error}", exc_info=True)
                 # Don't fail the entire request if TTS fails
         
-        response_data = ChatInThreadResponse(
-            user_message=MessageResponse.from_orm(user_message, db_session=db),
-            assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
-            image_request_detected=image_request_detected,
-            image_prompt_preview=image_prompt_preview
-        )
-        
         # Note: audio_url is now automatically populated by from_orm if audio exists
         # (including newly generated audio that was just saved to the database)
         
         # Auto-generate conversation title after 2 turns (4 messages)
         # Only if title is still auto-generated (not user-set)
         title_service = app_state.get("title_service")
+        updated_title = None
         if title_service and conversation.title_auto_generated:
             # Count total messages in conversation (across all threads)
             thread_repo = ThreadRepository(db)
@@ -4355,7 +4440,7 @@ async def send_message(
                     if result.success and result.title:
                         # Update conversation title
                         conv_repo.update(conversation.id, title=result.title)
-                        response_data.conversation_title_updated = result.title
+                        updated_title = result.title
                         logger.info(f"[TITLE GEN] Updated conversation title: {result.title}")
                     else:
                         logger.warning(f"[TITLE GEN] Failed: {result.error}")
@@ -4363,6 +4448,16 @@ async def send_message(
                 except Exception as e:
                     logger.error(f"[TITLE GEN] Title generation failed: {e}", exc_info=True)
                     # Don't fail the request, just log the error
+        
+        response_data = ChatInThreadResponse(
+            user_message=MessageResponse.from_orm(user_message, db_session=db),
+            assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
+            image_request_detected=image_request_detected,
+            image_prompt_preview=image_prompt_preview,
+            video_request_detected=video_request_detected,
+            video_prompt_preview=video_prompt_preview,
+            conversation_title_updated=updated_title
+        )
         
         return response_data
         
@@ -4502,23 +4597,31 @@ async def add_message_without_response(
                                         else:
                                             vision_data = {"description": "Image analyzed but no details available"}
                                         
-                                        # Build natural language description
-                                        parts = []
-                                        if vision_data.get("main_subject"):
-                                            parts.append(f"an image of {vision_data['main_subject']}")
-                                        
-                                        details = []
-                                        if vision_data.get("people") and isinstance(vision_data["people"], dict):
-                                            count = vision_data["people"].get("count", 0)
-                                            if count > 0:
-                                                details.append(f"{count} person" if count == 1 else f"{count} people")
-                                        if vision_data.get("mood"):
-                                            details.append(f"conveying a {vision_data['mood']} mood")
-                                        
-                                        memory_content = f"User showed me {parts[0] if parts else 'an image'}"
-                                        if details:
-                                            memory_content += f". The image with {', '.join(details)}"
-                                        memory_content += "."
+                                        description_text = None
+                                        if isinstance(vision_data, dict):
+                                            description_text = vision_data.get("description")
+                                        if not description_text and result.observation:
+                                            description_text = result.observation
+                                        if description_text:
+                                            memory_content = f"User showed me an image: {description_text.strip()}"
+                                        else:
+                                            # Build natural language description
+                                            parts = []
+                                            if vision_data.get("main_subject"):
+                                                parts.append(f"an image of {vision_data['main_subject']}")
+                                            
+                                            details = []
+                                            if vision_data.get("people") and isinstance(vision_data["people"], dict):
+                                                count = vision_data["people"].get("count", 0)
+                                                if count > 0:
+                                                    details.append(f"{count} person" if count == 1 else f"{count} people")
+                                            if vision_data.get("mood"):
+                                                details.append(f"conveying a {vision_data['mood']} mood")
+                                            
+                                            memory_content = f"User showed me {parts[0] if parts else 'an image'}"
+                                            if details:
+                                                memory_content += f". The image with {', '.join(details)}"
+                                            memory_content += "."
                                         
                                         # Create memory
                                         from chorus_engine.models.conversation import MemoryType
@@ -5136,15 +5239,6 @@ async def send_message_stream(
             if video_request_detected and video_prompt_preview:
                 yield f"data: {json.dumps({'type': 'video_request', 'video_info': video_prompt_preview})}\n\n"
             
-            media_prefix = _media_interpretation_prefix(
-                character_name=character_name,
-                image_request_detected=image_request_detected,
-                video_request_detected=video_request_detected
-            )
-            if media_prefix:
-                full_content += media_prefix
-                yield f"data: {json.dumps({'type': 'content', 'content': media_prefix})}\n\n"
-
             # Stream assistant response
             async for chunk in llm_client.stream_with_history(
                 messages=messages,
@@ -5160,15 +5254,32 @@ async def send_message_stream(
                 full_content += chunk
                 yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
             
-            # Phase 1: Append citations to response if document context was used
-            if doc_conversation_service and doc_context and doc_context.has_content():
-                citations = doc_conversation_service.append_citations_to_response(full_content, doc_context)
-                # Extract just the citation part (after the newlines)
-                citation_text = citations[len(full_content):]
-                if citation_text:
-                    full_content = citations
-                    yield f"data: {json.dumps({'type': 'content', 'content': citation_text})}\n\n"
-                    logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
+            # Normalize structured response and apply citations/media prefix
+            media_prefix = _media_interpretation_prefix(
+                character_name=character_name,
+                image_request_detected=image_request_detected,
+                video_request_detected=video_request_detected
+            )
+            
+            template = _get_effective_template(character_config_for_stream)
+            allowed_channels, required_channels = template_rules(template)
+            parsed = parse_structured_response(
+                full_content,
+                allowed_channels=allowed_channels,
+                required_channels=required_channels
+            )
+            
+            segments = parsed.segments
+            if parsed.had_untagged:
+                logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation_id_for_stream}")
+            segments = _apply_media_prefix(segments, media_prefix)
+            
+            citations_text = _build_plain_citations(doc_context)
+            if citations_text:
+                logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
+            segments = _append_citations_to_segments(segments, citations_text)
+            
+            normalized_content = serialize_structured_response(segments)
             
             # Log the full interaction to debug file
             log_llm_call(
@@ -5196,10 +5307,17 @@ async def send_message_stream(
                 assistant_message = stream_msg_repo.create(
                     thread_id=thread_id,
                     role=MessageRole.ASSISTANT,
-                    content=full_content,
+                    content=normalized_content,
                     metadata={
                         "model": app_state["system_config"].llm.model,
-                        "character": character_name
+                        "character": character_name,
+                        "structured_response": {
+                            "is_fallback": parsed.is_fallback,
+                            "parse_error": parsed.parse_error,
+                            "had_untagged": parsed.had_untagged,
+                            "template": template,
+                            "raw_response": full_content
+                        }
                     }
                 )
                 stream_db.commit()
@@ -5256,6 +5374,7 @@ async def send_message_stream(
             
             # Send completion event with optional title update
             done_data = {'type': 'done', 'message_id': assistant_message_id}
+            done_data['normalized_content'] = normalized_content
             if updated_title:
                 done_data['conversation_title_updated'] = updated_title
             yield f"data: {json.dumps(done_data)}\n\n"
@@ -5875,6 +5994,75 @@ async def delete_memory(
             # Don't fail the request - memory is already deleted from DB
     
     return {"status": "deleted", "id": memory_id}
+
+
+@app.patch("/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    memory_id: str,
+    request: MemoryUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update memory content and re-embed if approved."""
+    repo = MemoryRepository(db)
+    memory = repo.get_by_id(memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    
+    # Block edits for core memories on immutable characters
+    if memory.memory_type == MemoryType.CORE and memory.character_id in IMMUTABLE_CHARACTERS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot edit core memories for immutable character '{memory.character_id}'"
+        )
+    
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Memory content cannot be empty")
+    
+    if content == memory.content:
+        return memory
+    
+    # Pending memories: update DB only, no vector changes
+    if memory.status == "pending":
+        updated = repo.update_content(memory_id, content)
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to update memory")
+        return updated
+    
+    # Approved/auto-approved: update vector store and DB
+    embedding_service = app_state.get("embedding_service")
+    vector_store = app_state.get("vector_store")
+    if not embedding_service or not vector_store:
+        raise HTTPException(status_code=503, detail="Embedding service or vector store unavailable")
+    
+    vector_id = memory.vector_id or str(uuid.uuid4())
+    embedding = embedding_service.embed(content)
+    
+    success = vector_store.upsert_memories(
+        character_id=memory.character_id,
+        memory_ids=[vector_id],
+        contents=[content],
+        embeddings=[embedding],
+        metadatas=[{
+            "type": memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
+            "category": memory.category or "",
+            "confidence": memory.confidence or 0.0,
+            "status": memory.status,
+            "durability": memory.durability if hasattr(memory, "durability") else "situational",
+            "pattern_eligible": bool(getattr(memory, "pattern_eligible", 0))
+        }]
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update memory embedding")
+    
+    memory.content = content
+    memory.vector_id = vector_id
+    memory.embedding_model = embedding_service.model_name
+    db.commit()
+    db.refresh(memory)
+    
+    return memory
 
 
 @app.get("/characters/{character_id}/memory-stats")

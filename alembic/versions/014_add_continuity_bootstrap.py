@@ -70,17 +70,7 @@ def upgrade():
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
     )
 
-    op.create_table(
-        "continuity_preferences",
-        sa.Column("character_id", sa.String(length=50), primary_key=True),
-        sa.Column("default_mode", sa.String(length=10), nullable=False, server_default="ask"),
-        sa.Column("skip_preview", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-    )
-
-
 def downgrade():
-    op.drop_table("continuity_preferences")
     op.drop_table("continuity_bootstrap_cache")
     op.drop_table("continuity_arcs")
     op.drop_table("continuity_relationship_states")

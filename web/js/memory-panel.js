@@ -170,6 +170,28 @@ window.MemoryPanel = {
                 this.deleteMemory(memoryId, memoryType);
             });
         });
+
+        // Add edit handlers
+        container.querySelectorAll('[data-edit-memory]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.editMemory;
+                this.startEditMemory(memoryId);
+            });
+        });
+        
+        container.querySelectorAll('[data-save-edit]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.saveEdit;
+                this.saveEditMemory(memoryId);
+            });
+        });
+        
+        container.querySelectorAll('[data-cancel-edit]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const memoryId = btn.dataset.cancelEdit;
+                this.cancelEditMemory(memoryId);
+            });
+        });
     },
     
     /**
@@ -178,6 +200,7 @@ window.MemoryPanel = {
     renderMemoryCard(memory) {
         const isImmutable = IMMUTABLE_CHARACTERS_MEMORY.includes(this.currentCharacter);
         const canDelete = !(memory.memory_type === 'core' && isImmutable);
+        const canEdit = !(memory.memory_type === 'core' && isImmutable);
         
         const badgeClass = {
             'core': 'bg-primary',
@@ -216,23 +239,94 @@ window.MemoryPanel = {
                             ${similarityBadge}
                             ${priorityStars ? `<span class="ms-1">${priorityStars}</span>` : ''}
                         </div>
-                        ${canDelete ? `
-                            <button class="btn btn-sm btn-outline-danger py-0 px-1" 
-                                    data-delete-memory="${memory.id}"
-                                    data-memory-type="${memory.memory_type}"
-                                    title="Delete memory">
-                                <i class="bi bi-trash"></i>
-                            </button>
-                        ` : ''}
+                        <div class="d-flex gap-1">
+                            ${canEdit ? `
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-1" 
+                                        data-edit-memory="${memory.id}"
+                                        title="Edit memory">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                            ` : ''}
+                            ${canDelete ? `
+                                <button class="btn btn-sm btn-outline-danger py-0 px-1" 
+                                        data-delete-memory="${memory.id}"
+                                        data-memory-type="${memory.memory_type}"
+                                        title="Delete memory">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            ` : ''}
+                        </div>
                     </div>
-                    <p class="mb-1">${this.escapeHtml(memory.content)}</p>
-                    ${tagsHtml}
+                    <div class="memory-view">
+                        <p class="mb-1">${this.escapeHtml(memory.content)}</p>
+                        ${tagsHtml}
+                    </div>
+                    <div class="memory-edit d-none">
+                        <textarea class="form-control form-control-sm mb-2" rows="3" data-edit-textarea>${this.escapeHtml(memory.content)}</textarea>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-primary" data-save-edit="${memory.id}">
+                                <i class="bi bi-save"></i> Save
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" data-cancel-edit="${memory.id}">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
                     <small class="text-muted d-block">
                         <i class="bi bi-clock"></i> ${new Date(memory.created_at).toLocaleString()}
                     </small>
                 </div>
             </div>
         `;
+    },
+
+    startEditMemory(memoryId) {
+        const card = document.querySelector(`[data-edit-memory="${memoryId}"]`)?.closest('.card');
+        if (!card) return;
+        
+        card.querySelector('.memory-view')?.classList.add('d-none');
+        card.querySelector('.memory-edit')?.classList.remove('d-none');
+    },
+    
+    cancelEditMemory(memoryId) {
+        const card = document.querySelector(`[data-cancel-edit="${memoryId}"]`)?.closest('.card');
+        if (!card) return;
+        
+        card.querySelector('.memory-edit')?.classList.add('d-none');
+        card.querySelector('.memory-view')?.classList.remove('d-none');
+    },
+    
+    async saveEditMemory(memoryId) {
+        const card = document.querySelector(`[data-save-edit="${memoryId}"]`)?.closest('.card');
+        if (!card) return;
+        
+        const textarea = card.querySelector('[data-edit-textarea]');
+        const newContent = textarea?.value?.trim();
+        
+        if (!newContent) {
+            this.showStatus('Memory content cannot be empty', 'warning');
+            return;
+        }
+        
+        try {
+            this.showStatus('Updating memory...', 'info');
+            const updated = await API.updateMemory(memoryId, { content: newContent });
+            
+            const applyUpdate = (list) => {
+                const idx = list.findIndex(m => m.id === memoryId);
+                if (idx >= 0) list[idx] = { ...list[idx], ...updated };
+            };
+            
+            applyUpdate(this.allMemories);
+            applyUpdate(this.searchResults);
+            
+            this.renderMemories();
+            this.showStatus('Memory updated', 'success');
+            setTimeout(() => this.hideStatus(), 2000);
+        } catch (error) {
+            console.error('Failed to update memory:', error);
+            this.showStatus(error.message || 'Failed to update memory', 'danger');
+        }
     },
     
     /**

@@ -2395,3 +2395,46 @@ audio::-webkit-media-controls-time-remaining-display {
     border-color: var(--accent-primary);
     box-shadow: 0 0 0 0.2rem rgba(212, 175, 55, 0.25);
 }
+
+/* Structured response segments */
+.assistant-segment {
+    display: block;
+    margin: 0.25rem 0;
+}
+
+.assistant-segment--speech {
+    color: inherit;
+}
+
+.assistant-segment--physicalaction {
+    color: #495057;
+    font-weight: 500;
+}
+
+.assistant-segment--innerthought {
+    font-style: italic;
+    color: #6c757d;
+}
+
+.assistant-segment--narration {
+    font-style: italic;
+    color: #6c757d;
+}
+
+.assistant-segment--action {
+    font-variant: small-caps;
+    color: #5f6b73;
+}
+
+.hide-innerthought .assistant-segment--innerthought {
+    display: none;
+}
+
+.hide-physicalaction .assistant-segment--physicalaction {
+    display: none;
+}
+
+/* Keep assistant speech consistent with existing message style */
+.assistant-message .assistant-segment--speech {
+    color: #212529;
+}

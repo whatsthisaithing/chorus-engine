@@ -231,6 +231,19 @@
                                     <span class="ms-1">TTS</span>
                                 </label>
                             </div>
+                            <!-- Structured Response Filters -->
+                            <div class="form-check form-switch m-0" title="Show or hide inner thoughts">
+                                <input class="form-check-input" type="checkbox" id="innerThoughtToggle" checked>
+                                <label class="form-check-label" for="innerThoughtToggle">
+                                    <span class="ms-1">Thoughts</span>
+                                </label>
+                            </div>
+                            <div class="form-check form-switch m-0" title="Show or hide physical actions">
+                                <input class="form-check-input" type="checkbox" id="physicalActionToggle" checked>
+                                <label class="form-check-label" for="physicalActionToggle">
+                                    <span class="ms-1">Actions</span>
+                                </label>
+                            </div>
                             <!-- Actions Dropdown Menu -->
                             <div class="dropdown">
                                 <button class="btn btn-sm btn-outline-secondary" type="button" id="actionsMenuBtn" data-bs-toggle="dropdown" aria-expanded="false" disabled>
@@ -673,12 +686,6 @@
                         <input class="form-check-input" type="checkbox" id="rememberContinuityChoiceCheck">
                         <label class="form-check-label" for="rememberContinuityChoiceCheck">
                             Remember my choice for this character
-                        </label>
-                    </div>
-                    <div class="form-check mt-2">
-                        <input class="form-check-input" type="checkbox" id="skipContinuityPreviewCheck">
-                        <label class="form-check-label" for="skipContinuityPreviewCheck">
-                            Skip this preview next time
                         </label>
                     </div>
                 </div>
@@ -1940,6 +1947,28 @@
                                             <small class="text-theme-secondary">Controls how "in-character" the AI behaves</small>
                                         </div>
                                         
+                                        <div class="mb-3">
+                                            <label class="form-label">Response Template</label>
+                                            <select class="form-select" id="charResponseTemplate">
+                                                <option value="">Auto (by immersion)</option>
+                                                <option value="A">Template A - Tri-Channel Immersive</option>
+                                                <option value="B">Template B - Narrated Scene</option>
+                                                <option value="C">Template C - Speech Only</option>
+                                                <option value="D">Template D - Scripted Roleplay</option>
+                                            </select>
+                                            <small class="text-theme-secondary">Controls which semantic channels are allowed in responses</small>
+                                        </div>
+                                        
+                                        <div class="mb-3" id="expressivenessContainer" style="display: none;">
+                                            <label class="form-label">Expressiveness</label>
+                                            <select class="form-select" id="charExpressiveness">
+                                                <option value="minimal">Minimal - Mostly speech</option>
+                                                <option value="balanced">Balanced - Occasional actions/thoughts</option>
+                                                <option value="rich">Rich - Frequent actions/thoughts</option>
+                                            </select>
+                                            <small class="text-theme-secondary">Only affects templates with optional channels</small>
+                                        </div>
+                                        
                                         <h6 class="mt-4 mb-3">Immersion Settings</h6>
                                         <div class="mb-2">
                                             <div class="form-check">
@@ -2018,6 +2047,19 @@
                                                 <option value="global">Global - Shared across all</option>
                                                 <option value="thread">Thread - Per conversation</option>
                                             </select>
+                                        </div>
+                                        
+                                        <h6 class="mt-4 mb-3">Continuity Preferences</h6>
+                                        <small class="text-theme-secondary d-block mb-2">Used when continuity choices are remembered for this character.</small>
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label">Default Mode</label>
+                                                <select class="form-select" id="charContinuityDefaultMode">
+                                                    <option value="ask">Ask each time</option>
+                                                    <option value="use">Continue with context</option>
+                                                    <option value="fresh">Start fresh</option>
+                                                </select>
+                                            </div>
                                         </div>
                                         
                                         <h6 class="mt-4 mb-3">Core Memories</h6>

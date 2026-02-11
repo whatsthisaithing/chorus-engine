@@ -37,10 +37,6 @@ class SystemPromptGenerator:
         Returns:
             Complete system prompt with immersion guidance and optional multi-user context
         """
-        # Power user mode: Use raw system prompt without modification
-        if hasattr(character, 'custom_system_prompt') and character.custom_system_prompt:
-            return character.system_prompt.strip()
-        
         parts = []
         
         # 1. Base system prompt (always included)
@@ -82,24 +78,30 @@ class SystemPromptGenerator:
                 parts.append("")
                 parts.append(pacing_guidance)
         
-        # 4. Add immersion-level-specific guidance
-        immersion_guidance = self._generate_immersion_guidance(
-            character.immersion_level,
-            character.immersion_settings
-        )
-        if immersion_guidance:
-            parts.append(immersion_guidance)
-        
-        # 4. Add disclaimer behavior guidance
-        disclaimer_guidance = self._generate_disclaimer_guidance(
-            character.immersion_settings.disclaimer_behavior
-        )
-        if disclaimer_guidance:
-            parts.append(disclaimer_guidance)
+        # 4. Add immersion-level-specific guidance (skip in custom system prompt mode)
+        if not (hasattr(character, 'custom_system_prompt') and character.custom_system_prompt):
+            immersion_guidance = self._generate_immersion_guidance(
+                character.immersion_level,
+                character.immersion_settings
+            )
+            if immersion_guidance:
+                parts.append(immersion_guidance)
+            
+            # 4. Add disclaimer behavior guidance
+            disclaimer_guidance = self._generate_disclaimer_guidance(
+                character.immersion_settings.disclaimer_behavior
+            )
+            if disclaimer_guidance:
+                parts.append(disclaimer_guidance)
         
         # 5. Add image/media generation guidance if enabled
         if character.image_generation and character.image_generation.enabled:
             parts.append(self._generate_media_guidance())
+        
+        # 6. Add structured response contract (always enforced)
+        structured_contract = self._generate_structured_response_contract(character)
+        if structured_contract:
+            parts.append(structured_contract)
         
         return "\n\n".join(parts)
     
@@ -352,6 +354,131 @@ class SystemPromptGenerator:
 - Example: "Let me capture that moment for you..." or "Here's what I'm seeing right now..."
 - The system will automatically detect image requests and generate them for you
 - NEVER include actual ![image](url) markdown in your response"""
+
+    def _get_effective_template(self, character: CharacterConfig) -> str:
+        if getattr(character, "response_template", None):
+            return character.response_template
+        # Defaults by immersion level
+        level = getattr(character, "immersion_level", "balanced")
+        if level in ["full", "unbounded"]:
+            return "A"
+        return "C"
+    
+    def _get_effective_expressiveness(self, character: CharacterConfig) -> Optional[str]:
+        template = self._get_effective_template(character)
+        if template != "A":
+            return None
+        return getattr(character, "expressiveness", None) or "balanced"
+    
+    def _generate_structured_response_contract(self, character: CharacterConfig) -> str:
+        """
+        Generate the structured response format contract and template rules.
+        """
+        template = self._get_effective_template(character)
+        expressiveness = self._get_effective_expressiveness(character)
+        
+        contract_lines = [
+            "**Structured Response Contract (Mandatory):**",
+            "- Your entire response MUST be wrapped in <assistant_response>...</assistant_response>",
+            "- Output exactly one <assistant_response>...</assistant_response> block per message.",
+            "- All content must appear inside that single block; do not open a second root.",
+            "- Only allowed child tags may be used",
+            "- Do NOT include any text outside the tags",
+            "- Tags must NOT include attributes",
+            "- Tags must NOT be nested",
+            "- Do NOT include markdown or HTML inside tag bodies",
+        ]
+        
+        # Template rules
+        if template == "A":
+            contract_lines += [
+                "",
+                "**Template A (Tri-Channel Immersive):**",
+                "- Allowed: <speech> (required), <physicalaction> (optional), <innerthought> (optional)",
+                "",
+                "**Channel Classification Rules (Mandatory):**",
+                "- <speech> contains only spoken, user-facing dialogue.",
+                "- <physicalaction> is used only for externally observable actions (gestures, posture, expressions).",
+                "- <innerthought> is used for internal experience or pre-verbal processing (hesitation, weighing words, silent reflection, emotional texture).",
+                "- <innerthought> should represent brief, implicit internal beats only; do not narrate ongoing self-monitoring or meta-commentary unless it is central to the moment.",
+                "- If a sentence is not directly observable by another person, it should not be in <physicalaction>.",
+                "- If a sentence describes internal state before or alongside speaking, prefer <innerthought>.",
+                "- If a sentence mixes channels, split it across tags.",
+                "- If you accidentally write text outside a tag, immediately wrap it in <speech> and continue inside the same <assistant_response> block."
+                "",
+                "**Template A Structural Example (do not copy content):**",
+                "<assistant_response>",
+                "  <innerthought>brief internal hesitation</innerthought>",
+                "  <speech>spoken response</speech>",
+                "  <physicalaction>visible gesture</physicalaction>",
+                "</assistant_response>"
+            ]
+        elif template == "B":
+            contract_lines += [
+                "",
+                "**Template B (Narrated Scene):**",
+                "- Allowed: <narration> (required), <speech> (optional)",
+                "",
+                "**Channel Classification Rules (Mandatory):**",
+                "- <narration> contains only third-person scene description, actions, and non-spoken context.",
+                "- <speech> contains only spoken dialogue.",
+                "- Do NOT include quoted dialogue inside <narration>. If a line is dialogue (including anything in quotes), it MUST be in <speech>.",
+                "- Quotation marks MUST appear ONLY inside <speech>. Never put quoted text in <narration>.",
+                "- If you are about to type a quotation mark while in <narration>, stop and put that text in <speech> instead.",
+                "- In <speech>, do not include surrounding quotation marks; write the spoken words directly.",
+                "- If you accidentally write dialogue inside <narration>, move it to <speech>.",
+                "- If you accidentally write any text outside a tag, immediately wrap it in <narration> and continue inside the same <assistant_response> block.",
+                "",
+                "**Template B Structural Example (do not copy content):**",
+                "<assistant_response>",
+                "  <narration>scene description and actions</narration>",
+                "  <speech>spoken dialogue</speech>",
+                "</assistant_response>",
+            ]
+        elif template == "C":
+            contract_lines += [
+                "",
+                "**Template C (Speech Only):**",
+                "- Allowed: <speech> (required)",
+            ]
+        elif template == "D":
+            contract_lines += [
+                "",
+                "**Template D (Scripted Roleplay):**",
+                "- Allowed: <action> (required), <speech> (optional)",
+                "",
+                "**Channel Classification Rules (Mandatory):**",
+                "- <action> contains only non-spoken roleplay content: actions, movements, expressions, scene beats, sensory details, and narration of events.",
+                "- <speech> contains only spoken dialogue.",
+                "- Quotation marks MUST appear ONLY inside <speech>. Never put quoted text in <action>.",
+                "- If you are about to type a quotation mark while in <action>, stop and put that text in <speech> instead.",
+                "- In <speech>, do not include surrounding quotation marks; write the spoken words directly.",
+                "- Do NOT include spoken dialogue inside <action>. If a line is dialogue (including anything in quotes), it MUST be in <speech>.",
+                "- If you accidentally write dialogue inside <action>, move it to <speech>.",
+                "- If you accidentally write any text outside a tag, immediately wrap it in <action> and continue inside the same <assistant_response> block.",
+                "",
+                "**Template D Structural Example (do not copy content):**",
+                "<assistant_response>",
+                "  <action>character action / scene</action>",
+                "  <speech>spoken dialogue</speech>",
+                "  <action>follow-up action</action>",
+                "</assistant_response>",
+            ]
+        
+        # Expressiveness guidance (only for Template A)
+        if expressiveness:
+            contract_lines += [
+                "",
+                "**Expressiveness Guidance:**",
+            ]
+            if expressiveness == "minimal":
+                contract_lines.append("- Prefer <speech> only; use <physicalaction> and <innerthought> rarely when truly helpful")
+            elif expressiveness == "balanced":
+                contract_lines.append("- Use <physicalaction> occasionally and <innerthought> sparingly when it adds value")
+            elif expressiveness == "rich":
+                contract_lines.append("- Use <physicalaction> freely; use <innerthought> when emotionally or narratively relevant")
+        
+        return "\n".join(contract_lines)
     
     def should_show_immersion_notice(self, character: CharacterConfig) -> bool:
         """

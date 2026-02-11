@@ -88,6 +88,8 @@ window.CharacterManagement = {
             // Disable/enable immersion controls
             const immersionControls = [
                 'charImmersionLevel',
+                'charResponseTemplate',
+                'charExpressiveness',
                 'charAllowPreferences',
                 'charAllowOpinions',
                 'charAllowExperiences',
@@ -100,6 +102,19 @@ window.CharacterManagement = {
                 if (el) el.disabled = e.target.checked;
             });
         });
+        
+        // Response template / immersion changes - show/hide expressiveness
+        const updateExpressivenessVisibility = () => {
+            const expressivenessContainer = document.getElementById('expressivenessContainer');
+            const templateValue = document.getElementById('charResponseTemplate')?.value || '';
+            const immersionValue = document.getElementById('charImmersionLevel')?.value || 'balanced';
+            if (!expressivenessContainer) return;
+            
+            const effectiveTemplate = templateValue || (['full', 'unbounded'].includes(immersionValue) ? 'A' : 'C');
+            expressivenessContainer.style.display = (effectiveTemplate === 'A') ? 'block' : 'none';
+        };
+        document.getElementById('charResponseTemplate')?.addEventListener('change', updateExpressivenessVisibility);
+        document.getElementById('charImmersionLevel')?.addEventListener('change', updateExpressivenessVisibility);
         
         // TTS Provider change - show/hide provider-specific settings
         document.getElementById('charTtsProvider').addEventListener('change', (e) => {
@@ -369,6 +384,10 @@ window.CharacterManagement = {
         document.getElementById('charProfileImage').value = character.profile_image || '';
         document.getElementById('charColorScheme').value = character.ui_preferences?.color_scheme || '';
         
+        // Continuity preferences
+        const continuityPrefs = character.continuity_preferences || {};
+        document.getElementById('charContinuityDefaultMode').value = continuityPrefs.default_mode || 'ask';
+        
         // User identity override
         const userIdentity = character.user_identity || {};
         document.getElementById('charUserIdentityMode').value = userIdentity.mode || 'canonical';
@@ -431,6 +450,16 @@ window.CharacterManagement = {
         
         // IMMERSION TAB
         document.getElementById('charImmersionLevel').value = character.immersion_level || 'balanced';
+        
+        // Structured response settings
+        document.getElementById('charResponseTemplate').value = character.response_template || '';
+        document.getElementById('charExpressiveness').value = character.expressiveness || 'balanced';
+        // Update visibility based on effective template
+        const expressivenessContainer = document.getElementById('expressivenessContainer');
+        if (expressivenessContainer) {
+            const effectiveTemplate = character.response_template || (['full', 'unbounded'].includes(character.immersion_level) ? 'A' : 'C');
+            expressivenessContainer.style.display = (effectiveTemplate === 'A') ? 'block' : 'none';
+        }
         
         // Immersion settings
         const immersionSettings = character.immersion_settings || {};
@@ -619,6 +648,8 @@ window.CharacterManagement = {
         // Set defaults
         document.getElementById('charRoleType').value = 'assistant';
         document.getElementById('charImmersionLevel').value = 'balanced';
+        document.getElementById('charResponseTemplate').value = '';
+        document.getElementById('charExpressiveness').value = 'balanced';
         document.getElementById('charDisclaimerBehavior').value = 'only_when_asked';
         document.getElementById('charEmotionalBaseline').value = 'positive';
         document.getElementById('charMemoryScope').value = 'character';
@@ -643,6 +674,7 @@ window.CharacterManagement = {
         // Trigger provider change
         const event = new Event('change');
         document.getElementById('charTtsProvider').dispatchEvent(event);
+        document.getElementById('charImmersionLevel').dispatchEvent(event);
     },
     
     /**
@@ -668,6 +700,8 @@ window.CharacterManagement = {
             custom_system_prompt: document.getElementById('charCustomSystemPrompt').checked,
             personality_traits: traits,
             immersion_level: document.getElementById('charImmersionLevel').value,
+            response_template: document.getElementById('charResponseTemplate').value || null,
+            expressiveness: document.getElementById('charExpressiveness').value,
             
             // User identity override
             user_identity: {
@@ -837,6 +871,17 @@ window.CharacterManagement = {
             characterData.ui_preferences = {
                 color_scheme: colorScheme
             };
+        }
+        
+        // Continuity preferences
+        characterData.continuity_preferences = {
+            default_mode: document.getElementById('charContinuityDefaultMode').value
+        };
+        
+        // Expressiveness only applies when Template A is effective
+        const effectiveTemplate = characterData.response_template || (['full', 'unbounded'].includes(characterData.immersion_level) ? 'A' : 'C');
+        if (effectiveTemplate !== 'A') {
+            delete characterData.expressiveness;
         }
         
         return characterData;

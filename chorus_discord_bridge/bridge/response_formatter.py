@@ -10,6 +10,8 @@ import re
 import logging
 from typing import List, Optional, Tuple
 
+from chorus_engine.services.structured_response import parse_structured_response, to_discord_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +49,15 @@ class ResponseFormatter:
         """
         # Clean up the content first
         content = self._clean_response(content)
+        
+        # Structured response handling
+        if "<assistant_response>" in content:
+            parsed = parse_structured_response(content)
+            if parsed.is_fallback:
+                # Strip any tags to avoid leaking raw markup
+                content = re.sub(r'<[^>]+>', '', content).strip()
+            else:
+                content = to_discord_text(parsed.segments)
         
         # If it fits in one message, return as-is
         if len(content) <= self.MAX_MESSAGE_LENGTH:

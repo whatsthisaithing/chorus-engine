@@ -269,6 +269,26 @@ class MemoryRepository:
         self.db.commit()
         self.db.refresh(memory)
         return memory
+
+    def update_content(self, memory_id: str, content: str) -> Optional[Memory]:
+        """
+        Update memory content only.
+        
+        Args:
+            memory_id: Memory ID
+            content: New memory content
+        
+        Returns:
+            Updated memory or None if not found
+        """
+        memory = self.get_by_id(memory_id)
+        if not memory:
+            return None
+        
+        memory.content = content
+        self.db.commit()
+        self.db.refresh(memory)
+        return memory
     
     def get_by_character_and_status(
         self,

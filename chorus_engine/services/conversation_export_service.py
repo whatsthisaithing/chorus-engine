@@ -12,6 +12,7 @@ from typing import Optional, List
 from pathlib import Path
 
 from chorus_engine.models.conversation import Conversation, Message, MessageRole, ConversationSummary
+from chorus_engine.services.structured_response import parse_structured_response
 from chorus_engine.config.loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
@@ -284,8 +285,8 @@ class ConversationExportService:
         # Format timestamp
         timestamp = self._format_time(message.created_at)
         
-        # Format content with proper indentation
-        content = message.content.strip()
+        # Format content with structured response handling
+        content = self._format_content_markdown(message)
         
         # Build message block
         return f"{speaker} *({timestamp})*\n\n{content}\n"
@@ -308,10 +309,62 @@ class ConversationExportService:
         # Build message
         lines = [
             f"[{timestamp}] {speaker}:",
-            message.content.strip()
+            self._format_content_text(message)
         ]
         
         return "\n".join(lines)
+
+    def _format_content_markdown(self, message: Message) -> str:
+        """Format message content for markdown export with structured segments."""
+        raw = (message.content or "").strip()
+        if not raw:
+            return ""
+        
+        parsed = parse_structured_response(raw)
+        if not parsed.segments:
+            return raw
+        
+        lines: List[str] = []
+        for seg in parsed.segments:
+            if seg.channel == "speech":
+                lines.append(seg.text)
+            elif seg.channel == "innerthought":
+                lines.append(f"*{seg.text}*")
+            elif seg.channel == "physicalaction":
+                lines.append(f"**{seg.text}**")
+            elif seg.channel == "narration":
+                lines.append(f"> {seg.text}")
+            elif seg.channel == "action":
+                lines.append(f"`{seg.text}`")
+            else:
+                lines.append(seg.text)
+        return "\n\n".join([line for line in lines if line])
+
+    def _format_content_text(self, message: Message) -> str:
+        """Format message content for plain text export with structured segments."""
+        raw = (message.content or "").strip()
+        if not raw:
+            return ""
+        
+        parsed = parse_structured_response(raw)
+        if not parsed.segments:
+            return raw
+        
+        lines: List[str] = []
+        for seg in parsed.segments:
+            if seg.channel == "speech":
+                lines.append(seg.text)
+            elif seg.channel == "innerthought":
+                lines.append(f"[thought] {seg.text}")
+            elif seg.channel == "physicalaction":
+                lines.append(f"[action] {seg.text}")
+            elif seg.channel == "narration":
+                lines.append(f"[narration] {seg.text}")
+            elif seg.channel == "action":
+                lines.append(f"[stage] {seg.text}")
+            else:
+                lines.append(seg.text)
+        return "\n\n".join([line for line in lines if line])
     
     def _format_datetime(self, dt: datetime) -> str:
         """Format datetime for display."""

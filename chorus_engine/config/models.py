@@ -242,6 +242,10 @@ class SystemTTSConfig(BaseModel):
         default="chatterbox",
         description="Default TTS provider when character doesn't specify one"
     )
+    include_physicalaction: bool = Field(
+        default=False,
+        description="Include physicalaction segments in TTS output"
+    )
 
 
 class VisionConfig(BaseModel):
@@ -661,6 +665,15 @@ class UIPreferences(BaseModel):
         description="Color scheme override for this character (null = use system default)"
     )
 
+
+class ContinuityPreferencesConfig(BaseModel):
+    """Continuity bootstrap preferences stored per character."""
+
+    default_mode: Literal["ask", "use", "fresh"] = Field(
+        default="ask",
+        description="Default continuity mode when preference is remembered"
+    )
+
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""
     
@@ -699,6 +712,10 @@ class CharacterConfig(BaseModel):
     immersion_level: Literal["minimal", "balanced", "full", "unbounded"] = "balanced"
     immersion_settings: ImmersionSettings = Field(default_factory=ImmersionSettings)
     
+    # Structured response configuration (Phase 11)
+    response_template: Optional[Literal["A", "B", "C", "D"]] = None
+    expressiveness: Optional[Literal["minimal", "balanced", "rich"]] = None
+    
     # Memory profile (Phase 8)
     memory_profile: MemoryProfile = Field(default_factory=MemoryProfile)
     
@@ -722,6 +739,11 @@ class CharacterConfig(BaseModel):
     
     # UI preferences
     ui_preferences: UIPreferences = Field(default_factory=UIPreferences)
+
+    # Continuity preferences
+    continuity_preferences: ContinuityPreferencesConfig = Field(
+        default_factory=ContinuityPreferencesConfig
+    )
     
     # User identity override (conversation runtime only)
     user_identity: UserIdentityOverrideConfig = Field(default_factory=UserIdentityOverrideConfig)

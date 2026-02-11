@@ -271,14 +271,25 @@ const UI = {
             // LLM generates <username> which gets treated as HTML tags
             let processedContent = content;
             if (message.role === 'assistant') {
-                // Replace <username> with @username (both Discord mentions and LLM-generated references)
-                processedContent = processedContent.replace(/<@(\d+)>/g, '@$1'); // Discord mentions <@123456>
-                processedContent = processedContent.replace(/<([A-Za-z0-9_ ]+)>/g, '@$1'); // LLM references <Username> (with spaces)
+                const hasStructuredRoot = processedContent.includes('<assistant_response>');
+                if (!hasStructuredRoot) {
+                    // Replace <username> with @username (both Discord mentions and LLM-generated references)
+                    processedContent = processedContent.replace(/<@(\d+)>/g, '@$1'); // Discord mentions <@123456>
+                    processedContent = processedContent.replace(/<([A-Za-z0-9_ ]+)>/g, '@$1'); // LLM references <Username> (with spaces)
+                }
             }
             
-            const formattedContent = message.role === 'assistant' 
-                ? this.renderMarkdown(processedContent)
-                : this.escapeHtml(processedContent);
+            let formattedContent = '';
+            if (message.role === 'assistant') {
+                const structuredSegments = this.parseStructuredResponse(processedContent);
+                if (structuredSegments) {
+                    formattedContent = this.renderStructuredSegments(structuredSegments);
+                } else {
+                    formattedContent = this.renderMarkdown(processedContent);
+                }
+            } else {
+                formattedContent = this.escapeHtml(processedContent);
+            }
             contentHtml += `<div class="message-content">${formattedContent}</div>`;
         }
         
@@ -754,6 +765,197 @@ const UI = {
         
         // Parse and return markdown as HTML
         return marked.parse(text);
+    },
+    
+    /**
+     * Parse structured response into segments
+     */
+    parseStructuredResponse(text) {
+        if (!text) return null;
+        const allowed = new Set(['speech', 'physicalaction', 'innerthought', 'narration', 'action']);
+        const hasAnyTag = /<(speech|physicalaction|innerthought|narration|action)>/i.test(text);
+        const hasRoot = text.includes('<assistant_response>');
+        if (!hasAnyTag && !hasRoot) {
+            return null; // Legacy content
+        }
+        
+        if (/<\w+\s+[^>]+>/.test(text)) {
+            return null; // Attributes not allowed
+        }
+        
+        const pattern = /<([a-z]+)>([\s\S]*?)<\/\1>/g;
+        const segments = [];
+        let cursor = 0;
+        let match;
+        
+        const addSegment = (channel, raw) => {
+            const cleaned = (raw || '').replace(/<[^>]+>/g, '').trim();
+            if (cleaned) {
+                segments.push({ channel, text: cleaned });
+            }
+        };
+        
+        while ((match = pattern.exec(text)) !== null) {
+            const start = match.index;
+            const end = pattern.lastIndex;
+            const rawPrefix = text.slice(cursor, start);
+            if (rawPrefix.trim()) {
+                addSegment('speech', rawPrefix);
+            }
+            const channel = match[1];
+            const segText = match[2];
+            if (allowed.has(channel)) {
+                addSegment(channel, segText);
+            } else {
+                addSegment('speech', text.slice(start, end));
+            }
+            cursor = end;
+        }
+        
+        const rawTail = text.slice(cursor);
+        if (rawTail.trim()) {
+            addSegment('speech', rawTail);
+        }
+        
+        return segments.length > 0 ? segments : null;
+    },
+    
+    /**
+     * Render structured segments into HTML
+     */
+    renderStructuredSegments(segments) {
+        if (!segments || segments.length === 0) return '';
+        return segments.map(seg => {
+            const normalized = this.normalizeMentions(seg.text || '');
+            const safeText = this.escapeHtml(normalized).replace(/\n/g, '<br>');
+            return `<div class="assistant-segment assistant-segment--${seg.channel}">${safeText}</div>`;
+        }).join('');
+    },
+    
+    /**
+     * Normalize mention-like patterns to avoid HTML tag parsing
+     */
+    normalizeMentions(text) {
+        return text
+            .replace(/<@(\d+)>/g, '@$1')
+            .replace(/<([A-Za-z0-9_ ]+)>/g, '@$1');
+    },
+    
+    /**
+     * Create a streaming structured response parser
+     */
+    createStructuredStreamParser() {
+        const allowed = new Set(['speech', 'physicalaction', 'innerthought', 'narration', 'action']);
+        let mode = 'unknown';
+        let buffer = '';
+        let inRoot = false;
+        let currentTag = null;
+        let currentText = '';
+        let segments = [];
+        let parseError = false;
+        
+        const ensureMode = () => {
+            if (mode !== 'unknown') return;
+            if (buffer.includes('<assistant_response')) {
+                mode = 'structured';
+                return;
+            }
+            if (buffer.includes('<assistant')) {
+                // Possible partial root tag, wait for more data
+                mode = 'unknown';
+                return;
+            }
+            if (!buffer.includes('<') && buffer.length < 200) {
+                mode = 'unknown';
+            } else if (!buffer.includes('<assistant_response')) {
+                mode = 'legacy';
+            }
+        };
+        
+        const push = (chunk) => {
+            buffer += chunk;
+            ensureMode();
+            
+            if (mode === 'legacy') {
+                return { mode: 'legacy', segments: [], text: buffer };
+            }
+            
+            if (mode !== 'structured') {
+                return { mode: 'unknown', segments: [], text: buffer };
+            }
+            
+            while (buffer.length > 0) {
+                if (!inRoot) {
+                    const idx = buffer.indexOf('<assistant_response');
+                    if (idx === -1) {
+                        buffer = '';
+                        break;
+                    }
+                    const end = buffer.indexOf('>', idx);
+                    if (end === -1) break;
+                    inRoot = true;
+                    buffer = buffer.slice(end + 1);
+                    continue;
+                }
+                
+                if (currentTag === null) {
+                    const lt = buffer.indexOf('<');
+                    if (lt === -1) {
+                        buffer = '';
+                        break;
+                    }
+                    if (lt > 0) {
+                        buffer = buffer.slice(lt);
+                    }
+                    const gt = buffer.indexOf('>');
+                    if (gt === -1) break;
+                    const tag = buffer.slice(1, gt).trim();
+                    buffer = buffer.slice(gt + 1);
+                    
+                    if (tag === '/assistant_response') {
+                        inRoot = false;
+                        break;
+                    }
+                    if (tag === 'assistant_response') {
+                        continue;
+                    }
+                    if (tag.startsWith('/')) {
+                        continue;
+                    }
+                    if (tag.includes(' ') || tag.includes('\t')) {
+                        parseError = true;
+                        continue;
+                    }
+                    if (!allowed.has(tag)) {
+                        parseError = true;
+                        continue;
+                    }
+                    currentTag = tag;
+                    currentText = '';
+                    segments.push({ channel: currentTag, text: '' });
+                    continue;
+                }
+                
+                const closeTag = `</${currentTag}>`;
+                const idxClose = buffer.indexOf(closeTag);
+                if (idxClose === -1) {
+                    currentText += buffer;
+                    buffer = '';
+                    segments[segments.length - 1].text = currentText;
+                    break;
+                }
+                
+                currentText += buffer.slice(0, idxClose);
+                segments[segments.length - 1].text = currentText;
+                buffer = buffer.slice(idxClose + closeTag.length);
+                currentTag = null;
+                currentText = '';
+            }
+            
+            return { mode: 'structured', segments, parseError };
+        };
+        
+        return { push };
     },
     
     /**
