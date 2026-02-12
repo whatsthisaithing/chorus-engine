@@ -286,6 +286,23 @@ class ChorusClient:
         
         endpoint = f'/threads/{thread_id}/generate-image'
         return await self._request('POST', endpoint, json=payload)
+
+    async def confirm_and_generate_video(
+        self,
+        thread_id: int,
+        prompt: str,
+        negative_prompt: str = '',
+        disable_future_confirmations: bool = False
+    ) -> Dict[str, Any]:
+        """Confirm and generate a video for a thread."""
+        logger.info(f"Confirming and generating video for thread {thread_id}")
+        payload = {
+            'prompt': prompt,
+            'negative_prompt': negative_prompt,
+            'disable_future_confirmations': disable_future_confirmations
+        }
+        endpoint = f'/threads/{thread_id}/generate-video'
+        return await self._request('POST', endpoint, json=payload)
     
     async def update_message_metadata(
         self,

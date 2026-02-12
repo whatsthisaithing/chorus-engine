@@ -93,6 +93,23 @@ class ComfyUIConfig(BaseModel):
         return v.rstrip('/')
 
 
+class MediaToolingConfig(BaseModel):
+    """Media tooling settings for in-conversation tool payloads and offers."""
+
+    enabled: bool = True
+    offers_enabled: bool = True
+    image_offers_enabled: bool = True
+    video_offers_enabled: bool = True
+    explicit_min_confidence_image: float = Field(default=0.5, ge=0.0, le=1.0)
+    explicit_min_confidence_video: float = Field(default=0.45, ge=0.0, le=1.0)
+    offer_min_confidence_image: float = Field(default=0.5, ge=0.0, le=1.0)
+    offer_min_confidence_video: float = Field(default=0.45, ge=0.0, le=1.0)
+    offer_cooldown_minutes: int = Field(default=30, ge=0, le=1440)
+    offer_min_turn_gap: int = Field(default=8, ge=0, le=200)
+    max_offers_per_conversation_per_media: int = Field(default=2, ge=0, le=20)
+    disable_offers_for_sources: List[str] = Field(default_factory=lambda: ["discord"])
+
+
 class IntentDetectionConfig(BaseModel):
     """Intent detection system configuration (Phase 7)."""
     
@@ -449,6 +466,7 @@ class SystemConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
+    media_tooling: MediaToolingConfig = Field(default_factory=MediaToolingConfig)
     tts: SystemTTSConfig = Field(default_factory=SystemTTSConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     intent_detection: IntentDetectionConfig = Field(default_factory=IntentDetectionConfig)
@@ -612,6 +630,23 @@ class VideoGenerationConfig(BaseModel):
     enabled: bool = False
 
 
+class ProactiveOfferMediaOverrideConfig(BaseModel):
+    """Per-media proactive offer override fields (null = inherit system default)."""
+
+    enabled: Optional[bool] = None
+    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class ProactiveOffersConfig(BaseModel):
+    """Per-character proactive media offer overrides."""
+
+    image: ProactiveOfferMediaOverrideConfig = Field(default_factory=ProactiveOfferMediaOverrideConfig)
+    video: ProactiveOfferMediaOverrideConfig = Field(default_factory=ProactiveOfferMediaOverrideConfig)
+    offer_cooldown_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    offer_min_turn_gap: Optional[int] = Field(default=None, ge=0, le=200)
+    max_offers_per_conversation_per_media: Optional[int] = Field(default=None, ge=0, le=20)
+
+
 class DocumentAnalysisConfig(BaseModel):
     """Document analysis configuration for characters (Phase 1-7)."""
     
@@ -732,6 +767,7 @@ class CharacterConfig(BaseModel):
     visual_identity: Optional[VisualIdentityConfig] = None
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = Field(default_factory=VideoGenerationConfig)
+    proactive_offers: ProactiveOffersConfig = Field(default_factory=ProactiveOffersConfig)
     
     # Document analysis & code execution (Phase 1-7)
     document_analysis: DocumentAnalysisConfig = Field(default_factory=DocumentAnalysisConfig)

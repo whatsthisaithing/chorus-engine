@@ -78,6 +78,18 @@ from chorus_engine.services.structured_response import (
     template_rules,
     StructuredSegment,
 )
+from chorus_engine.services.tool_payload import (
+    extract_tool_payload,
+    parse_tool_payload,
+    validate_tool_payload,
+)
+from chorus_engine.services.media_turn_classifier import classify_media_turn
+from chorus_engine.services.media_offer_policy import (
+    resolve_effective_offer_policy,
+    compute_turn_media_permissions,
+    is_offer_allowed,
+    record_offer,
+)
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors, sync_memory_vectors
@@ -168,6 +180,28 @@ def _apply_media_prefix(segments: list[StructuredSegment], media_prefix: str) ->
     return segments
 
 
+def _infer_last_generated_media_type(db: Session, conversation_id: str) -> str:
+    """Infer latest generated media type for iteration-style requests."""
+    try:
+        image_repo = ImageRepository(db)
+        video_repo = VideoRepository(db)
+        latest_images = image_repo.get_by_conversation(conversation_id, limit=1)
+        latest_videos = video_repo.list_videos_for_conversation(conversation_id, limit=1)
+        latest_image = latest_images[0] if latest_images else None
+        latest_video = latest_videos[0] if latest_videos else None
+        if latest_image and latest_video:
+            if latest_image.created_at and latest_video.created_at:
+                return "image" if latest_image.created_at >= latest_video.created_at else "video"
+            return "image"
+        if latest_image:
+            return "image"
+        if latest_video:
+            return "video"
+    except Exception as e:
+        logger.warning(f"[MEDIA TOOLING] Failed inferring last generated media type: {e}")
+    return "none"
+
+
 def _append_citations_to_segments(segments: list[StructuredSegment], citations_text: str) -> list[StructuredSegment]:
     if not citations_text:
         return segments
@@ -178,6 +212,67 @@ def _append_citations_to_segments(segments: list[StructuredSegment], citations_t
     # No speech segment; add optional speech for citations
     segments.append(StructuredSegment(channel="speech", text=citations_text.strip()))
     return segments
+
+
+def _count_allowed_tool_calls(validated_tool_calls, allowed_tools: set[str]) -> int:
+    return sum(1 for call in (validated_tool_calls or []) if getattr(call, "tool", None) in allowed_tools)
+
+
+async def _attempt_media_payload_repair(
+    *,
+    llm_client,
+    messages: list[dict],
+    model: str,
+    temperature,
+    max_tokens,
+    raw_response_content: str,
+    allowed_tools: list[str],
+    requested_media_type: str,
+    is_iteration_request: bool,
+) -> tuple[str, object, object, list]:
+    """
+    One-shot repair pass that asks the model to re-emit a valid tool payload.
+    Returns (raw_content, extracted, payload_obj, validated_tool_calls).
+    """
+    allowed_tool_list = ", ".join(allowed_tools) if allowed_tools else "(none)"
+    turn_kind = "iteration request" if is_iteration_request else "explicit media request"
+    repair_prompt = (
+        f"Repair your previous response for this {turn_kind}. "
+        "You MUST output exactly one valid media tool payload using this schema and sentinels. "
+        "Do not output prompt-like prose when tools are disallowed. "
+        f"Allowed tools this turn: {allowed_tool_list}. "
+        f"Requested media type: {requested_media_type}. "
+        "Required payload format:\n"
+        "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+        "{\n"
+        "  \"version\": 1,\n"
+        "  \"tool_calls\": [\n"
+        "    {\n"
+        "      \"id\": \"unique_call_identifier\",\n"
+        "      \"tool\": \"<supported_tool>\",\n"
+        "      \"requires_approval\": true,\n"
+        "      \"args\": {\"prompt\": \"Full generation prompt text\"}\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "---CHORUS_TOOL_PAYLOAD_END---\n"
+        "Nothing may appear after ---CHORUS_TOOL_PAYLOAD_END---."
+    )
+    repair_messages = list(messages) + [
+        {"role": "assistant", "content": raw_response_content or ""},
+        {"role": "user", "content": repair_prompt},
+    ]
+    repair_response = await llm_client.generate_with_history(
+        messages=repair_messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        model=model,
+    )
+    repaired_raw = repair_response.content or ""
+    repaired_extracted = extract_tool_payload(repaired_raw)
+    repaired_payload_obj = parse_tool_payload(repaired_extracted.payload_text)
+    repaired_validated = validate_tool_payload(repaired_payload_obj)
+    return repaired_raw, repaired_extracted, repaired_payload_obj, repaired_validated
 
 
 # Global state
@@ -1172,6 +1267,17 @@ class ChatInThreadRequest(BaseModel):
     image_attachment_ids: Optional[List[str]] = None  # Array of pre-uploaded image attachment IDs to link to this message
 
 
+class PendingToolCall(BaseModel):
+    """Validated in-conversation tool call pending confirmation/execution."""
+
+    id: str
+    tool: str
+    requires_approval: bool = True
+    args: dict
+    classification: str  # explicit_request | proactive_offer
+    needs_confirmation: bool = True
+
+
 class UserIdentityUpdateRequest(BaseModel):
     """Request body for updating system user identity."""
     display_name: Optional[str] = ""
@@ -1182,11 +1288,15 @@ class ChatInThreadResponse(BaseModel):
     """Chat in thread response."""
     user_message: MessageResponse
     assistant_message: MessageResponse
-    image_request_detected: bool = False
-    image_prompt_preview: Optional[dict] = None
-    video_request_detected: bool = False
-    video_prompt_preview: Optional[dict] = None
+    pending_tool_calls: List[PendingToolCall] = []
     conversation_title_updated: Optional[str] = None  # New title if auto-generated
+
+
+class ConversationMediaOffersUpdateRequest(BaseModel):
+    """Update conversation-level proactive offer flags."""
+
+    allow_image_offers: Optional[bool] = None
+    allow_video_offers: Optional[bool] = None
 
 
 # Memory models
@@ -3981,6 +4091,17 @@ async def send_message(
     except Exception as e:
         logger.warning(f"[SEMANTIC INTENT] Detection failed: {e}")
         # Non-fatal: continue with existing intent detection
+
+    # Turn-level explicit media request classification
+    media_cfg = getattr(app_state["system_config"], "media_tooling", None)
+    explicit_image_threshold = media_cfg.explicit_min_confidence_image if media_cfg else 0.5
+    explicit_video_threshold = media_cfg.explicit_min_confidence_video if media_cfg else 0.45
+    turn_signals = classify_media_turn(
+        message=request.message,
+        semantic_intents=semantic_intents,
+        explicit_image_threshold=explicit_image_threshold,
+        explicit_video_threshold=explicit_video_threshold,
+    )
     
     # Phase 7: Detect intents using unified intent detection service
     intent_service = app_state.get("intent_detection_service")
@@ -4022,8 +4143,10 @@ async def send_message(
     image_prompt_preview = None
     orchestrator = app_state.get("image_orchestrator")
     
+    # NOTE: Legacy interception path intentionally retained (disabled) for
+    # potential reactivation during media-flow iteration work.
     # Use semantic intent detection instead of keyword detection
-    if orchestrator and character.image_generation.enabled and semantic_has_image:
+    if False and orchestrator and character.image_generation.enabled and semantic_has_image:
         # Load fresh workflow config from database
         # Note: Workflow config is now fetched by orchestrator from database as needed
         # (Phase 5 cleanup: workflow fields no longer stored on character.image_generation)
@@ -4096,7 +4219,7 @@ async def send_message(
     video_prompt_preview = None
     video_orchestrator = app_state.get("video_orchestrator")
     
-    if video_orchestrator and semantic_has_video:
+    if False and video_orchestrator and semantic_has_video:
         # Check if character has video generation enabled
         video_config = getattr(character, 'video_generation', None)
         if video_config and video_config.enabled:
@@ -4157,6 +4280,37 @@ async def send_message(
     
     # Get conversation history (includes the user message we just saved)
     history = msg_repo.get_thread_history(thread_id)
+    effective_policy = resolve_effective_offer_policy(app_state["system_config"], character)
+    current_message_count = msg_repo.count_thread_messages(thread_id)
+    source = request.conversation_source or conversation.source or "web"
+    preferred_iteration_media_type = _infer_last_generated_media_type(db, conversation.id)
+    media_permissions = compute_turn_media_permissions(
+        turn_signals=turn_signals,
+        policy=effective_policy,
+        conversation=conversation,
+        source=source,
+        current_message_count=current_message_count,
+        image_generation_enabled=bool(character.image_generation and character.image_generation.enabled),
+        video_generation_enabled=bool(getattr(character, "video_generation", None) and character.video_generation.enabled),
+        preferred_iteration_media_type=preferred_iteration_media_type,
+    )
+    logger.info(
+        "[MEDIA TOOLING] Turn permissions (non-stream)",
+        extra={
+            "thread_id": thread_id,
+            "source": source,
+            "preferred_iteration_media_type": preferred_iteration_media_type,
+            "requested_media_type": media_permissions.requested_media_type,
+            "is_iteration_request": media_permissions.is_iteration_request,
+            "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+            "explicit_allowed": media_permissions.explicit_allowed,
+            "offer_allowed": media_permissions.offer_allowed,
+            "cooldown_active": media_permissions.cooldown_active,
+            "media_offer_allowed_this_turn": media_permissions.media_offer_allowed_this_turn,
+            "allowed_tools_input": media_permissions.allowed_tools_input,
+            "allowed_tools_final": media_permissions.allowed_tools_final,
+        }
+    )
     
     # Generate AI response
     idle_detector = app_state.get("idle_detector")
@@ -4199,7 +4353,15 @@ async def send_message(
             primary_user=request.primary_user,
             conversation_source=request.conversation_source or 'web',
             conversation_id=conversation.id,
-            include_conversation_context=True
+            include_conversation_context=True,
+            allowed_media_tools=set(media_permissions.allowed_tools_final),
+            allow_proactive_media_offers=any(media_permissions.media_offer_allowed_this_turn.values()),
+            media_gate_context={
+                "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+                "allowed_tools": media_permissions.allowed_tools_final,
+                "requested_media_type": media_permissions.requested_media_type,
+                "is_iteration_request": media_permissions.is_iteration_request,
+            },
         )
         
         # Format for LLM API (includes memories in system prompt)
@@ -4257,10 +4419,167 @@ async def send_message(
             }
         )
         
-        # Normalize structured response and apply citations/media prefix
-        response_content = response.content
-        if image_request_detected:
-            response_content = _strip_image_tags(response_content)
+        # Extract optional tool payload before structured parsing
+        raw_response_content = response.content or ""
+        extracted = extract_tool_payload(raw_response_content)
+        response_content = extracted.display_text
+        payload_obj = parse_tool_payload(extracted.payload_text)
+        validated_tool_calls = validate_tool_payload(payload_obj)
+        allowed_tools_set = set(media_permissions.allowed_tools_final)
+        requires_explicit_payload = bool(
+            media_permissions.media_tool_calls_allowed
+            and (media_permissions.explicit_allowed or media_permissions.is_iteration_request)
+        )
+        if requires_explicit_payload and _count_allowed_tool_calls(validated_tool_calls, allowed_tools_set) == 0:
+            logger.info(
+                "[MEDIA TOOLING] retry_payload_repair_attempted",
+                extra={
+                    "thread_id": thread_id,
+                    "requested_media_type": media_permissions.requested_media_type,
+                    "is_iteration_request": media_permissions.is_iteration_request,
+                },
+            )
+            repaired_raw, repaired_extracted, repaired_payload_obj, repaired_validated = await _attempt_media_payload_repair(
+                llm_client=llm_client,
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                raw_response_content=raw_response_content,
+                allowed_tools=media_permissions.allowed_tools_final,
+                requested_media_type=media_permissions.requested_media_type,
+                is_iteration_request=media_permissions.is_iteration_request,
+            )
+            if _count_allowed_tool_calls(repaired_validated, allowed_tools_set) > 0:
+                logger.info(
+                    "[MEDIA TOOLING] retry_payload_repair_succeeded",
+                    extra={"thread_id": thread_id},
+                )
+                raw_response_content = repaired_raw
+                extracted = repaired_extracted
+                response_content = extracted.display_text
+                payload_obj = repaired_payload_obj
+                validated_tool_calls = repaired_validated
+            else:
+                logger.warning(
+                    "[MEDIA TOOLING] retry_payload_repair_failed",
+                    extra={"thread_id": thread_id},
+                )
+                logger.warning(
+                    "[MEDIA TOOLING] blocked_tool_payload_reason="
+                    + ("iteration_request_missing_tool_payload" if media_permissions.is_iteration_request else "explicit_request_missing_tool_payload"),
+                    extra={"thread_id": thread_id},
+                )
+
+        pending_tool_calls: List[PendingToolCall] = []
+        payload_present = extracted.payload_text is not None
+        supported_tools_v1 = {"image.generate", "video.generate"}
+        if payload_present and payload_obj is None:
+            logger.warning(
+                "[MEDIA TOOLING] blocked_tool_payload_reason=malformed_payload",
+                extra={"thread_id": thread_id}
+            )
+        elif payload_present and isinstance(payload_obj, dict):
+            for raw_call in (payload_obj.get("tool_calls") or []):
+                if isinstance(raw_call, dict):
+                    raw_tool = raw_call.get("tool")
+                    if isinstance(raw_tool, str) and raw_tool not in supported_tools_v1:
+                        logger.warning(
+                            "[MEDIA TOOLING] blocked_tool_payload_reason=unsupported_tool",
+                            extra={"thread_id": thread_id, "tool": raw_tool}
+                        )
+
+        if payload_present and not media_permissions.media_tool_calls_allowed:
+            logger.info(
+                "[MEDIA TOOLING] blocked_tool_payload_reason=media_not_allowed",
+                extra={
+                    "thread_id": thread_id,
+                    "requested_media_type": media_permissions.requested_media_type,
+                    "is_iteration_request": media_permissions.is_iteration_request,
+                }
+            )
+        elif validated_tool_calls:
+            explicit_candidates = []
+            if media_permissions.requested_media_type == "image":
+                explicit_candidates = ["image.generate"]
+            elif media_permissions.requested_media_type == "video":
+                explicit_candidates = ["video.generate"]
+            elif media_permissions.requested_media_type == "either":
+                explicit_candidates = ["image.generate", "video.generate"]
+
+            for call in validated_tool_calls:
+                if call.tool not in media_permissions.allowed_tools_final:
+                    logger.info(
+                        "[MEDIA TOOLING] blocked_tool_payload_reason=tool_not_allowed",
+                        extra={
+                            "thread_id": thread_id,
+                            "tool": call.tool,
+                            "allowed_tools_final": media_permissions.allowed_tools_final,
+                        }
+                    )
+                    continue
+
+                media_kind = "image" if call.tool == "image.generate" else "video"
+                is_explicit = bool(
+                    media_permissions.explicit_allowed and call.tool in explicit_candidates
+                )
+                classification = "explicit_request" if is_explicit else "proactive_offer"
+
+                if not is_explicit:
+                    min_conf = (
+                        effective_policy.image_min_confidence
+                        if media_kind == "image"
+                        else effective_policy.video_min_confidence
+                    )
+                    if call.confidence < min_conf:
+                        logger.info(
+                            "[MEDIA TOOLING] Suppressed proactive payload below confidence threshold",
+                            extra={
+                                "thread_id": thread_id,
+                                "tool": call.tool,
+                                "confidence": call.confidence,
+                                "min_confidence": min_conf,
+                            }
+                        )
+                        continue
+                    if not is_offer_allowed(
+                        media_kind=media_kind,
+                        policy=effective_policy,
+                        conversation=conversation,
+                        source=source,
+                        current_message_count=current_message_count,
+                    ):
+                        logger.info(
+                            "[MEDIA TOOLING] Suppressed proactive payload due to offer policy gate",
+                            extra={
+                                "thread_id": thread_id,
+                                "tool": call.tool,
+                                "media_kind": media_kind,
+                                "source": source,
+                            }
+                        )
+                        continue
+                    record_offer(conversation, media_kind, current_message_count)
+                    db.commit()
+
+                needs_confirmation = True
+                if is_explicit:
+                    needs_confirmation = (
+                        conversation.image_confirmation_disabled != "true"
+                        if media_kind == "image"
+                        else conversation.video_confirmation_disabled != "true"
+                    )
+
+                pending_tool_calls.append(
+                    PendingToolCall(
+                        id=call.id,
+                        tool=call.tool,
+                        requires_approval=call.requires_approval,
+                        args={"prompt": call.prompt},
+                        classification=classification,
+                        needs_confirmation=needs_confirmation,
+                    )
+                )
         
         media_prefix = _media_interpretation_prefix(
             character_name=character.name,
@@ -4301,7 +4620,7 @@ async def send_message(
                     "parse_error": parsed.parse_error,
                     "had_untagged": parsed.had_untagged,
                     "template": template,
-                    "raw_response": response.content
+                    "raw_response": raw_response_content
                 }
             }
         )
@@ -4452,10 +4771,7 @@ async def send_message(
         response_data = ChatInThreadResponse(
             user_message=MessageResponse.from_orm(user_message, db_session=db),
             assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
-            image_request_detected=image_request_detected,
-            image_prompt_preview=image_prompt_preview,
-            video_request_detected=video_request_detected,
-            video_prompt_preview=video_prompt_preview,
+            pending_tool_calls=pending_tool_calls,
             conversation_title_updated=updated_title
         )
         
@@ -4931,6 +5247,16 @@ async def send_message_stream(
     except Exception as e:
         logger.warning(f"[SEMANTIC INTENT - STREAM] Detection failed: {e}")
         # Non-fatal: continue without intent detection
+
+    media_cfg = getattr(app_state["system_config"], "media_tooling", None)
+    explicit_image_threshold = media_cfg.explicit_min_confidence_image if media_cfg else 0.5
+    explicit_video_threshold = media_cfg.explicit_min_confidence_video if media_cfg else 0.45
+    turn_signals = classify_media_turn(
+        message=request.message,
+        semantic_intents=semantic_intents,
+        explicit_image_threshold=explicit_image_threshold,
+        explicit_video_threshold=explicit_video_threshold,
+    )
     
     # Phase 7.5: LEGACY - Fast keyword-based intent detection (DISABLED)
     # TODO: Remove this entire block once semantic intent detection is proven stable
@@ -4953,8 +5279,10 @@ async def send_message_stream(
     image_prompt_preview = None
     orchestrator = app_state.get("image_orchestrator")
     
+    # NOTE: Legacy interception path intentionally retained (disabled) for
+    # potential reactivation during media-flow iteration work.
     # Use semantic intent detection instead of keyword detection
-    if orchestrator and character.image_generation.enabled and semantic_has_image:
+    if False and orchestrator and character.image_generation.enabled and semantic_has_image:
         # Note: Workflow config is fetched from database and used directly by orchestrator
         # (Not stored on character config object anymore - Phase 5 change)
         
@@ -5027,7 +5355,7 @@ async def send_message_stream(
     video_orchestrator = app_state.get("video_orchestrator")
     
     # Use semantic intent detection (keyword detection disabled - see LEGACY block above)
-    if video_orchestrator and semantic_has_video:
+    if False and video_orchestrator and semantic_has_video:
         # Check if character has video generation enabled
         video_config = getattr(character, 'video_generation', None)
         if video_config and video_config.enabled:
@@ -5112,6 +5440,38 @@ async def send_message_stream(
             except Exception as e:
                 logger.error(f"Failed to generate video prompt: {e}", exc_info=True)
     
+    effective_policy = resolve_effective_offer_policy(app_state["system_config"], character)
+    current_message_count = msg_repo.count_thread_messages(thread_id)
+    source = request.conversation_source or conversation.source or "web"
+    preferred_iteration_media_type = _infer_last_generated_media_type(db, conversation.id)
+    media_permissions = compute_turn_media_permissions(
+        turn_signals=turn_signals,
+        policy=effective_policy,
+        conversation=conversation,
+        source=source,
+        current_message_count=current_message_count,
+        image_generation_enabled=bool(character.image_generation and character.image_generation.enabled),
+        video_generation_enabled=bool(getattr(character, "video_generation", None) and character.video_generation.enabled),
+        preferred_iteration_media_type=preferred_iteration_media_type,
+    )
+    logger.info(
+        "[MEDIA TOOLING] Turn permissions (stream)",
+        extra={
+            "thread_id": thread_id,
+            "source": source,
+            "preferred_iteration_media_type": preferred_iteration_media_type,
+            "requested_media_type": media_permissions.requested_media_type,
+            "is_iteration_request": media_permissions.is_iteration_request,
+            "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+            "explicit_allowed": media_permissions.explicit_allowed,
+            "offer_allowed": media_permissions.offer_allowed,
+            "cooldown_active": media_permissions.cooldown_active,
+            "media_offer_allowed_this_turn": media_permissions.media_offer_allowed_this_turn,
+            "allowed_tools_input": media_permissions.allowed_tools_input,
+            "allowed_tools_final": media_permissions.allowed_tools_final,
+        }
+    )
+
     # Use PromptAssemblyService for memory-aware prompt building
     try:
         # CRITICAL: Expire session cache to ensure we see the just-created user message
@@ -5150,7 +5510,15 @@ async def send_message_stream(
             primary_user=request.primary_user,
             conversation_source=request.conversation_source or 'web',
             conversation_id=conversation.id,
-            include_conversation_context=True
+            include_conversation_context=True,
+            allowed_media_tools=set(media_permissions.allowed_tools_final),
+            allow_proactive_media_offers=any(media_permissions.media_offer_allowed_this_turn.values()),
+            media_gate_context={
+                "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+                "allowed_tools": media_permissions.allowed_tools_final,
+                "requested_media_type": media_permissions.requested_media_type,
+                "is_iteration_request": media_permissions.is_iteration_request,
+            },
         )
         
         # Format for LLM API
@@ -5220,6 +5588,8 @@ async def send_message_stream(
         
         try:
             full_content = ""
+            full_raw_content = ""
+            payload_started = False
             
             # Send user message first (Task 1.9: include attachments if present)
             user_msg_data = {
@@ -5231,14 +5601,6 @@ async def send_message_stream(
                 user_msg_data['attachments'] = user_message_attachments
             yield f"data: {json.dumps(user_msg_data)}\n\n"
             
-            # Send image detection info if found
-            if image_request_detected and image_prompt_preview:
-                yield f"data: {json.dumps({'type': 'image_request', 'image_info': image_prompt_preview})}\n\n"
-            
-            # Send video detection info if found
-            if video_request_detected and video_prompt_preview:
-                yield f"data: {json.dumps({'type': 'video_request', 'video_info': video_prompt_preview})}\n\n"
-            
             # Stream assistant response
             async for chunk in llm_client.stream_with_history(
                 messages=messages,
@@ -5246,15 +5608,72 @@ async def send_message_stream(
                 max_tokens=max_tokens,
                 model=model
             ):
-                # Strip any image tags (markdown or HTML) if this is an image generation request
-                # LLM sometimes adds them despite instructions not to
-                if image_request_detected:
-                    chunk = _strip_image_tags(chunk)
-                
-                full_content += chunk
-                yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-            
+                full_raw_content += chunk
+
+                # Never stream tool payload sentinel blocks to clients.
+                visible_chunk = chunk
+                if not payload_started:
+                    begin_idx = visible_chunk.find("---CHORUS_TOOL_PAYLOAD_BEGIN---")
+                    if begin_idx != -1:
+                        visible_chunk = visible_chunk[:begin_idx]
+                        payload_started = True
+                else:
+                    visible_chunk = ""
+
+                if visible_chunk:
+                    full_content += visible_chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': visible_chunk})}\n\n"
+
             # Normalize structured response and apply citations/media prefix
+            extracted = extract_tool_payload(full_raw_content)
+            payload_obj = parse_tool_payload(extracted.payload_text)
+            validated_tool_calls = validate_tool_payload(payload_obj)
+            allowed_tools_set = set(media_permissions.allowed_tools_final)
+            requires_explicit_payload = bool(
+                media_permissions.media_tool_calls_allowed
+                and (media_permissions.explicit_allowed or media_permissions.is_iteration_request)
+            )
+            if requires_explicit_payload and _count_allowed_tool_calls(validated_tool_calls, allowed_tools_set) == 0:
+                logger.info(
+                    "[MEDIA TOOLING] retry_payload_repair_attempted",
+                    extra={
+                        "thread_id": thread_id,
+                        "stream": True,
+                        "requested_media_type": media_permissions.requested_media_type,
+                        "is_iteration_request": media_permissions.is_iteration_request,
+                    },
+                )
+                repaired_raw, repaired_extracted, repaired_payload_obj, repaired_validated = await _attempt_media_payload_repair(
+                    llm_client=llm_client,
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    raw_response_content=full_raw_content,
+                    allowed_tools=media_permissions.allowed_tools_final,
+                    requested_media_type=media_permissions.requested_media_type,
+                    is_iteration_request=media_permissions.is_iteration_request,
+                )
+                if _count_allowed_tool_calls(repaired_validated, allowed_tools_set) > 0:
+                    logger.info(
+                        "[MEDIA TOOLING] retry_payload_repair_succeeded",
+                        extra={"thread_id": thread_id, "stream": True},
+                    )
+                    full_raw_content = repaired_raw
+                    extracted = repaired_extracted
+                    payload_obj = repaired_payload_obj
+                    validated_tool_calls = repaired_validated
+                else:
+                    logger.warning(
+                        "[MEDIA TOOLING] retry_payload_repair_failed",
+                        extra={"thread_id": thread_id, "stream": True},
+                    )
+                    logger.warning(
+                        "[MEDIA TOOLING] blocked_tool_payload_reason="
+                        + ("iteration_request_missing_tool_payload" if media_permissions.is_iteration_request else "explicit_request_missing_tool_payload"),
+                        extra={"thread_id": thread_id, "stream": True},
+                    )
+
             media_prefix = _media_interpretation_prefix(
                 character_name=character_name,
                 image_request_detected=image_request_detected,
@@ -5264,7 +5683,7 @@ async def send_message_stream(
             template = _get_effective_template(character_config_for_stream)
             allowed_channels, required_channels = template_rules(template)
             parsed = parse_structured_response(
-                full_content,
+                extracted.display_text,
                 allowed_channels=allowed_channels,
                 required_channels=required_channels
             )
@@ -5316,7 +5735,7 @@ async def send_message_stream(
                             "parse_error": parsed.parse_error,
                             "had_untagged": parsed.had_untagged,
                             "template": template,
-                            "raw_response": full_content
+                            "raw_response": full_raw_content
                         }
                     }
                 )
@@ -5324,6 +5743,126 @@ async def send_message_stream(
                 
                 # Capture assistant message ID before closing session
                 assistant_message_id = assistant_message.id
+
+                pending_tool_calls: List[PendingToolCall] = []
+                payload_present = extracted.payload_text is not None
+                supported_tools_v1 = {"image.generate", "video.generate"}
+                if payload_present and payload_obj is None:
+                    logger.warning(
+                        "[MEDIA TOOLING] blocked_tool_payload_reason=malformed_payload",
+                        extra={"thread_id": thread_id, "stream": True}
+                    )
+                elif payload_present and isinstance(payload_obj, dict):
+                    for raw_call in (payload_obj.get("tool_calls") or []):
+                        if isinstance(raw_call, dict):
+                            raw_tool = raw_call.get("tool")
+                            if isinstance(raw_tool, str) and raw_tool not in supported_tools_v1:
+                                logger.warning(
+                                    "[MEDIA TOOLING] blocked_tool_payload_reason=unsupported_tool",
+                                    extra={"thread_id": thread_id, "tool": raw_tool, "stream": True}
+                                )
+
+                if payload_present and not media_permissions.media_tool_calls_allowed:
+                    logger.info(
+                        "[MEDIA TOOLING] blocked_tool_payload_reason=media_not_allowed",
+                        extra={
+                            "thread_id": thread_id,
+                            "requested_media_type": media_permissions.requested_media_type,
+                            "is_iteration_request": media_permissions.is_iteration_request,
+                            "stream": True,
+                        }
+                    )
+                elif validated_tool_calls:
+                    stream_conv_repo = ConversationRepository(stream_db)
+                    stream_conversation = stream_conv_repo.get_by_id(conversation_id_for_stream)
+                    if stream_conversation:
+                        current_message_count = stream_msg_repo.count_thread_messages(thread_id)
+                        source = conversation_source_for_stream or "web"
+                        explicit_candidates = []
+                        if media_permissions.requested_media_type == "image":
+                            explicit_candidates = ["image.generate"]
+                        elif media_permissions.requested_media_type == "video":
+                            explicit_candidates = ["video.generate"]
+                        elif media_permissions.requested_media_type == "either":
+                            explicit_candidates = ["image.generate", "video.generate"]
+
+                        for call in validated_tool_calls:
+                            if call.tool not in media_permissions.allowed_tools_final:
+                                logger.info(
+                                    "[MEDIA TOOLING] blocked_tool_payload_reason=tool_not_allowed",
+                                    extra={
+                                        "thread_id": thread_id,
+                                        "tool": call.tool,
+                                        "allowed_tools_final": media_permissions.allowed_tools_final,
+                                        "stream": True,
+                                    }
+                                )
+                                continue
+
+                            media_kind = "image" if call.tool == "image.generate" else "video"
+                            is_explicit = bool(
+                                media_permissions.explicit_allowed and call.tool in explicit_candidates
+                            )
+                            classification = "explicit_request" if is_explicit else "proactive_offer"
+
+                            if not is_explicit:
+                                min_conf = (
+                                    effective_policy.image_min_confidence
+                                    if media_kind == "image"
+                                    else effective_policy.video_min_confidence
+                                )
+                                if call.confidence < min_conf:
+                                    logger.info(
+                                        "[MEDIA TOOLING] Suppressed proactive payload below confidence threshold (stream)",
+                                        extra={
+                                            "thread_id": thread_id,
+                                            "tool": call.tool,
+                                            "confidence": call.confidence,
+                                            "min_confidence": min_conf,
+                                        }
+                                    )
+                                    continue
+                                if not is_offer_allowed(
+                                    media_kind=media_kind,
+                                    policy=effective_policy,
+                                    conversation=stream_conversation,
+                                    source=source,
+                                    current_message_count=current_message_count,
+                                ):
+                                    logger.info(
+                                        "[MEDIA TOOLING] Suppressed proactive payload due to offer policy gate (stream)",
+                                        extra={
+                                            "thread_id": thread_id,
+                                            "tool": call.tool,
+                                            "media_kind": media_kind,
+                                            "source": source,
+                                        }
+                                    )
+                                    continue
+                                record_offer(stream_conversation, media_kind, current_message_count)
+                                stream_db.commit()
+
+                            needs_confirmation = True
+                            if is_explicit:
+                                needs_confirmation = (
+                                    stream_conversation.image_confirmation_disabled != "true"
+                                    if media_kind == "image"
+                                    else stream_conversation.video_confirmation_disabled != "true"
+                                )
+
+                            pending_tool_calls.append(
+                                PendingToolCall(
+                                    id=call.id,
+                                    tool=call.tool,
+                                    requires_approval=call.requires_approval,
+                                    args={"prompt": call.prompt},
+                                    classification=classification,
+                                    needs_confirmation=needs_confirmation,
+                                )
+                            )
+
+                if pending_tool_calls:
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'tool_calls': [c.model_dump() for c in pending_tool_calls]})}\n\n"
                 
                 # No per-message memory extraction (handled by analysis cycles)
                     
@@ -6433,6 +6972,49 @@ async def get_conversation_privacy(
     return {
         "conversation_id": conversation_id,
         "is_private": is_private
+    }
+
+
+@app.get("/conversations/{conversation_id}/media-offers")
+async def get_conversation_media_offers(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get conversation-level proactive media offer settings."""
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {
+        "conversation_id": conversation_id,
+        "allow_image_offers": conversation.allow_image_offers == "true",
+        "allow_video_offers": conversation.allow_video_offers == "true",
+    }
+
+
+@app.patch("/conversations/{conversation_id}/media-offers")
+async def update_conversation_media_offers(
+    conversation_id: str,
+    request: ConversationMediaOffersUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """Update conversation-level proactive media offer settings."""
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if request.allow_image_offers is not None:
+        conversation.allow_image_offers = "true" if request.allow_image_offers else "false"
+    if request.allow_video_offers is not None:
+        conversation.allow_video_offers = "true" if request.allow_video_offers else "false"
+    db.commit()
+
+    return {
+        "conversation_id": conversation_id,
+        "allow_image_offers": conversation.allow_image_offers == "true",
+        "allow_video_offers": conversation.allow_video_offers == "true",
     }
 
 

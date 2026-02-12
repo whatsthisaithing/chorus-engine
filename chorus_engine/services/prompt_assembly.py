@@ -230,6 +230,9 @@ class PromptAssemblyService:
         conversation_source: Optional[str] = None,
         conversation_id: Optional[str] = None,
         include_conversation_context: bool = True,
+        allowed_media_tools: Optional[set[str]] = None,
+        allow_proactive_media_offers: Optional[bool] = None,
+        media_gate_context: Optional[dict] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -248,6 +251,7 @@ class PromptAssemblyService:
             conversation_source: Platform source ('web', 'discord', 'slack', etc.)
             conversation_id: Current conversation ID (for excluding from context search)
             include_conversation_context: Whether to include relevant past conversation summaries
+            allowed_media_tools: Optional per-turn allowed tool names for payload contract injection
         
         Returns:
             PromptComponents with assembled prompt and token breakdown
@@ -261,7 +265,10 @@ class PromptAssemblyService:
             character_config,
             primary_user=primary_user,
             conversation_source=conversation_source,
-            include_chatbot_guidance=not media_interpretation
+            include_chatbot_guidance=not media_interpretation,
+            allowed_media_tools=allowed_media_tools,
+            allow_proactive_media_offers=allow_proactive_media_offers,
+            media_gate_context=media_gate_context,
         )
         
         # Inject identity/time headers before other system prompt additions
@@ -530,7 +537,10 @@ class PromptAssemblyService:
         video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
         conversation_source: Optional[str] = None,
-        include_conversation_context: bool = True
+        include_conversation_context: bool = True,
+        allowed_media_tools: Optional[set[str]] = None,
+        allow_proactive_media_offers: Optional[bool] = None,
+        media_gate_context: Optional[dict] = None
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -565,7 +575,10 @@ class PromptAssemblyService:
                 memory_query=memory_query,
                 image_prompt_context=image_prompt_context,
                 conversation_id=conversation_id,
-                include_conversation_context=include_conversation_context
+                include_conversation_context=include_conversation_context,
+                allowed_media_tools=allowed_media_tools,
+                allow_proactive_media_offers=allow_proactive_media_offers,
+                media_gate_context=media_gate_context,
             )
         
         # Check if summarization needed
@@ -581,7 +594,10 @@ class PromptAssemblyService:
                 image_prompt_context=image_prompt_context,
                 document_context=document_context,
                 conversation_id=conversation_id,
-                include_conversation_context=include_conversation_context
+                include_conversation_context=include_conversation_context,
+                allowed_media_tools=allowed_media_tools,
+                allow_proactive_media_offers=allow_proactive_media_offers,
+                media_gate_context=media_gate_context,
             )
         
         # Long conversation - apply selective preservation
@@ -598,7 +614,10 @@ class PromptAssemblyService:
             character_config,
             primary_user=primary_user,
             conversation_source=conversation_source,
-            include_chatbot_guidance=not media_interpretation
+            include_chatbot_guidance=not media_interpretation,
+            allowed_media_tools=allowed_media_tools,
+            allow_proactive_media_offers=allow_proactive_media_offers,
+            media_gate_context=media_gate_context,
         )
         
         # Inject identity/time headers before other system prompt additions

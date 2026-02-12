@@ -279,31 +279,47 @@ class ChorusBot(commands.Bot):
                     await message.channel.send("*[No response generated]*")
                     return
                 
-                # Phase 4, Task 4.6: Check for image generation preview
-                # If confirmation is disabled, trigger generation immediately
-                image_prompt_preview = response.get('image_prompt_preview')
-                if image_prompt_preview and not image_prompt_preview.get('needs_confirmation', True):
-                    logger.info(f"Image preview detected, triggering generation (confirmation disabled)")
+                # New tool payload flow: execute only explicit requests when confirmation is not required.
+                pending_tool_calls = response.get('pending_tool_calls') or []
+                for tool_call in pending_tool_calls:
+                    if tool_call.get('classification') != 'explicit_request':
+                        # Proactive offers are disabled for Discord in v1.
+                        continue
+                    if tool_call.get('needs_confirmation', True):
+                        continue
+
+                    tool = tool_call.get('tool')
+                    prompt = (tool_call.get('args') or {}).get('prompt')
+                    if not prompt:
+                        continue
+
                     try:
-                        # Trigger image generation using the preview prompt
-                        image_result = await self.chorus_client.confirm_and_generate_image(
-                            thread_id=thread_id,
-                            prompt=image_prompt_preview['prompt'],
-                            negative_prompt=image_prompt_preview.get('negative_prompt', ''),
-                            disable_future_confirmations=False  # Already disabled
-                        )
-                        
-                        if image_result and image_result.get('success'):
-                            logger.info(f"Image generated successfully: {image_result.get('image_id')}")
-                            # Update assistant_message with image metadata for download
-                            if 'metadata' not in assistant_message:
-                                assistant_message['metadata'] = {}
-                            assistant_message['metadata']['image_path'] = image_result.get('file_path', '').replace('data/', '/')
-                            assistant_message['metadata']['image_id'] = image_result.get('image_id')
-                        else:
-                            logger.warning(f"Image generation failed: {image_result.get('error') if image_result else 'Unknown error'}")
+                        if tool == 'image.generate':
+                            image_result = await self.chorus_client.confirm_and_generate_image(
+                                thread_id=thread_id,
+                                prompt=prompt,
+                                negative_prompt='',
+                                disable_future_confirmations=False
+                            )
+                            if image_result and image_result.get('success'):
+                                if 'metadata' not in assistant_message:
+                                    assistant_message['metadata'] = {}
+                                assistant_message['metadata']['image_path'] = image_result.get('file_path', '').replace('data/', '/')
+                                assistant_message['metadata']['image_id'] = image_result.get('image_id')
+                        elif tool == 'video.generate':
+                            video_result = await self.chorus_client.confirm_and_generate_video(
+                                thread_id=thread_id,
+                                prompt=prompt,
+                                negative_prompt='',
+                                disable_future_confirmations=False
+                            )
+                            if video_result and video_result.get('success'):
+                                if 'metadata' not in assistant_message:
+                                    assistant_message['metadata'] = {}
+                                assistant_message['metadata']['video_path'] = video_result.get('file_path', '').replace('data/', '/')
+                                assistant_message['metadata']['video_id'] = video_result.get('video_id')
                     except Exception as e:
-                        logger.error(f"Failed to generate image: {e}")
+                        logger.error(f"Failed to execute pending tool call ({tool}): {e}")
                 
                 # Check for image in assistant message metadata (Phase 4, Task 4.6)
                 image_file = await self._download_image_if_present(assistant_message)

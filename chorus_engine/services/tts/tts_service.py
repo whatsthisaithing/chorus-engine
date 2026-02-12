@@ -13,6 +13,7 @@ from .provider_factory import TTSProviderFactory
 from .base_provider import TTSRequest, TTSResult
 from ..audio_preprocessing import AudioPreprocessingService
 from ..structured_response import parse_structured_response, to_plain_text
+from ..tool_payload import extract_tool_payload
 from ...config.models import CharacterConfig
 from ...repositories.voice_sample_repository import VoiceSampleRepository
 from ...repositories.workflow_repository import WorkflowRepository
@@ -60,6 +61,7 @@ class TTSService:
         """
         # Step 1: Extract structured text for TTS if applicable
         text_for_tts = text or ""
+        text_for_tts = extract_tool_payload(text_for_tts).display_text
         include_physical = False
         if self.system_config and hasattr(self.system_config, "tts"):
             include_physical = getattr(self.system_config.tts, "include_physicalaction", False)

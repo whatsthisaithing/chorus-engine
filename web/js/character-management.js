@@ -500,6 +500,33 @@ window.CharacterManagement = {
         
         document.getElementById('charImageGenEnabled').checked = Boolean(imageGen.enabled);
         document.getElementById('charVideoGenEnabled').checked = Boolean(videoGen.enabled);
+        const proactiveOffers = character.proactive_offers || {};
+        const imageOffers = proactiveOffers.image || {};
+        const videoOffers = proactiveOffers.video || {};
+        document.getElementById('charImageOfferEnabledMode').value =
+            imageOffers.enabled === true ? 'on' : (imageOffers.enabled === false ? 'off' : 'inherit');
+        document.getElementById('charVideoOfferEnabledMode').value =
+            videoOffers.enabled === true ? 'on' : (videoOffers.enabled === false ? 'off' : 'inherit');
+        document.getElementById('charImageOfferMinConfidence').value =
+            imageOffers.min_confidence !== undefined && imageOffers.min_confidence !== null
+                ? imageOffers.min_confidence
+                : '';
+        document.getElementById('charVideoOfferMinConfidence').value =
+            videoOffers.min_confidence !== undefined && videoOffers.min_confidence !== null
+                ? videoOffers.min_confidence
+                : '';
+        document.getElementById('charOfferCooldownMinutes').value =
+            proactiveOffers.offer_cooldown_minutes !== undefined && proactiveOffers.offer_cooldown_minutes !== null
+                ? proactiveOffers.offer_cooldown_minutes
+                : '';
+        document.getElementById('charOfferMinTurnGap').value =
+            proactiveOffers.offer_min_turn_gap !== undefined && proactiveOffers.offer_min_turn_gap !== null
+                ? proactiveOffers.offer_min_turn_gap
+                : '';
+        document.getElementById('charOfferMaxPerConversation').value =
+            proactiveOffers.max_offers_per_conversation_per_media !== undefined && proactiveOffers.max_offers_per_conversation_per_media !== null
+                ? proactiveOffers.max_offers_per_conversation_per_media
+                : '';
         document.getElementById('charDocAnalysisEnabled').checked = Boolean(docAnalysis.enabled);
         document.getElementById('charDocMaxDocuments').value = docAnalysis.max_documents || '';
         document.getElementById('charDocAllowedTypes').value = docAnalysis.allowed_document_types ? docAnalysis.allowed_document_types.join(', ') : '';
@@ -657,6 +684,13 @@ window.CharacterManagement = {
         document.getElementById('charCodeMaxTime').value = '30';
         document.getElementById('charTtsChatterboxTemp').value = '0.8';
         document.getElementById('charTtsChatterboxChunkThreshold').value = '200';
+        document.getElementById('charImageOfferEnabledMode').value = 'inherit';
+        document.getElementById('charVideoOfferEnabledMode').value = 'inherit';
+        document.getElementById('charImageOfferMinConfidence').value = '';
+        document.getElementById('charVideoOfferMinConfidence').value = '';
+        document.getElementById('charOfferCooldownMinutes').value = '';
+        document.getElementById('charOfferMinTurnGap').value = '';
+        document.getElementById('charOfferMaxPerConversation').value = '';
         
         // User identity defaults
         document.getElementById('charUserIdentityMode').value = 'canonical';
@@ -756,6 +790,10 @@ window.CharacterManagement = {
             video_generation: {
                 enabled: document.getElementById('charVideoGenEnabled').checked
             },
+            proactive_offers: {
+                image: {},
+                video: {}
+            },
             document_analysis: {
                 enabled: document.getElementById('charDocAnalysisEnabled').checked
             },
@@ -763,6 +801,45 @@ window.CharacterManagement = {
                 enabled: document.getElementById('charCodeExecEnabled').checked
             }
         };
+
+        // Proactive offer overrides (nullable -> inherit system defaults)
+        const imageOfferMode = document.getElementById('charImageOfferEnabledMode').value;
+        if (imageOfferMode === 'on') characterData.proactive_offers.image.enabled = true;
+        if (imageOfferMode === 'off') characterData.proactive_offers.image.enabled = false;
+        const videoOfferMode = document.getElementById('charVideoOfferEnabledMode').value;
+        if (videoOfferMode === 'on') characterData.proactive_offers.video.enabled = true;
+        if (videoOfferMode === 'off') characterData.proactive_offers.video.enabled = false;
+
+        const imageOfferMinConfidence = document.getElementById('charImageOfferMinConfidence').value.trim();
+        if (imageOfferMinConfidence) {
+            characterData.proactive_offers.image.min_confidence = parseFloat(imageOfferMinConfidence);
+        }
+        const videoOfferMinConfidence = document.getElementById('charVideoOfferMinConfidence').value.trim();
+        if (videoOfferMinConfidence) {
+            characterData.proactive_offers.video.min_confidence = parseFloat(videoOfferMinConfidence);
+        }
+
+        const offerCooldown = document.getElementById('charOfferCooldownMinutes').value.trim();
+        if (offerCooldown) {
+            characterData.proactive_offers.offer_cooldown_minutes = parseInt(offerCooldown);
+        }
+        const offerTurnGap = document.getElementById('charOfferMinTurnGap').value.trim();
+        if (offerTurnGap) {
+            characterData.proactive_offers.offer_min_turn_gap = parseInt(offerTurnGap);
+        }
+        const offerMax = document.getElementById('charOfferMaxPerConversation').value.trim();
+        if (offerMax) {
+            characterData.proactive_offers.max_offers_per_conversation_per_media = parseInt(offerMax);
+        }
+        if (
+            Object.keys(characterData.proactive_offers.image).length === 0 &&
+            Object.keys(characterData.proactive_offers.video).length === 0 &&
+            characterData.proactive_offers.offer_cooldown_minutes === undefined &&
+            characterData.proactive_offers.offer_min_turn_gap === undefined &&
+            characterData.proactive_offers.max_offers_per_conversation_per_media === undefined
+        ) {
+            delete characterData.proactive_offers;
+        }
         
         // Profile image
         const profileImage = document.getElementById('charProfileImage').value.trim();

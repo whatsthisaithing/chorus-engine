@@ -176,6 +176,17 @@ class API {
             body: JSON.stringify({ is_private: isPrivate }),
         });
     }
+
+    static async getConversationMediaOffers(conversationId) {
+        return this.request(`/conversations/${conversationId}/media-offers`);
+    }
+
+    static async updateConversationMediaOffers(conversationId, updates) {
+        return this.request(`/conversations/${conversationId}/media-offers`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        });
+    }
     
     static async exportConversation(conversationId, format = 'markdown', includeMetadata = true, includeSummary = true, includeMemories = false) {
         // Build query parameters
@@ -358,15 +369,9 @@ class API {
                                 }
                             } else if (data.type === 'content') {
                                 onChunk(data.content);
-                            } else if (data.type === 'image_request') {
-                                // Store image info for later processing
-                                if (onChunk.imageCallback) {
-                                    onChunk.imageCallback(data.image_info);
-                                }
-                            } else if (data.type === 'video_request') {
-                                // Store video info for later processing
-                                if (onChunk.videoCallback) {
-                                    onChunk.videoCallback(data.video_info);
+                            } else if (data.type === 'tool_calls') {
+                                if (onChunk.toolCallsCallback) {
+                                    onChunk.toolCallsCallback(data.tool_calls || []);
                                 }
                             } else if (data.type === 'title_updated') {
                                 // New title was auto-generated

@@ -78,6 +78,16 @@ class Conversation(Base):
     
     # Video generation confirmation preference
     video_confirmation_disabled = Column(String(10), nullable=False, default="false")  # "true" or "false"
+
+    # Proactive offer controls (conversation-level)
+    allow_image_offers = Column(String(10), nullable=False, default="true")
+    allow_video_offers = Column(String(10), nullable=False, default="true")
+    last_image_offer_at = Column(DateTime, nullable=True, default=None)
+    last_video_offer_at = Column(DateTime, nullable=True, default=None)
+    last_image_offer_message_count = Column(Integer, nullable=True, default=None)
+    last_video_offer_message_count = Column(Integer, nullable=True, default=None)
+    image_offer_count = Column(Integer, nullable=False, default=0)
+    video_offer_count = Column(Integer, nullable=False, default=0)
     
     # Phase 6: TTS enabled for this conversation (NULL = use character default, 0 = off, 1 = on)
     tts_enabled = Column(Integer, nullable=True, default=None)

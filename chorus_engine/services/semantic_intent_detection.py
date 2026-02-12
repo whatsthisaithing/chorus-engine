@@ -47,6 +47,20 @@ INTENT_PROTOTYPES = {
         "send a video of you somewhere unusual, no office setting",
         "If you would, try something REALLY out there. Send another video. Include yourself in the video, but no offices or bland attire. It can be anywhere, anything."
     ],
+    "iterate_media": [
+        "try again but make it more cinematic",
+        "another one with more detail",
+        "same idea different angle",
+        "make it brighter",
+        "tweak the pose",
+        "do one more version",
+        "iterate on that",
+        "can you adjust the lighting",
+        "send another but in a forest setting",
+        "make a variation of that image",
+        "give me another pass on that video",
+        "one more with better framing",
+    ],
     "set_reminder": [
         "remind me to do something",
         "set a reminder for later",
@@ -79,6 +93,7 @@ THRESHOLDS = {
     "set_reminder": 0.50,  # Confirmable action with user review
     "send_image": 0.50,    # Balanced threshold with anchor boost for explicit requests
     "send_video": 0.45,    # Lowered to accommodate sentence-level detection
+    "iterate_media": 0.48,
     "default": 0.50
 }
 
@@ -94,6 +109,13 @@ AMBIGUITY_MARGIN = 0.08
 EXCLUSION_GROUPS = {
     "media_generation": ["send_image", "send_video"]
 }
+
+
+def _in_same_exclusion_group(intent_a: str, intent_b: str) -> bool:
+    for group_intents in EXCLUSION_GROUPS.values():
+        if intent_a in group_intents and intent_b in group_intents:
+            return True
+    return False
 
 
 class SemanticIntentDetector:
@@ -268,7 +290,19 @@ class SemanticIntentDetector:
             # Check for future/hypothetical context
             if any(phrase in message_lower for phrase in future_hypothetical):
                 return -0.15
-        
+
+        if intent_name == "iterate_media":
+            iterate_anchor_words = [
+                "try again", "another", "same idea", "different angle", "make it",
+                "adjust", "tweak", "version", "iterate", "more detail", "brighter",
+                "darker", "lighting",
+            ]
+            if any(phrase in message_lower for phrase in iterate_anchor_words):
+                return 0.05
+            praise_only = ["perfect", "lovely", "nice", "great", "awesome", "beautiful", "that's nice", "love it"]
+            if any(phrase in message_lower for phrase in praise_only):
+                return -0.12
+
         return 0.0
     
     def detect(
@@ -388,28 +422,6 @@ class SemanticIntentDetector:
         Returns:
             List of detected Intent objects
         """
-    def _detect_single(
-        self,
-        message: str,
-        enable_multi_intent: bool = True,
-        debug: bool = False,
-        context: str = ""
-    ) -> List[Intent]:
-        """
-        Detect intents in a single text fragment (sentence or full message).
-        
-        This is the core detection logic, called by detect() for both
-        full messages and individual sentences.
-        
-        Args:
-            message: Text to analyze
-            enable_multi_intent: If True, can detect multiple intents
-            debug: If True, print detailed scoring information
-            context: Description for debug output (e.g., "sentence 1")
-            
-        Returns:
-            List of detected Intent objects
-        """
         if debug and context:
             print(f"\n[DETECT {context.upper()}]")
         
@@ -464,8 +476,10 @@ class SemanticIntentDetector:
         if len(sorted_intents) >= 2:
             best_score = sorted_intents[0][1]
             second_score = sorted_intents[1][1]
+            best_intent = sorted_intents[0][0]
+            second_intent = sorted_intents[1][0]
             
-            if (best_score - second_score) < AMBIGUITY_MARGIN:
+            if (best_score - second_score) < AMBIGUITY_MARGIN and _in_same_exclusion_group(best_intent, second_intent):
                 if debug:
                     print(f"  Ambiguous: {best_score:.3f} vs {second_score:.3f} (margin < {AMBIGUITY_MARGIN})")
                 return []
@@ -492,7 +506,7 @@ class SemanticIntentDetector:
             detected_intents = self._apply_exclusion_groups(detected_intents)
         
         if debug and detected_intents:
-            print(f"  → Detected: {[(i.name, f'{i.confidence:.3f}') for i in detected_intents]}")
+            print(f"  -> Detected: {[(i.name, f'{i.confidence:.3f}') for i in detected_intents]}")
         
         return detected_intents
     

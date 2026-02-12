@@ -71,6 +71,21 @@ comfyui:
   polling_interval_seconds: 2.0
   max_concurrent_jobs: 2
 
+# In-conversation media tooling and proactive offer policy
+media_tooling:
+  enabled: true
+  offers_enabled: true
+  image_offers_enabled: true
+  video_offers_enabled: true
+  explicit_min_confidence_image: 0.50
+  explicit_min_confidence_video: 0.45
+  offer_min_confidence_image: 0.50
+  offer_min_confidence_video: 0.45
+  offer_cooldown_minutes: 30
+  offer_min_turn_gap: 8
+  max_offers_per_conversation_per_media: 2
+  disable_offers_for_sources: [discord]
+
 # TTS (Text-to-Speech) Configuration
 tts:
   default_provider: chatterbox  # Options: chatterbox (embedded, fast) or comfyui (workflow-based)

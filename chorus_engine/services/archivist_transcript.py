@@ -24,6 +24,9 @@ IMAGE_GEN_LINE_PATTERNS = [
     re.compile(r"^The image IS .*generated.*$", re.MULTILINE),
     re.compile(r"^The video IS .*generated.*$", re.MULTILINE),
 ]
+TOOL_PAYLOAD_PATTERN = re.compile(
+    r"---CHORUS_TOOL_PAYLOAD_BEGIN---[\s\S]*?(?:---CHORUS_TOOL_PAYLOAD_END---|\Z)"
+)
 
 
 @dataclass
@@ -84,6 +87,7 @@ def _remove_visual_context(content: str, stats: ArchivistFilterStats) -> str:
 
 
 def _remove_image_gen_blocks(content: str, stats: ArchivistFilterStats) -> str:
+    content = TOOL_PAYLOAD_PATTERN.sub("", content).strip()
     blocks = IMAGE_GEN_BLOCK_PATTERN.findall(content)
     if not blocks:
         return content

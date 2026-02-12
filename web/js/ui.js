@@ -772,6 +772,11 @@ const UI = {
      */
     parseStructuredResponse(text) {
         if (!text) return null;
+        const beginSentinel = '---CHORUS_TOOL_PAYLOAD_BEGIN---';
+        const beginIdx = text.indexOf(beginSentinel);
+        if (beginIdx !== -1) {
+            text = text.slice(0, beginIdx);
+        }
         const allowed = new Set(['speech', 'physicalaction', 'innerthought', 'narration', 'action']);
         const hasAnyTag = /<(speech|physicalaction|innerthought|narration|action)>/i.test(text);
         const hasRoot = text.includes('<assistant_response>');

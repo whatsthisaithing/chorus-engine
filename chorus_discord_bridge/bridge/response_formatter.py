@@ -11,6 +11,7 @@ import logging
 from typing import List, Optional, Tuple
 
 from chorus_engine.services.structured_response import parse_structured_response, to_discord_text
+from chorus_engine.services.tool_payload import extract_tool_payload
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class ResponseFormatter:
         """
         # Clean up the content first
         content = self._clean_response(content)
+        content = extract_tool_payload(content).display_text
         
         # Structured response handling
         if "<assistant_response>" in content:

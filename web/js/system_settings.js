@@ -138,6 +138,21 @@ class SystemSettingsManager {
         document.getElementById('comfyui_polling_interval_seconds').value = config.comfyui.polling_interval_seconds || 2.0;
         document.getElementById('comfyui_max_concurrent_jobs').value = config.comfyui.max_concurrent_jobs || 2;
 
+        // Media Tooling Configuration
+        const mediaTooling = config.media_tooling || {};
+        document.getElementById('media_tooling_enabled').checked = mediaTooling.enabled !== false;
+        document.getElementById('media_tooling_offers_enabled').checked = mediaTooling.offers_enabled !== false;
+        document.getElementById('media_tooling_image_offers_enabled').checked = mediaTooling.image_offers_enabled !== false;
+        document.getElementById('media_tooling_video_offers_enabled').checked = mediaTooling.video_offers_enabled !== false;
+        document.getElementById('media_tooling_explicit_min_confidence_image').value = mediaTooling.explicit_min_confidence_image ?? 0.5;
+        document.getElementById('media_tooling_explicit_min_confidence_video').value = mediaTooling.explicit_min_confidence_video ?? 0.45;
+        document.getElementById('media_tooling_offer_min_confidence_image').value = mediaTooling.offer_min_confidence_image ?? 0.5;
+        document.getElementById('media_tooling_offer_min_confidence_video').value = mediaTooling.offer_min_confidence_video ?? 0.45;
+        document.getElementById('media_tooling_offer_cooldown_minutes').value = mediaTooling.offer_cooldown_minutes ?? 30;
+        document.getElementById('media_tooling_offer_min_turn_gap').value = mediaTooling.offer_min_turn_gap ?? 8;
+        document.getElementById('media_tooling_max_offers_per_conversation_per_media').value = mediaTooling.max_offers_per_conversation_per_media ?? 2;
+        document.getElementById('media_tooling_disable_offers_for_sources').value = (mediaTooling.disable_offers_for_sources || ['discord']).join(', ');
+
         // Document Analysis Configuration
         const docEnabled = config.document_analysis.enabled || false;
         document.getElementById('document_analysis_enabled').checked = docEnabled;
@@ -249,6 +264,23 @@ class SystemSettingsManager {
                 video_timeout_seconds: parseInt(document.getElementById('comfyui_video_timeout_seconds').value),
                 polling_interval_seconds: parseFloat(document.getElementById('comfyui_polling_interval_seconds').value),
                 max_concurrent_jobs: parseInt(document.getElementById('comfyui_max_concurrent_jobs').value)
+            },
+            media_tooling: {
+                enabled: document.getElementById('media_tooling_enabled').checked,
+                offers_enabled: document.getElementById('media_tooling_offers_enabled').checked,
+                image_offers_enabled: document.getElementById('media_tooling_image_offers_enabled').checked,
+                video_offers_enabled: document.getElementById('media_tooling_video_offers_enabled').checked,
+                explicit_min_confidence_image: parseFloat(document.getElementById('media_tooling_explicit_min_confidence_image').value),
+                explicit_min_confidence_video: parseFloat(document.getElementById('media_tooling_explicit_min_confidence_video').value),
+                offer_min_confidence_image: parseFloat(document.getElementById('media_tooling_offer_min_confidence_image').value),
+                offer_min_confidence_video: parseFloat(document.getElementById('media_tooling_offer_min_confidence_video').value),
+                offer_cooldown_minutes: parseInt(document.getElementById('media_tooling_offer_cooldown_minutes').value),
+                offer_min_turn_gap: parseInt(document.getElementById('media_tooling_offer_min_turn_gap').value),
+                max_offers_per_conversation_per_media: parseInt(document.getElementById('media_tooling_max_offers_per_conversation_per_media').value),
+                disable_offers_for_sources: document.getElementById('media_tooling_disable_offers_for_sources').value
+                    .split(',')
+                    .map(v => v.trim())
+                    .filter(v => v.length > 0)
             },
             document_analysis: {
                 enabled: document.getElementById('document_analysis_enabled').checked,

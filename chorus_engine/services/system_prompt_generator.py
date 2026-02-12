@@ -23,7 +23,10 @@ class SystemPromptGenerator:
         include_notice: bool = True,
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
-        include_chatbot_guidance: bool = True
+        include_chatbot_guidance: bool = True,
+        allowed_media_tools: Optional[set[str]] = None,
+        allow_proactive_media_offers: Optional[bool] = None,
+        media_gate_context: Optional[dict] = None,
     ) -> str:
         """
         Generate the complete system prompt for a character.
@@ -94,9 +97,22 @@ class SystemPromptGenerator:
             if disclaimer_guidance:
                 parts.append(disclaimer_guidance)
         
-        # 5. Add image/media generation guidance if enabled
-        if character.image_generation and character.image_generation.enabled:
-            parts.append(self._generate_media_guidance())
+        # 5. Add media generation guidance if enabled
+        image_enabled = bool(character.image_generation and character.image_generation.enabled)
+        video_enabled = bool(getattr(character, "video_generation", None) and character.video_generation.enabled)
+        if image_enabled or video_enabled:
+            if allowed_media_tools is None:
+                tools_for_contract: set[str] = set()
+                if image_enabled:
+                    tools_for_contract.add("image.generate")
+                if video_enabled:
+                    tools_for_contract.add("video.generate")
+            else:
+                tools_for_contract = set(allowed_media_tools)
+            proactive_offers_allowed = True if allow_proactive_media_offers is None else bool(allow_proactive_media_offers)
+            parts.append(self._generate_media_guidance(tools_for_contract, proactive_offers_allowed, media_gate_context))
+            if tools_for_contract:
+                parts.append(self._generate_tool_payload_contract(tools_for_contract))
         
         # 6. Add structured response contract (always enforced)
         structured_contract = self._generate_structured_response_contract(character)
@@ -335,25 +351,203 @@ class SystemPromptGenerator:
         
         return None
     
-    def _generate_media_guidance(self) -> str:
+    def _generate_media_guidance(
+        self,
+        allowed_tools: set[str],
+        allow_proactive_offers: bool,
+        media_gate_context: Optional[dict] = None,
+    ) -> str:
         """
         Generate guidance about image/media generation.
-        
+
         Tells the character not to generate fake image links or pretend to create media,
         since the system handles this automatically.
-        
+
         Returns:
             Guidance text for media generation
         """
-        return """**Important - Image Generation:**
-- DO NOT generate fake image links, markdown images, or external URLs (like pollinations.ai, imgur, etc.)
-- DO NOT say "Here's the image:" followed by a markdown link
-- DO NOT say "I'm sorry, I can't send photos" or "I cannot send images" or similar AI disclaimers
-- DO NOT refuse image requests - you CAN send images, the system handles generation automatically
-- When asked for an image, respond naturally as if you're creating/sending it
-- Example: "Let me capture that moment for you..." or "Here's what I'm seeing right now..."
-- The system will automatically detect image requests and generate them for you
-- NEVER include actual ![image](url) markdown in your response"""
+        image_allowed = "image.generate" in allowed_tools
+        video_allowed = "video.generate" in allowed_tools
+
+        if image_allowed and video_allowed:
+            media_label = "images and videos"
+            request_line = "You can respond to direct media requests by generating a media prompt."
+            offer_line = "Occasionally you may offer to create an image or video if it enhances the conversation."
+            media_pair = "image/video"
+            media_next_item = "another media item"
+        elif image_allowed:
+            media_label = "images"
+            request_line = "You can respond to direct image requests by generating an image prompt."
+            offer_line = "Occasionally you may offer to create an image if it enhances the conversation."
+            media_pair = "image"
+            media_next_item = "another image"
+        elif video_allowed:
+            media_label = "videos"
+            request_line = "You can respond to direct video requests by generating a video prompt."
+            offer_line = "Occasionally you may offer to create a video if it enhances the conversation."
+            media_pair = "video"
+            media_next_item = "another video"
+        else:
+            media_label = "images and videos"
+            request_line = "Only respond conversationally for this turn; media tool calls are disabled."
+            offer_line = "Do not offer to create media on this turn."
+            media_pair = "image/video"
+            media_next_item = "another media item"
+
+        lines = [
+            "**Character Capabilities:**",
+            f"You can generate {media_label}.",
+            f"{media_label.capitalize()} are created by writing a descriptive prompt for the generation engine.",
+            "",
+            request_line,
+        ]
+
+        if allow_proactive_offers:
+            lines.extend([
+                offer_line,
+                "",
+                "Offers should be low-pressure and natural.",
+                "If the user declines an offer, do not offer again unless explicitly asked.",
+            ])
+        else:
+            lines.append("Only generate media when the user explicitly asks.")
+
+        if media_gate_context:
+            media_allowed_text = "YES" if media_gate_context.get("media_tool_calls_allowed") else "NO"
+            allowed_tools_list = media_gate_context.get("allowed_tools", [])
+            requested_type = media_gate_context.get("requested_media_type", "none")
+            iteration_text = "YES" if media_gate_context.get("is_iteration_request") else "NO"
+            lines.extend([
+                "",
+                "**Media Tooling Runtime Gate (Authoritative):**",
+                f"- MEDIA_TOOL_CALLS_ALLOWED: {media_allowed_text}",
+                f"- ALLOWED_TOOLS: {allowed_tools_list}",
+                f"- REQUESTED_MEDIA_TYPE: {requested_type}",
+                f"- IS_ITERATION_REQUEST: {iteration_text}",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT emit any tool payload.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is not 'none', you MUST emit exactly one valid tool payload.",
+                "- When MEDIA_TOOL_CALLS_ALLOWED is NO:",
+                "  - Do not say \"here's the prompt,\" \"I'll craft a prompt,\" \"prompt for the image/video,\" \"ready to generate,\" \"let me create/craft that visual,\" etc.",
+                "  - Respond as normal conversation: acknowledge + (optional) ask a gentle follow-up question.",
+                "  - When tools are disabled, do not provide prompt-like content at all (no \"enhanced version,\" no long visual spec, no \"imagine...\" block). Keep it conversational.",
+                "- You may only emit tools listed in ALLOWED_TOOLS.",
+                "- If the user message is primarily praise/acknowledgement, respond conversationally and do not emit tool payload.",
+            ])
+
+        lines.extend([
+            "",
+            "**High-Priority Media Turn Rules:**",
+            "- Acknowledgements are NOT media requests.",
+            f"- Do NOT interpret compliments, praise, or approval as a request for another {media_pair}.",
+            "- If the user's message is primarily praise, thanks, approval, or acknowledgement "
+            "(for example: \"Lovely\", \"Perfect\", \"Nice\", \"Wow\", \"I love it\", "
+            "\"That's a lovely photo\"), respond conversationally.",
+            "- In these acknowledgement cases, you must NOT emit a tool call.",
+            "- Do NOT include a media tool payload.",
+            "- No automatic \"next media\" on approval.",
+            f"- After any media tool call, do not generate another tool call unless the user explicitly asks for "
+            f"{media_next_item} or explicitly requests changes or iteration.",
+            "- Short positive replies should never be interpreted as approval to generate new media.",
+            "",
+            "Never claim that media has already been rendered or sent.",
+            "Never describe uploading, attaching, or linking to a file.",
+            "",
+            "**Important - Media Generation:**",
+            "- DO NOT generate fake image or video links.",
+            "- DO NOT include markdown embedding.",
+            "- DO NOT refuse media requests.",
+            "- When generating media, respond naturally as if composing or capturing it.",
+            "- The system handles rendering after approval.",
+            "",
+            "**Prompt Mode Switch (Mandatory When Emitting a Media Tool Call)**",
+            "- When you emit a media tool call:",
+            "- You are writing a generation-optimized prompt, not conversational prose.",
+            "- Do NOT describe feelings or intentions unless they are visually observable.",
+            "- Replace abstract concepts with visible details.",
+            "- Expand short phrases into layered, concrete imagery.",
+            "- Use dense visual specificity.",
+            "- Avoid vague phrases like \"capturing her essence,\" \"beautiful scene,\" \"serene moment,\" etc.",
+            "- Prioritize lighting, composition, materials, and environment.",
+            "- The content inside `args.prompt` should read like a professional art-direction brief.",
+            "",
+            "**Image Prompt Crafting Standards (High Priority)**",
+            "- When generating an image prompt:",
+            "- Write 120-250 words of rich, specific visual description.",
+            "- Include:",
+            "  - Lighting quality (golden hour, soft diffused light, rim lighting, volumetric glow, etc.)",
+            "  - Composition and framing (close-up, wide shot, shallow depth of field, 85mm lens, cinematic framing, etc.)",
+            "  - Textures and materials (linen fabric, misty air, rough stone, polished wood, drifting dust motes, etc.)",
+            "  - Mood and atmosphere (serene, electric, nostalgic, ethereal, grounded, tense, etc.)",
+            "  - Environmental detail (background elements, depth layers, foreground objects)",
+            "- If depicting the character:",
+            "  - Describe appearance, clothing, posture, expression, and surroundings.",
+            "  - Always depict the character at their current age and appearance unless explicitly instructed otherwise.",
+            "- Extract relevant visual details from recent conversation context.",
+            "- Synthesize multiple details if the user references earlier discussion.",
+            "- Avoid generic phrases like \"beautiful scene\" or \"nice lighting.\" Be specific.",
+            "- Use evocative, concrete visual language.",
+            "- You may include artistic style or photography terms when appropriate.",
+            "- Do NOT include trigger words.",
+            "- Do NOT include meta commentary or explanation.",
+            "- More detail produces better results.",
+            "",
+            "**Video Prompt Crafting Standards (High Priority)**",
+            "- When generating a video prompt:",
+            "- Focus on motion, dynamic action, and temporal progression.",
+            "- Describe what moves, shifts, transforms, or unfolds over time.",
+            "- Use present tense and active verbs (flows, swirls, drifts, cascades, orbits, rotates).",
+            "- Include:",
+            "  - Camera movement (pan, dolly, orbit, crane, tracking shot, slow zoom, etc.)",
+            "  - Pacing or timing (slow motion, gradual reveal, smooth transition)",
+            "  - Environmental motion (wind in hair, leaves tumbling, fabric shifting, light flickering)",
+            "- Avoid static descriptions.",
+            "- Do not include dialogue or on-screen text.",
+            "- Keep to ~100-180 words.",
+            "- If depicting the character:",
+            "  - Show current appearance unless explicitly told otherwise.",
+            "- Extract motion-relevant details from conversation context.",
+            "- Motion and change are essential.",
+        ])
+
+        return "\n".join(lines)
+
+    def _generate_tool_payload_contract(self, allowed_tools: set[str]) -> str:
+        supported_tools: list[str] = []
+        if "image.generate" in allowed_tools:
+            supported_tools.append("- image.generate")
+        if "video.generate" in allowed_tools:
+            supported_tools.append("- video.generate")
+        supported_tools_block = "\n".join(supported_tools)
+
+        contract = """**Tool Payload Contract (Mandatory):**
+- If you emit a tool call, place it AFTER </assistant_response>.
+- Use these exact sentinels:
+---CHORUS_TOOL_PAYLOAD_BEGIN---
+{JSON payload}
+---CHORUS_TOOL_PAYLOAD_END---
+- Nothing may appear after ---CHORUS_TOOL_PAYLOAD_END---.
+- Sentinels must match exactly.
+- Do not mention or explain tool JSON in visible prose.
+
+JSON schema (version 1):
+{
+  "version": 1,
+  "tool_calls": [
+    {
+      "id": "unique_call_identifier",
+      "tool": "<supported_tool>",
+      "requires_approval": true,
+      "args": {
+        "prompt": "Full generation prompt text"
+      }
+    }
+  ]
+}
+
+Supported tools:
+- {supported_tools}
+Only one tool call is recommended."""
+        return contract.replace("- {supported_tools}", supported_tools_block)
 
     def _get_effective_template(self, character: CharacterConfig) -> str:
         if getattr(character, "response_template", None):
@@ -404,7 +598,7 @@ class SystemPromptGenerator:
                 "- If a sentence is not directly observable by another person, it should not be in <physicalaction>.",
                 "- If a sentence describes internal state before or alongside speaking, prefer <innerthought>.",
                 "- If a sentence mixes channels, split it across tags.",
-                "- If you accidentally write text outside a tag, immediately wrap it in <speech> and continue inside the same <assistant_response> block."
+                "- If you accidentally write text outside a tag, immediately wrap it in <speech> and continue inside the same <assistant_response> block.",
                 "",
                 "**Template A Structural Example (do not copy content):**",
                 "<assistant_response>",
@@ -520,3 +714,5 @@ class SystemPromptGenerator:
             )
         
         return None
+
+

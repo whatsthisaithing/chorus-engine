@@ -1074,22 +1074,10 @@ window.App = {
                 }
             }
             
-            // Image / video requests
-            if (response.image_request_detected && response.image_prompt_preview) {
-                imagePromptPreview = response.image_prompt_preview;
-                if (imagePromptPreview.needs_confirmation) {
-                    await this.showImageConfirmDialog(imagePromptPreview);
-                } else {
-                    this.autoGenerateImage(imagePromptPreview);
-                }
-            }
-            
-            if (response.video_request_detected && response.video_prompt_preview) {
-                videoPromptPreview = response.video_prompt_preview;
-                if (videoPromptPreview.needs_confirmation) {
-                    await this.showVideoConfirmDialog(videoPromptPreview);
-                } else {
-                    this.autoGenerateVideo(videoPromptPreview);
+            // New tool payload flow
+            if (response.pending_tool_calls && response.pending_tool_calls.length > 0) {
+                for (const toolCall of response.pending_tool_calls) {
+                    await this.handlePendingToolCall(toolCall);
                 }
             }
             
@@ -1109,6 +1097,42 @@ window.App = {
             input.disabled = false;
             document.getElementById('sendBtn').disabled = false;
             input.focus();
+        }
+    },
+
+    /**
+     * Handle pending in-conversation media tool call.
+     */
+    async handlePendingToolCall(toolCall) {
+        if (!toolCall || !toolCall.tool) return;
+
+        if (toolCall.tool === 'image.generate') {
+            const preview = {
+                prompt: toolCall.args?.prompt || '',
+                negative_prompt: null,
+                needs_confirmation: toolCall.needs_confirmation !== false,
+                classification: toolCall.classification || 'explicit_request'
+            };
+            if (preview.needs_confirmation) {
+                await this.showImageConfirmDialog(preview);
+            } else {
+                await this.autoGenerateImage(preview);
+            }
+            return;
+        }
+
+        if (toolCall.tool === 'video.generate') {
+            const preview = {
+                prompt: toolCall.args?.prompt || '',
+                negative_prompt: null,
+                needs_confirmation: toolCall.needs_confirmation !== false,
+                classification: toolCall.classification || 'explicit_request'
+            };
+            if (preview.needs_confirmation) {
+                await this.showVideoConfirmDialog(preview);
+            } else {
+                await this.autoGenerateVideo(preview);
+            }
         }
     },
     

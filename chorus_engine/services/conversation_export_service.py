@@ -13,6 +13,7 @@ from pathlib import Path
 
 from chorus_engine.models.conversation import Conversation, Message, MessageRole, ConversationSummary
 from chorus_engine.services.structured_response import parse_structured_response
+from chorus_engine.services.tool_payload import extract_tool_payload
 from chorus_engine.config.loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,7 @@ class ConversationExportService:
     def _format_content_markdown(self, message: Message) -> str:
         """Format message content for markdown export with structured segments."""
         raw = (message.content or "").strip()
+        raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
         
@@ -343,6 +345,7 @@ class ConversationExportService:
     def _format_content_text(self, message: Message) -> str:
         """Format message content for plain text export with structured segments."""
         raw = (message.content or "").strip()
+        raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
         

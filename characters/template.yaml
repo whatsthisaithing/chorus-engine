@@ -244,6 +244,20 @@ image_generation:
 video_generation:
   enabled: true
 
+# PROACTIVE MEDIA OFFER OVERRIDES (optional)
+# ------------------------------------------
+# Null/omitted values inherit system defaults.
+proactive_offers:
+  image:
+    # enabled: true    # true/false/null (omit for inherit)
+    # min_confidence: 0.50
+  video:
+    # enabled: true
+    # min_confidence: 0.45
+  # offer_cooldown_minutes: 30
+  # offer_min_turn_gap: 8
+  # max_offers_per_conversation_per_media: 2
+
 # VOICE/TTS CONFIGURATION
 # -----------------------
 # Text-to-speech settings for this character

@@ -927,6 +927,86 @@
                             </div>
                         </div>
 
+                        <!-- Media Tooling Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-camera-video me-2"></i>Media Tooling Configuration</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-3 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="media_tooling_enabled">
+                                            <label class="form-check-label text-light" for="media_tooling_enabled">
+                                                Enable Media Tooling
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="media_tooling_offers_enabled">
+                                            <label class="form-check-label text-light" for="media_tooling_offers_enabled">
+                                                Enable Proactive Offers
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="media_tooling_image_offers_enabled">
+                                            <label class="form-check-label text-light" for="media_tooling_image_offers_enabled">
+                                                Image Offers Enabled
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="media_tooling_video_offers_enabled">
+                                            <label class="form-check-label text-light" for="media_tooling_video_offers_enabled">
+                                                Video Offers Enabled
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Explicit Min Confidence (Image)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_explicit_min_confidence_image" min="0" max="1" step="0.01">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Explicit Min Confidence (Video)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_explicit_min_confidence_video" min="0" max="1" step="0.01">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Offer Min Confidence (Image)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_offer_min_confidence_image" min="0" max="1" step="0.01">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Offer Min Confidence (Video)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_offer_min_confidence_video" min="0" max="1" step="0.01">
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Offer Cooldown (minutes)</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_offer_cooldown_minutes" min="0" max="1440" step="1">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Offer Min Turn Gap</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_offer_min_turn_gap" min="0" max="200" step="1">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Max Offers / Conversation / Media</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="media_tooling_max_offers_per_conversation_per_media" min="0" max="20" step="1">
+                                    </div>
+                                    <div class="col-md-3 mb-3">
+                                        <label class="form-label text-light">Disable Offers For Sources</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="media_tooling_disable_offers_for_sources" placeholder="discord, slack">
+                                        <div class="form-text text-secondary">Comma-separated source IDs.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Document Analysis Configuration -->
                         <div class="card bg-dark border-secondary mb-3">
                             <div class="card-header bg-secondary">
@@ -2148,6 +2228,53 @@
                                                 <label class="form-check-label" for="charVideoGenEnabled">
                                                     <strong>Video Generation Enabled</strong>
                                                 </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="card card-body bg-dark mb-3">
+                                            <small class="text-theme-secondary mb-2">Proactive Offer Overrides (null = inherit system defaults)</small>
+                                            <div class="row g-2">
+                                                <div class="col-md-6">
+                                                    <label class="form-label">Image Offers</label>
+                                                    <select class="form-select form-select-sm" id="charImageOfferEnabledMode">
+                                                        <option value="inherit">Inherit System Default</option>
+                                                        <option value="on">Force Enabled</option>
+                                                        <option value="off">Force Disabled</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="form-label">Image Offer Min Confidence</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charImageOfferMinConfidence"
+                                                           min="0" max="1" step="0.01" placeholder="System default">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="form-label">Video Offers</label>
+                                                    <select class="form-select form-select-sm" id="charVideoOfferEnabledMode">
+                                                        <option value="inherit">Inherit System Default</option>
+                                                        <option value="on">Force Enabled</option>
+                                                        <option value="off">Force Disabled</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label class="form-label">Video Offer Min Confidence</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charVideoOfferMinConfidence"
+                                                           min="0" max="1" step="0.01" placeholder="System default">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label">Offer Cooldown (min)</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charOfferCooldownMinutes"
+                                                           min="0" step="1" placeholder="System default">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label">Minimum Turn Gap</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charOfferMinTurnGap"
+                                                           min="0" step="1" placeholder="System default">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label">Max Offers / Conversation</label>
+                                                    <input type="number" class="form-control form-control-sm" id="charOfferMaxPerConversation"
+                                                           min="0" step="1" placeholder="System default">
+                                                </div>
                                             </div>
                                         </div>
                                         
