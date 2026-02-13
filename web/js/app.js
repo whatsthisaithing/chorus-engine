@@ -15,6 +15,14 @@ window.App = {
         selectedThreadId: null,
         messages: [],
         selectedMessageIds: new Set(),
+        lastUsedMomentPinIds: [],
+        momentPins: [],
+        momentPinsRaw: [],
+        activeMomentPin: null,
+        momentPinsScope: 'conversation',
+        momentPinsIncludeArchived: true,
+        momentPinsSearch: '',
+        momentPinsFocusIds: null,
         lastMemoryCount: {}, // Track memory counts per character for sparkle effect
         memoryPollTimer: null, // Timer for memory polling
         ttsEnabled: false, // Phase 6: TTS status for current conversation
@@ -179,6 +187,45 @@ window.App = {
         // Delete selected messages button
         document.getElementById('deleteSelectedMessagesBtn').addEventListener('click', () => {
             this.showDeleteMessagesModal();
+        });
+        document.getElementById('pinSelectedMessagesBtn').addEventListener('click', () => {
+            this.pinSelectedMessages();
+        });
+        document.getElementById('momentPinsBtn').addEventListener('click', () => {
+            if (!this.state.selectedCharacterId) {
+                UI.showToast('Select a character to view moment pins.', 'warning');
+                return;
+            }
+            this.showMomentPinsModal([], { forceScope: 'character' });
+        });
+        messagesContainer.addEventListener('click', (e) => {
+            const indicator = e.target.closest('.moment-pin-indicator');
+            if (!indicator) return;
+            const raw = indicator.getAttribute('data-pin-ids') || '';
+            const pinIds = raw.split(',').map((id) => id.trim()).filter((id) => id.length > 0);
+            if (pinIds.length === 0) return;
+            this.showMomentPinsModal(pinIds, { forceScope: 'character', focusPinIds: pinIds });
+        });
+        document.getElementById('momentPinsScopeSelect').addEventListener('change', async (e) => {
+            this.state.momentPinsScope = e.target.value === 'character' ? 'character' : 'conversation';
+            await this.refreshMomentPinsList();
+        });
+        document.getElementById('momentPinsIncludeArchived').addEventListener('change', async (e) => {
+            this.state.momentPinsIncludeArchived = !!e.target.checked;
+            await this.refreshMomentPinsList();
+        });
+        document.getElementById('momentPinsSearchInput').addEventListener('input', async (e) => {
+            this.state.momentPinsSearch = (e.target.value || '').trim().toLowerCase();
+            await this.refreshMomentPinsList([], true);
+        });
+        document.getElementById('saveMomentPinBtn').addEventListener('click', () => {
+            this.saveActiveMomentPin();
+        });
+        document.getElementById('deleteMomentPinBtn').addEventListener('click', () => {
+            this.deleteActiveMomentPin();
+        });
+        document.getElementById('confirmDeleteMomentPin').addEventListener('click', () => {
+            this.confirmDeleteActiveMomentPin();
         });
         
         // Confirm delete selected messages
@@ -565,6 +612,7 @@ window.App = {
         // Enable memory and workflow buttons
         document.getElementById('memoryPanelBtn').disabled = false;
         document.getElementById('pending-memories-btn').disabled = false;
+        document.getElementById('momentPinsBtn').disabled = false;
         document.getElementById('manageWorkflowsBtn').disabled = false;
         document.getElementById('manageVoiceSamplesBtn').disabled = false; // Phase 6
         document.getElementById('searchConversationsBtn').disabled = false; // Conversation search
@@ -849,6 +897,7 @@ window.App = {
             UI.renderThreads(this.state.threads, threadId);
             UI.renderMessages(messages);
             this.clearMessageSelection();
+            this.state.lastUsedMomentPinIds = [];
             
             // Load privacy status for conversation
             await this.loadConversationPrivacy();
@@ -903,14 +952,26 @@ window.App = {
     updateMessageDeleteBar() {
         const bar = document.getElementById('messageDeleteBar');
         const countEl = document.getElementById('deleteSelectedCount');
+        const pinCountEl = document.getElementById('pinSelectedCount');
+        const pinBtn = document.getElementById('pinSelectedMessagesBtn');
         const count = this.state.selectedMessageIds.size;
         
         if (count > 0) {
             bar.style.display = 'flex';
             countEl.textContent = count;
+            if (pinCountEl) pinCountEl.textContent = count;
+            if (pinBtn) {
+                pinBtn.disabled = count > 20;
+                pinBtn.title = count > 20 ? 'Maximum 20 messages can be pinned' : '';
+            }
         } else {
             bar.style.display = 'none';
             countEl.textContent = '0';
+            if (pinCountEl) pinCountEl.textContent = '0';
+            if (pinBtn) {
+                pinBtn.disabled = true;
+                pinBtn.title = '';
+            }
         }
     },
     
@@ -954,6 +1015,251 @@ window.App = {
         } catch (error) {
             console.error('Failed to delete messages:', error);
             UI.showToast(error.message || 'Failed to delete messages', 'error');
+        }
+    },
+
+    async pinSelectedMessages() {
+        if (!this.state.selectedConversationId || this.state.selectedMessageIds.size === 0) return;
+        const messageIds = Array.from(this.state.selectedMessageIds);
+        if (messageIds.length > 20) {
+            UI.showToast('You can pin up to 20 messages at once.', 'warning');
+            return;
+        }
+
+        try {
+            const created = await API.createMomentPin(this.state.selectedConversationId, messageIds);
+            this.clearMessageSelection();
+            UI.showToast('Moment pinned.', 'success');
+            await this.showMomentPinsModal(created?.id ? [created.id] : [], { forceScope: 'conversation' });
+        } catch (error) {
+            console.error('Failed to create moment pin:', error);
+            UI.showToast(error.message || 'Failed to pin moment', 'error');
+        }
+    },
+
+    async showMomentPinsModal(preferredPinIds = [], options = {}) {
+        if (!this.state.selectedCharacterId) {
+            UI.showToast('Select a character to view moment pins.', 'warning');
+            return;
+        }
+
+        this.state.momentPinsFocusIds = Array.isArray(options.focusPinIds) && options.focusPinIds.length > 0
+            ? new Set(options.focusPinIds)
+            : null;
+
+        if (options.forceScope === 'conversation' && this.state.selectedConversationId) {
+            this.state.momentPinsScope = 'conversation';
+        } else if (options.forceScope === 'character') {
+            this.state.momentPinsScope = 'character';
+        } else if (this.state.momentPinsScope === 'conversation' && !this.state.selectedConversationId) {
+            this.state.momentPinsScope = 'character';
+        }
+
+        try {
+            const scopeSelect = document.getElementById('momentPinsScopeSelect');
+            const searchInput = document.getElementById('momentPinsSearchInput');
+            const includeArchivedInput = document.getElementById('momentPinsIncludeArchived');
+            const detailEmptyEl = document.getElementById('momentPinDetailEmpty');
+            const detailEl = document.getElementById('momentPinDetail');
+            const saveBtn = document.getElementById('saveMomentPinBtn');
+            const deleteBtn = document.getElementById('deleteMomentPinBtn');
+
+            if (scopeSelect) {
+                scopeSelect.value = this.state.momentPinsScope;
+                const convoOption = scopeSelect.querySelector('option[value="conversation"]');
+                if (convoOption) convoOption.disabled = !this.state.selectedConversationId;
+            }
+            if (searchInput) {
+                searchInput.value = this.state.momentPinsSearch || '';
+            }
+            if (includeArchivedInput) {
+                includeArchivedInput.checked = !!this.state.momentPinsIncludeArchived;
+            }
+
+            // Reset modal detail state on every open to avoid stale cross-conversation selection.
+            this.state.activeMomentPin = null;
+            if (detailEmptyEl) detailEmptyEl.style.display = 'block';
+            if (detailEl) detailEl.style.display = 'none';
+            if (saveBtn) saveBtn.disabled = true;
+            if (deleteBtn) deleteBtn.disabled = true;
+
+            const modalEl = document.getElementById('momentPinsModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            if (!modalEl.classList.contains('show')) {
+                modal.show();
+            }
+
+            await this.refreshMomentPinsList(preferredPinIds, false);
+        } catch (error) {
+            console.error('Failed to load moment pins:', error);
+            UI.showToast('Failed to load moment pins', 'error');
+        }
+    },
+
+    async refreshMomentPinsList(preferredPinIds = [], skipFetch = false) {
+        if (!this.state.selectedCharacterId) return;
+
+        const list = document.getElementById('momentPinsList');
+        const scope = (this.state.momentPinsScope === 'conversation' && this.state.selectedConversationId)
+            ? 'conversation'
+            : 'character';
+
+        if (this.state.momentPinsScope !== scope) {
+            this.state.momentPinsScope = scope;
+            const scopeSelect = document.getElementById('momentPinsScopeSelect');
+            if (scopeSelect) scopeSelect.value = scope;
+        }
+
+        try {
+            if (!skipFetch) {
+                const pins = await API.listCharacterMomentPins(this.state.selectedCharacterId, {
+                    conversation_id: scope === 'conversation' ? this.state.selectedConversationId : null,
+                    include_archived: this.state.momentPinsIncludeArchived,
+                });
+                this.state.momentPinsRaw = pins || [];
+            }
+
+            const search = (this.state.momentPinsSearch || '').trim().toLowerCase();
+            this.state.momentPins = (this.state.momentPinsRaw || []).filter((pin) => {
+                if (this.state.momentPinsFocusIds && !this.state.momentPinsFocusIds.has(pin.id)) {
+                    return false;
+                }
+                if (!search) return true;
+                const haystack = [
+                    pin.what_happened || '',
+                    pin.why_user || '',
+                    pin.why_model || '',
+                    pin.quote_snippet || '',
+                    (pin.tags || []).join(' '),
+                ].join(' ').toLowerCase();
+                return haystack.includes(search);
+            });
+
+            list.innerHTML = '';
+            if (!this.state.momentPins.length) {
+                const emptyText = this.state.momentPinsFocusIds
+                    ? 'No recalled pins matched current filters.'
+                    : scope === 'conversation'
+                    ? 'No moment pins for this conversation yet.'
+                    : 'No moment pins for this character yet.';
+                list.innerHTML = `<div class="text-secondary p-2">${emptyText}</div>`;
+            } else {
+                this.state.momentPins.forEach((pin) => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'list-group-item list-group-item-action';
+                    btn.innerHTML = `
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <div class="fw-semibold">${this.escapeHtml((pin.what_happened || '').slice(0, 80) || 'Untitled pin')}</div>
+                                <small class="text-secondary">${new Date(pin.created_at).toLocaleString()}</small>
+                            </div>
+                            ${pin.archived ? '<span class="badge bg-secondary">Archived</span>' : ''}
+                        </div>`;
+                    btn.addEventListener('click', () => this.selectMomentPin(pin.id));
+                    list.appendChild(btn);
+                });
+            }
+
+            let selectedPinId = null;
+            if (preferredPinIds && preferredPinIds.length > 0) {
+                const preferred = this.state.momentPins.find((p) => preferredPinIds.includes(p.id));
+                if (preferred) selectedPinId = preferred.id;
+            }
+            if (!selectedPinId && this.state.activeMomentPin) {
+                const existing = this.state.momentPins.find((p) => p.id === this.state.activeMomentPin.id);
+                if (existing) selectedPinId = existing.id;
+            }
+            if (!selectedPinId && this.state.momentPins.length > 0) {
+                selectedPinId = this.state.momentPins[0].id;
+            }
+            if (selectedPinId) {
+                this.selectMomentPin(selectedPinId);
+            } else {
+                this.state.activeMomentPin = null;
+                document.getElementById('momentPinDetailEmpty').style.display = 'block';
+                document.getElementById('momentPinDetail').style.display = 'none';
+                document.getElementById('saveMomentPinBtn').disabled = true;
+                document.getElementById('deleteMomentPinBtn').disabled = true;
+            }
+        } catch (error) {
+            console.error('Failed to refresh moment pins list:', error);
+            UI.showToast('Failed to load moment pins', 'error');
+        }
+    },
+
+    async selectMomentPin(pinId) {
+        try {
+            const pin = await API.getMomentPin(pinId);
+            this.state.activeMomentPin = pin;
+            document.getElementById('momentPinDetailEmpty').style.display = 'none';
+            document.getElementById('momentPinDetail').style.display = 'block';
+            document.getElementById('momentPinWhat').textContent = pin.what_happened || '';
+            document.getElementById('momentPinWhyModel').textContent = pin.why_model || '';
+            document.getElementById('momentPinWhyUser').value = pin.why_user || '';
+            document.getElementById('momentPinQuote').textContent = pin.quote_snippet || '(none)';
+            document.getElementById('momentPinTags').value = (pin.tags || []).join(', ');
+            document.getElementById('momentPinArchived').checked = !!pin.archived;
+            document.getElementById('momentPinSnapshot').textContent = pin.transcript_snapshot || '';
+            document.getElementById('saveMomentPinBtn').disabled = false;
+            document.getElementById('deleteMomentPinBtn').disabled = false;
+        } catch (error) {
+            console.error('Failed to load pin detail:', error);
+            UI.showToast('Failed to load pin details', 'error');
+        }
+    },
+
+    async saveActiveMomentPin() {
+        const pin = this.state.activeMomentPin;
+        if (!pin) return;
+        try {
+            const tags = document.getElementById('momentPinTags').value
+                .split(',')
+                .map((t) => t.trim())
+                .filter((t) => t.length > 0);
+            const updated = await API.updateMomentPin(pin.id, {
+                why_user: document.getElementById('momentPinWhyUser').value.trim() || null,
+                tags: tags,
+                archived: document.getElementById('momentPinArchived').checked,
+            });
+            this.state.activeMomentPin = updated;
+            UI.showToast('Moment pin updated.', 'success');
+            await this.showMomentPinsModal([updated.id]);
+        } catch (error) {
+            console.error('Failed to update moment pin:', error);
+            UI.showToast('Failed to update moment pin', 'error');
+        }
+    },
+
+    async deleteActiveMomentPin() {
+        const pin = this.state.activeMomentPin;
+        if (!pin) return;
+        const confirmText = document.getElementById('deleteMomentPinConfirmText');
+        if (confirmText) {
+            const summary = (pin.what_happened || '').trim();
+            const preview = summary.length > 120 ? `${summary.slice(0, 120)}...` : summary;
+            confirmText.textContent = preview
+                ? `Delete this moment pin?\n\n"${preview}"`
+                : 'Delete this moment pin?';
+        }
+        const modalEl = document.getElementById('deleteMomentPinModal');
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+    },
+
+    async confirmDeleteActiveMomentPin() {
+        const pin = this.state.activeMomentPin;
+        if (!pin) return;
+        try {
+            await API.deleteMomentPin(pin.id);
+            const modal = bootstrap.Modal.getInstance(document.getElementById('deleteMomentPinModal'));
+            if (modal) modal.hide();
+            this.state.activeMomentPin = null;
+            UI.showToast('Moment pin deleted.', 'success');
+            await this.showMomentPinsModal();
+        } catch (error) {
+            console.error('Failed to delete moment pin:', error);
+            UI.showToast('Failed to delete moment pin', 'error');
         }
     },
     
@@ -1059,7 +1365,8 @@ window.App = {
                     role: 'assistant',
                     content: response.assistant_message.content,
                     created_at: response.assistant_message.created_at || new Date().toISOString(),
-                    id: response.assistant_message.id
+                    id: response.assistant_message.id,
+                    metadata: response.assistant_message.metadata || null
                 };
                 this.state.messages.push(assistantMsg);
                 const assistantMessageElement = UI.appendMessage(assistantMsg);
@@ -1072,6 +1379,9 @@ window.App = {
                 if (this.state.ttsEnabled && response.assistant_message.id) {
                     this.autoGenerateAudio(response.assistant_message.id);
                 }
+
+                const usedPinIds = (response.assistant_message.metadata && response.assistant_message.metadata.used_moment_pin_ids) || [];
+                this.state.lastUsedMomentPinIds = usedPinIds;
             }
             
             // New tool payload flow
@@ -2266,6 +2576,7 @@ window.App = {
             document.getElementById('messageInput').disabled = true;
             document.getElementById('sendBtn').disabled = true;
             document.getElementById('memoryPanelBtn').disabled = true;
+            document.getElementById('momentPinsBtn').disabled = true;
             document.getElementById('manageWorkflowsBtn').disabled = true;
             document.getElementById('privacyToggle').disabled = true;
             document.getElementById('actionsMenuBtn').disabled = true;

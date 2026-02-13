@@ -289,6 +289,61 @@ A provider-agnostic LLM client interface enabling seamless switching between Oll
 
 ---
 
+### 9. [Moment Pin System](MOMENT_PIN_SYSTEM.md)
+
+**Pinned Moments v1**
+
+A dedicated episodic continuity layer that captures bounded conversational moments, retrieves hot summaries, and escalates to transcript-precision only through gated cold recall.
+
+**Key Features**:
+- SQL + vector dual storage for moment pins
+- Hot summary injection with `used_moment_pin_ids` metadata tracking
+- Deterministic short-term recent-pin carryover for follow-up continuity
+- Server-side cold recall rerun with strict turn-level gating
+- Character-level pin management UI with per-message recall indicators
+
+**Philosophy**: Episodic anchors with controlled precision escalation.
+
+**Status**: Implemented and actively tuned
+
+---
+
+### 10. [Multi-Layer Continuity System](MULTI_LAYER_CONTINUITY_SYSTEM.md)
+
+**Cross-Phase Continuity Architecture**
+
+A system-level view of how core memories, explicit memories, analysis-derived context, moment pins, and continuity bootstrap work together to keep conversations coherent over different time horizons.
+
+**Key Features**:
+- Layered continuity model (identity, durable memory, episodic memory, warm start)
+- Clear runtime composition order in prompt assembly
+- Explicit separation of responsibilities per layer
+- Practical diagnostics model for cross-layer continuity issues
+
+**Philosophy**: No single memory mechanism solves continuity; layered systems do.
+
+**Status**: Implemented as active architecture
+
+---
+
+### 11. [Tool Payload Infrastructure](TOOL_PAYLOAD_INFRASTRUCTURE.md)
+
+**Shared Tool Execution Channel**
+
+A sentinel-delimited tool payload architecture that powers media generation and moment-pin cold transcript retrieval through strict server-side validation and policy gates.
+
+**Key Features**:
+- Shared v1 payload envelope with per-tool validation
+- Media tool pending-call flow with policy enforcement
+- Non-interactive server-side cold recall rerun path
+- Payload stripping/parsing safety to protect user-visible channel
+
+**Philosophy**: Assistant requests intent; server owns authorization and execution.
+
+**Status**: Implemented and in production use
+
+---
+
 ## Future Design Documents
 
 Systems that will eventually deserve their own design docs:
@@ -363,6 +418,6 @@ They're living documents - they should evolve as the system evolves - but they s
 
 ---
 
-**Index Version**: 1.1  
-**Last Updated**: January 4, 2026  
-**Total Design Docs**: 8 (+ 1 future)
+**Index Version**: 1.2  
+**Last Updated**: February 13, 2026  
+**Total Design Docs**: 11 (+ 1 future)

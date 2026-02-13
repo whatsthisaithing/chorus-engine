@@ -13,8 +13,9 @@ for intelligent memory selection.
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,8 @@ from chorus_engine.repositories.memory_repository import MemoryRepository as Mem
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
+from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
+from chorus_engine.services.moment_pin_retrieval_service import MomentPinRetrievalService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,8 @@ class PromptComponents:
     messages: List[Dict[str, str]]
     total_tokens: int
     token_breakdown: Dict[str, int]
+    moment_pins_text: str = ""
+    used_moment_pin_ids: List[str] = field(default_factory=list)
 
 
 class PromptAssemblyService:
@@ -136,6 +141,42 @@ class PromptAssemblyService:
         # Conversation context retrieval (lazy init)
         self._conversation_context_service: Optional[ConversationContextRetrievalService] = None
         self._summary_vector_store: Optional[ConversationSummaryVectorStore] = None
+        self._moment_pin_service: Optional[MomentPinRetrievalService] = None
+
+    @staticmethod
+    def _recent_used_moment_pin_ids(messages: List[Message], assistant_turn_window: int = 2) -> List[str]:
+        """
+        Extract recent injected moment pin IDs from the most recent assistant turns.
+
+        Returns IDs in recency order (most recent first), deduplicated.
+        """
+        if not messages:
+            return []
+
+        seen: set[str] = set()
+        result: List[str] = []
+        assistant_turns_seen = 0
+
+        for msg in reversed(messages):
+            if not (msg.role == MessageRole.ASSISTANT or str(msg.role) == MessageRole.ASSISTANT.value):
+                continue
+            assistant_turns_seen += 1
+            meta = getattr(msg, "meta_data", None)
+            if isinstance(meta, dict):
+                raw_ids = meta.get("used_moment_pin_ids")
+                if isinstance(raw_ids, list):
+                    for raw_id in raw_ids:
+                        if not isinstance(raw_id, str):
+                            continue
+                        pin_id = raw_id.strip()
+                        if not pin_id or pin_id in seen:
+                            continue
+                        seen.add(pin_id)
+                        result.append(pin_id)
+            if assistant_turns_seen >= assistant_turn_window:
+                break
+
+        return result
     
     @property
     def summarization_service(self) -> ConversationSummarizationService:
@@ -203,6 +244,19 @@ class PromptAssemblyService:
                 config=service_config
             )
         return self._conversation_context_service
+
+    @property
+    def moment_pin_service(self) -> MomentPinRetrievalService:
+        """Lazy-initialize moment pin retrieval service."""
+        if self._moment_pin_service is None:
+            embedding_service = EmbeddingService()
+            pin_vector_store = MomentPinVectorStore(Path("data/vector_store"))
+            self._moment_pin_service = MomentPinRetrievalService(
+                db=self.db,
+                vector_store=pin_vector_store,
+                embedder=embedding_service,
+            )
+        return self._moment_pin_service
     
     def get_document_token_budget(self) -> int:
         """
@@ -229,6 +283,7 @@ class PromptAssemblyService:
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         include_conversation_context: bool = True,
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
@@ -418,6 +473,27 @@ class PromptAssemblyService:
         # Unused conversation context budget flows to memory retrieval
         conversation_context_tokens = 0
         unused_context_budget = conversation_context_budget  # Start with full allocation
+        moment_pins_text = ""
+        used_moment_pin_ids: List[str] = []
+        recent_pin_ids = self._recent_used_moment_pin_ids(messages, assistant_turn_window=2)
+
+        user_scope = (user_id or primary_user or "User").strip()
+        if memory_query and user_scope:
+            try:
+                retrieved_pins = self.moment_pin_service.retrieve(
+                    user_id=user_scope,
+                    character_id=self.character_id,
+                    query=memory_query,
+                    top_n=10,
+                    inject_k=3,
+                    recent_pin_ids=recent_pin_ids,
+                )
+                if retrieved_pins:
+                    moment_pins_text = self.moment_pin_service.format_for_prompt(retrieved_pins)
+                    used_moment_pin_ids = [item.pin.id for item in retrieved_pins]
+                    logger.info(f"Added {len(retrieved_pins)} moment pins to prompt")
+            except Exception as e:
+                logger.warning(f"Failed to retrieve moment pins: {e}")
         
         if include_conversation_context and memory_query:
             try:
@@ -525,6 +601,8 @@ class PromptAssemblyService:
             messages=history_dicts,
             total_tokens=total_tokens,
             token_breakdown=token_breakdown,
+            moment_pins_text=moment_pins_text,
+            used_moment_pin_ids=used_moment_pin_ids,
         )
     
     def assemble_prompt_with_summarization(
@@ -536,6 +614,7 @@ class PromptAssemblyService:
         image_prompt_context: Optional[str] = None,
         video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
+        user_id: Optional[str] = None,
         conversation_source: Optional[str] = None,
         include_conversation_context: bool = True,
         allowed_media_tools: Optional[set[str]] = None,
@@ -575,6 +654,7 @@ class PromptAssemblyService:
                 memory_query=memory_query,
                 image_prompt_context=image_prompt_context,
                 conversation_id=conversation_id,
+                user_id=user_id,
                 include_conversation_context=include_conversation_context,
                 allowed_media_tools=allowed_media_tools,
                 allow_proactive_media_offers=allow_proactive_media_offers,
@@ -594,6 +674,7 @@ class PromptAssemblyService:
                 image_prompt_context=image_prompt_context,
                 document_context=document_context,
                 conversation_id=conversation_id,
+                user_id=user_id,
                 include_conversation_context=include_conversation_context,
                 allowed_media_tools=allowed_media_tools,
                 allow_proactive_media_offers=allow_proactive_media_offers,
@@ -745,6 +826,8 @@ class PromptAssemblyService:
             messages=history_dicts,
             total_tokens=total_tokens,
             token_breakdown=token_breakdown,
+            moment_pins_text="",
+            used_moment_pin_ids=[],
         )
     
     def _build_selective_context(
@@ -953,6 +1036,12 @@ class PromptAssemblyService:
                 f"for example, if the memory says their name is Alex, respond 'Yes, your name is Alex' rather than being vague or uncertain. "
                 f"Use these memories confidently and clearly.\n\n"
                 f"{memory_section}"
+            )
+
+        if components.moment_pins_text:
+            system_content = (
+                f"{system_content}\n\n"
+                f"{components.moment_pins_text}"
             )
         
         messages.append({

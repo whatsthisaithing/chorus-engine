@@ -333,8 +333,20 @@ const UI = {
             contentHtml += '</div>';
         }
         
-        // Add timestamp
-        contentHtml += `<div class="message-timestamp">${this.formatTime(message.created_at)}</div>`;
+        // Add timestamp and optional moment-pin indicator for assistant replies.
+        const usedPinIds = Array.isArray(message.metadata?.used_moment_pin_ids)
+            ? message.metadata.used_moment_pin_ids.filter((id) => typeof id === 'string' && id.trim().length > 0)
+            : [];
+        const pinIndicatorHtml = (message.role === 'assistant' && usedPinIds.length > 0)
+            ? `<button type="button" class="moment-pin-indicator" data-pin-ids="${this.escapeHtml(usedPinIds.join(','))}" title="View recalled moment pins">
+                    <i class="bi bi-pin-angle-fill"></i><span>${usedPinIds.length}</span>
+               </button>`
+            : '';
+        contentHtml += `
+            <div class="message-meta">
+                <div class="message-timestamp">${this.formatTime(message.created_at)}</div>
+                ${pinIndicatorHtml}
+            </div>`;
         
         messageDiv.innerHTML = contentHtml;
         

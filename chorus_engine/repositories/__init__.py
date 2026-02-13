@@ -9,6 +9,7 @@ from .workflow_repository import WorkflowRepository
 from .image_repository import ImageRepository
 from .voice_sample_repository import VoiceSampleRepository
 from .audio_repository import AudioRepository
+from .moment_pin_repository import MomentPinRepository
 
 __all__ = [
     "ConversationRepository",
@@ -20,4 +21,5 @@ __all__ = [
     "ImageRepository",
     "VoiceSampleRepository",
     "AudioRepository",
+    "MomentPinRepository",
 ]

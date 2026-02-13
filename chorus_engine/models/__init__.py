@@ -2,7 +2,7 @@
 
 from .conversation import (
     Conversation, Thread, Message, Memory, MessageRole, MemoryType, 
-    ConversationSummary, GeneratedImage, GeneratedVideo, ImageAttachment
+    ConversationSummary, GeneratedImage, GeneratedVideo, ImageAttachment, MomentPin
 )
 from .continuity import (
     ContinuityRelationshipState,
@@ -25,6 +25,7 @@ __all__ = [
     "GeneratedImage",
     "GeneratedVideo",
     "ImageAttachment",
+    "MomentPin",
     "ContinuityRelationshipState",
     "ContinuityArc",
     "ContinuityBootstrapCache",

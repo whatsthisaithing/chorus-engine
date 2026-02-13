@@ -107,9 +107,12 @@
                     <button id="memoryPanelBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
                         <i class="bi bi-database me-1"></i> Memory
                     </button>
-                    <button id="pending-memories-btn" class="btn btn-outline-light btn-sm w-100 mb-3" disabled>
+                    <button id="pending-memories-btn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
                         <i class="bi bi-hourglass-split me-1"></i> Pending Memories
                         <span id="pending-count" class="badge bg-danger" style="display: none;">0</span>
+                    </button>
+                    <button id="momentPinsBtn" class="btn btn-outline-light btn-sm w-100 mb-3" disabled>
+                        <i class="bi bi-pin-angle me-1"></i> Moment Pins
                     </button>
                     
                     <!-- Conversation List -->
@@ -292,6 +295,10 @@
             
             <!-- Message Selection Bar -->
             <div id="messageDeleteBar" class="message-delete-bar" style="display: none;">
+                <button type="button" class="btn btn-outline-warning btn-sm me-2" id="pinSelectedMessagesBtn">
+                    <i class="bi bi-pin-angle me-1"></i>
+                    Pin <span id="pinSelectedCount">0</span> Selected Messages
+                </button>
                 <button type="button" class="btn btn-danger btn-sm" id="deleteSelectedMessagesBtn">
                     <i class="bi bi-trash me-1"></i>
                     Delete <span id="deleteSelectedCount">0</span> Selected Messages
@@ -3968,6 +3975,94 @@
                             <span class="vision-detail-value" id="modalDimensions">-</span>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Moment Pins Modal -->
+    <div class="modal fade" id="momentPinsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-pin-angle me-2"></i>Moment Pins</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-2">
+                                <label for="momentPinsScopeSelect" class="form-label form-label-sm mb-1 text-secondary">Scope</label>
+                                <select id="momentPinsScopeSelect" class="form-select form-select-sm">
+                                    <option value="conversation">This Conversation</option>
+                                    <option value="character">All Character Pins</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <input type="text" class="form-control form-control-sm" id="momentPinsSearchInput" placeholder="Search pins...">
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="momentPinsIncludeArchived" checked>
+                                <label class="form-check-label text-secondary" for="momentPinsIncludeArchived">Include archived</label>
+                            </div>
+                            <div class="list-group" id="momentPinsList"></div>
+                        </div>
+                        <div class="col-md-8">
+                            <div id="momentPinDetailEmpty" class="text-secondary">Select a pin to view details.</div>
+                            <div id="momentPinDetail" style="display: none;">
+                                <div class="mb-2"><strong>What happened</strong><div id="momentPinWhat"></div></div>
+                                <div class="mb-2"><strong>Why (model)</strong><div id="momentPinWhyModel"></div></div>
+                                <div class="mb-2">
+                                    <label class="form-label"><strong>Why (user override)</strong></label>
+                                    <textarea class="form-control" id="momentPinWhyUser" rows="3"></textarea>
+                                </div>
+                                <div class="mb-2"><strong>Quote snippet</strong><div id="momentPinQuote"></div></div>
+                                <div class="mb-2">
+                                    <label class="form-label"><strong>Tags (comma separated)</strong></label>
+                                    <input type="text" class="form-control" id="momentPinTags">
+                                </div>
+                                <div class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="momentPinArchived">
+                                    <label class="form-check-label" for="momentPinArchived">Archived</label>
+                                </div>
+                                <div class="form-text text-secondary mb-2">
+                                    Archived pins stay saved, but are excluded from prompt injection and cannot be used for cold recall until unarchived.
+                                </div>
+                                <div class="mb-2"><strong>Snapshot</strong>
+                                    <pre class="bg-dark text-light p-2 rounded" id="momentPinSnapshot" style="max-height: 260px; overflow: auto;"></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger" id="deleteMomentPinBtn" disabled>Delete</button>
+                    <button type="button" class="btn btn-primary" id="saveMomentPinBtn" disabled>Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Moment Pin Confirmation Modal -->
+    <div class="modal fade" id="deleteMomentPinModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="bi bi-trash me-1"></i> Delete Moment Pin</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="deleteMomentPinConfirmText" class="mb-2">Delete this moment pin?</p>
+                    <p class="text-danger mb-0">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <strong>This action cannot be undone.</strong>
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmDeleteMomentPin">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>
                 </div>
             </div>
         </div>

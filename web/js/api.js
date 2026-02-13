@@ -413,6 +413,48 @@ class API {
     static async listMemories(conversationId) {
         return this.request(`/conversations/${conversationId}/memories`);
     }
+
+    // === Moment Pins ===
+
+    static async createMomentPin(conversationId, selectedMessageIds) {
+        return this.request(`/conversations/${conversationId}/moment-pins`, {
+            method: 'POST',
+            body: JSON.stringify({ selected_message_ids: selectedMessageIds }),
+        });
+    }
+
+    static async listMomentPins(conversationId) {
+        return this.request(`/conversations/${conversationId}/moment-pins`);
+    }
+
+    static async listCharacterMomentPins(characterId, options = {}) {
+        const params = new URLSearchParams();
+        if (options.conversation_id) {
+            params.set('conversation_id', options.conversation_id);
+        }
+        if (typeof options.include_archived === 'boolean') {
+            params.set('include_archived', String(options.include_archived));
+        }
+        const query = params.toString();
+        return this.request(`/characters/${characterId}/moment-pins${query ? `?${query}` : ''}`);
+    }
+
+    static async getMomentPin(pinId) {
+        return this.request(`/moment-pins/${pinId}`);
+    }
+
+    static async updateMomentPin(pinId, updates) {
+        return this.request(`/moment-pins/${pinId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        });
+    }
+
+    static async deleteMomentPin(pinId) {
+        return this.request(`/moment-pins/${pinId}`, {
+            method: 'DELETE',
+        });
+    }
     
     static async deleteMemory(memoryId) {
         return this.request(`/memories/${memoryId}`, {

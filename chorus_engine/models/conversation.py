@@ -295,6 +295,56 @@ class Memory(Base):
         return f"<Memory(id={self.id}, type={self.memory_type}, char={self.character_id}, priority={self.priority}, content={preview})>"
 
 
+class MomentPin(Base):
+    """
+    Moment pin stores bounded conversational moments with both hot and cold layers.
+
+    Hot layer fields are used for retrieval/injection while transcript_snapshot is
+    archival cold data only loaded via explicit tool recall.
+    """
+    __tablename__ = "moment_pins"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(200), nullable=False, index=True)
+    character_id = Column(String(50), nullable=False, index=True)
+    conversation_id = Column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    selected_message_ids = Column(JSON, nullable=False)  # [message_id, ...]
+    transcript_snapshot = Column(Text, nullable=False)  # cold archival snapshot
+
+    what_happened = Column(Text, nullable=False)
+    why_model = Column(Text, nullable=False)
+    why_user = Column(Text, nullable=True)
+    quote_snippet = Column(Text, nullable=True)
+    tags = Column(JSON, nullable=False, default=list)
+
+    reinforcement_score = Column(Float, nullable=False, default=1.0)
+    turns_since_reinforcement = Column(Integer, nullable=False, default=0)
+    archived = Column(Integer, nullable=False, default=0)  # 0/1 for SQLite compatibility
+
+    telemetry_flags = Column(
+        JSON,
+        nullable=False,
+        default=lambda: {
+            "contains_roleplay": False,
+            "contains_directives": False,
+            "contains_sensitive_content": False,
+        },
+    )
+
+    vector_id = Column(String(36), nullable=True)  # ID in moment pin vector store
+
+    def __repr__(self):
+        preview = self.what_happened[:50] + "..." if len(self.what_happened) > 50 else self.what_happened
+        return f"<MomentPin(id={self.id}, char={self.character_id}, user={self.user_id}, archived={bool(self.archived)}, what={preview})>"
+
+
 class GeneratedImage(Base):
     """
     A generated image represents an AI-generated image from ComfyUI.

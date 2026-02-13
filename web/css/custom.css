@@ -568,12 +568,44 @@ html, body {
     text-align: right;
 }
 
+.message-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
 .user-message .message-timestamp {
     text-align: right;
 }
 
 .assistant-message .message-timestamp {
     text-align: left;
+}
+
+.user-message .message-meta {
+    justify-content: flex-end;
+}
+
+.assistant-message .message-meta {
+    justify-content: flex-start;
+}
+
+.moment-pin-indicator {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    cursor: pointer;
+}
+
+.moment-pin-indicator:hover {
+    color: var(--accent-primary);
+    text-decoration: underline;
 }
 
 /* Username label for multi-user conversations (non-web) */
