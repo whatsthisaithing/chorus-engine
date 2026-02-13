@@ -92,7 +92,12 @@ from chorus_engine.services.media_offer_policy import (
 )
 
 # Startup sync utilities
-from chorus_engine.utils.startup_sync import sync_conversation_summary_vectors, sync_memory_vectors
+from chorus_engine.utils.startup_sync import (
+    sync_conversation_summary_vectors,
+    sync_memory_vectors,
+    sync_document_vectors,
+    run_vector_health_checks,
+)
 
 # Phase D: Idle detection for background processing
 from chorus_engine.services.idle_detector import IdleDetector
@@ -212,6 +217,18 @@ def _append_citations_to_segments(segments: list[StructuredSegment], citations_t
     # No speech segment; add optional speech for citations
     segments.append(StructuredSegment(channel="speech", text=citations_text.strip()))
     return segments
+
+
+def _log_media_request_event(conversation_id: str, event: dict) -> None:
+    """Append media request diagnostics for payload attempts."""
+    try:
+        conv_dir = Path("data/debug_logs/conversations") / str(conversation_id)
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        log_file = conv_dir / "media_requests.jsonl"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"[MEDIA TOOLING] Failed writing media_requests.jsonl: {e}")
 
 
 def _count_allowed_tool_calls(validated_tool_calls, allowed_tools: set[str]) -> int:
@@ -631,7 +648,45 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠ Failed to sync memory vectors: {e}")
         else:
             logger.debug("Memory vector sync skipped (missing vector store or embedding service)")
-        
+
+        if document_manager:
+            try:
+                doc_sync_stats = await sync_document_vectors(
+                    db_session=db_session,
+                    document_vector_store=document_manager.vector_store
+                )
+                if doc_sync_stats["synced"] > 0 or doc_sync_stats.get("deleted_orphans", 0) > 0:
+                    logger.info(
+                        f"âœ“ Document vectors synced: +{doc_sync_stats['synced']} / "
+                        f"-{doc_sync_stats.get('deleted_orphans', 0)} "
+                        f"(documents: {doc_sync_stats.get('documents', 0)})"
+                    )
+                else:
+                    logger.debug("âœ“ Document vectors in sync")
+
+                if doc_sync_stats["errors"] > 0:
+                    logger.warning(f"âš  {doc_sync_stats['errors']} errors during document vector sync")
+            except Exception as e:
+                logger.warning(f"âš  Failed to sync document vectors: {e}")
+
+        try:
+            health_report = run_vector_health_checks(
+                db_session=db_session,
+                vector_store=vector_store,
+                summary_vector_store=summary_vector_store,
+                document_vector_store=document_manager.vector_store
+            )
+            if health_report["ok"]:
+                logger.info(
+                    f"[VECTOR_HEALTH] OK - checked {health_report['characters_checked']} characters"
+                )
+            else:
+                logger.error("[VECTOR_HEALTH] STARTUP CHECK FAILED")
+                for issue in health_report["issues"]:
+                    logger.error(f"[VECTOR_HEALTH] {issue}")
+        except Exception as e:
+            logger.error(f"[VECTOR_HEALTH] Startup health check crashed: {e}")
+
         # Initialize idle detector for background processing (Phase D)
         heartbeat_config = getattr(system_config, 'heartbeat', None)
         if heartbeat_config and getattr(heartbeat_config, 'enabled', True):
@@ -4473,8 +4528,10 @@ async def send_message(
 
         pending_tool_calls: List[PendingToolCall] = []
         payload_present = extracted.payload_text is not None
+        blocked_reasons: List[str] = []
         supported_tools_v1 = {"image.generate", "video.generate"}
         if payload_present and payload_obj is None:
+            blocked_reasons.append("malformed_payload")
             logger.warning(
                 "[MEDIA TOOLING] blocked_tool_payload_reason=malformed_payload",
                 extra={"thread_id": thread_id}
@@ -4484,12 +4541,14 @@ async def send_message(
                 if isinstance(raw_call, dict):
                     raw_tool = raw_call.get("tool")
                     if isinstance(raw_tool, str) and raw_tool not in supported_tools_v1:
+                        blocked_reasons.append("unsupported_tool")
                         logger.warning(
                             "[MEDIA TOOLING] blocked_tool_payload_reason=unsupported_tool",
                             extra={"thread_id": thread_id, "tool": raw_tool}
                         )
 
         if payload_present and not media_permissions.media_tool_calls_allowed:
+            blocked_reasons.append("media_not_allowed")
             logger.info(
                 "[MEDIA TOOLING] blocked_tool_payload_reason=media_not_allowed",
                 extra={
@@ -4509,6 +4568,7 @@ async def send_message(
 
             for call in validated_tool_calls:
                 if call.tool not in media_permissions.allowed_tools_final:
+                    blocked_reasons.append("tool_not_allowed")
                     logger.info(
                         "[MEDIA TOOLING] blocked_tool_payload_reason=tool_not_allowed",
                         extra={
@@ -4580,6 +4640,46 @@ async def send_message(
                         needs_confirmation=needs_confirmation,
                     )
                 )
+
+        # Log both successful and failed payload attempts in media_requests.jsonl.
+        if payload_present:
+            _log_media_request_event(
+                conversation_id=conversation.id,
+                event={
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "media_payload_attempt",
+                    "stream": False,
+                    "thread_id": thread_id,
+                    "user_message": request.message,
+                    "semantic_intents_detected": [
+                        {"name": getattr(i, "name", None), "confidence": float(getattr(i, "confidence", 0.0) or 0.0)}
+                        for i in (semantic_intents or [])
+                    ],
+                    "turn_signals": {
+                        "explicit_media_request": turn_signals.explicit_media_request,
+                        "requested_media_type": turn_signals.requested_media_type,
+                        "is_iteration_request": turn_signals.is_iteration_request,
+                        "is_acknowledgement": turn_signals.is_acknowledgement,
+                        "image_confidence": turn_signals.image_confidence,
+                        "video_confidence": turn_signals.video_confidence,
+                    },
+                    "media_permissions": {
+                        "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+                        "explicit_allowed": media_permissions.explicit_allowed,
+                        "offer_allowed": media_permissions.offer_allowed,
+                        "cooldown_active": media_permissions.cooldown_active,
+                        "allowed_tools_input": media_permissions.allowed_tools_input,
+                        "allowed_tools_final": media_permissions.allowed_tools_final,
+                        "preferred_iteration_media_type": preferred_iteration_media_type,
+                    },
+                    "payload_present": payload_present,
+                    "payload_text": extracted.payload_text,
+                    "validated_tool_calls_count": len(validated_tool_calls),
+                    "accepted_pending_tool_calls_count": len(pending_tool_calls),
+                    "accepted_pending_tool_calls": [c.model_dump() for c in pending_tool_calls],
+                    "blocked_reasons": blocked_reasons,
+                },
+            )
         
         media_prefix = _media_interpretation_prefix(
             character_name=character.name,
@@ -5746,8 +5846,10 @@ async def send_message_stream(
 
                 pending_tool_calls: List[PendingToolCall] = []
                 payload_present = extracted.payload_text is not None
+                blocked_reasons: List[str] = []
                 supported_tools_v1 = {"image.generate", "video.generate"}
                 if payload_present and payload_obj is None:
+                    blocked_reasons.append("malformed_payload")
                     logger.warning(
                         "[MEDIA TOOLING] blocked_tool_payload_reason=malformed_payload",
                         extra={"thread_id": thread_id, "stream": True}
@@ -5757,12 +5859,14 @@ async def send_message_stream(
                         if isinstance(raw_call, dict):
                             raw_tool = raw_call.get("tool")
                             if isinstance(raw_tool, str) and raw_tool not in supported_tools_v1:
+                                blocked_reasons.append("unsupported_tool")
                                 logger.warning(
                                     "[MEDIA TOOLING] blocked_tool_payload_reason=unsupported_tool",
                                     extra={"thread_id": thread_id, "tool": raw_tool, "stream": True}
                                 )
 
                 if payload_present and not media_permissions.media_tool_calls_allowed:
+                    blocked_reasons.append("media_not_allowed")
                     logger.info(
                         "[MEDIA TOOLING] blocked_tool_payload_reason=media_not_allowed",
                         extra={
@@ -5788,6 +5892,7 @@ async def send_message_stream(
 
                         for call in validated_tool_calls:
                             if call.tool not in media_permissions.allowed_tools_final:
+                                blocked_reasons.append("tool_not_allowed")
                                 logger.info(
                                     "[MEDIA TOOLING] blocked_tool_payload_reason=tool_not_allowed",
                                     extra={
@@ -5860,6 +5965,46 @@ async def send_message_stream(
                                     needs_confirmation=needs_confirmation,
                                 )
                             )
+
+                # Log both successful and failed payload attempts in media_requests.jsonl.
+                if payload_present:
+                    _log_media_request_event(
+                        conversation_id=conversation_id_for_stream,
+                        event={
+                            "timestamp": datetime.now().isoformat(),
+                            "type": "media_payload_attempt",
+                            "stream": True,
+                            "thread_id": thread_id,
+                            "user_message": user_message_content,
+                            "semantic_intents_detected": [
+                                {"name": getattr(i, "name", None), "confidence": float(getattr(i, "confidence", 0.0) or 0.0)}
+                                for i in (semantic_intents or [])
+                            ],
+                            "turn_signals": {
+                                "explicit_media_request": turn_signals.explicit_media_request,
+                                "requested_media_type": turn_signals.requested_media_type,
+                                "is_iteration_request": turn_signals.is_iteration_request,
+                                "is_acknowledgement": turn_signals.is_acknowledgement,
+                                "image_confidence": turn_signals.image_confidence,
+                                "video_confidence": turn_signals.video_confidence,
+                            },
+                            "media_permissions": {
+                                "media_tool_calls_allowed": media_permissions.media_tool_calls_allowed,
+                                "explicit_allowed": media_permissions.explicit_allowed,
+                                "offer_allowed": media_permissions.offer_allowed,
+                                "cooldown_active": media_permissions.cooldown_active,
+                                "allowed_tools_input": media_permissions.allowed_tools_input,
+                                "allowed_tools_final": media_permissions.allowed_tools_final,
+                                "preferred_iteration_media_type": preferred_iteration_media_type,
+                            },
+                            "payload_present": payload_present,
+                            "payload_text": extracted.payload_text,
+                            "validated_tool_calls_count": len(validated_tool_calls),
+                            "accepted_pending_tool_calls_count": len(pending_tool_calls),
+                            "accepted_pending_tool_calls": [c.model_dump() for c in pending_tool_calls],
+                            "blocked_reasons": blocked_reasons,
+                        },
+                    )
 
                 if pending_tool_calls:
                     yield f"data: {json.dumps({'type': 'tool_calls', 'tool_calls': [c.model_dump() for c in pending_tool_calls]})}\n\n"

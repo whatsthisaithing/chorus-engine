@@ -10,8 +10,10 @@ one summary per conversation with rich metadata (themes, tone, participants, etc
 
 import json
 import logging
+import sqlite3
 from pathlib import Path
 from typing import List, Dict, Optional, Any
+from chorus_engine.db.chroma_config_fix import normalize_collection_configs
 
 try:
     import chromadb
@@ -62,6 +64,7 @@ class ConversationSummaryVectorStore:
         
         self.persist_directory = persist_directory
         self.persist_directory.mkdir(parents=True, exist_ok=True)
+        normalize_collection_configs(self.persist_directory)
         
         # Initialize ChromaDB client with persistence
         # Uses same directory as memory vector store - collections are separate
@@ -105,11 +108,17 @@ class ConversationSummaryVectorStore:
             }
         
         try:
-            collection = self.client.get_or_create_collection(
+            # Prefer get-then-create; get_or_create can fail on some persisted config variants.
+            try:
+                collection = self.client.get_collection(name=collection_name)
+                return collection
+            except Exception:
+                pass
+            collection = self.client.create_collection(
                 name=collection_name,
                 metadata=metadata
             )
-            logger.debug(f"Collection '{collection_name}' ready (count: {collection.count()})")
+            logger.debug(f"Collection '{collection_name}' created (count: {collection.count()})")
             return collection
         except Exception as e:
             logger.error(f"Failed to get/create collection '{collection_name}': {e}")
@@ -223,7 +232,10 @@ class ConversationSummaryVectorStore:
             
             return results
         except Exception as e:
-            logger.error(f"Failed to search conversation summaries: {e}")
+            logger.error(
+                f"[VECTOR_HEALTH][SUMMARY_QUERY_ERROR] Failed to search conversation summaries "
+                f"for '{character_id}': {e}"
+            )
             return {
                 'ids': [[]],
                 'distances': [[]],
@@ -355,6 +367,20 @@ class ConversationSummaryVectorStore:
                 if col.name.startswith("conversation_summaries_")
             ]
         except Exception as e:
+            if "_type" in str(e):
+                try:
+                    db_path = self.persist_directory / "chroma.sqlite3"
+                    conn = sqlite3.connect(str(db_path))
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT name FROM collections "
+                        "WHERE name LIKE 'conversation_summaries_%' ORDER BY name"
+                    )
+                    names = [row[0] for row in cur.fetchall()]
+                    conn.close()
+                    return names
+                except Exception as fallback_error:
+                    logger.error(f"Failed fallback summary list_collections: {fallback_error}")
             logger.error(f"Failed to list collections: {e}")
             return []
     

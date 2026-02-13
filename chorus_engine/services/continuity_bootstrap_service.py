@@ -7,10 +7,14 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
+from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
+from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.llm.client import LLMClient
 from chorus_engine.llm.text_normalization import normalize_mojibake
 from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MemoryType
@@ -18,6 +22,7 @@ from chorus_engine.models.continuity import ContinuityArc
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.repositories.conversation_repository import ConversationRepository
 from chorus_engine.repositories.memory_repository import MemoryRepository
+from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.services.json_extraction import extract_json_block
 from chorus_engine.services.token_counter import TokenCounter
 from chorus_engine.config.models import CharacterConfig
@@ -45,7 +50,9 @@ class ArcCandidate:
 class ContinuityBootstrapService:
     """Generate and cache continuity bootstrap packets per character."""
 
-    PROMPT_VERSION = "v1"
+    PROMPT_VERSION = "v2"
+    SUMMARY_SIM_THRESHOLD = 0.40
+    MEMORY_SIM_THRESHOLD = 0.45
 
     def __init__(
         self,
@@ -63,6 +70,27 @@ class ContinuityBootstrapService:
         self.continuity_repo = ContinuityRepository(db)
         self.conv_repo = ConversationRepository(db)
         self.memory_repo = MemoryRepository(db)
+        self._embedding_service: Optional[EmbeddingService] = None
+        self._memory_vector_store: Optional[VectorStore] = None
+        self._summary_vector_store: Optional[ConversationSummaryVectorStore] = None
+
+    @property
+    def embedding_service(self) -> EmbeddingService:
+        if self._embedding_service is None:
+            self._embedding_service = EmbeddingService()
+        return self._embedding_service
+
+    @property
+    def memory_vector_store(self) -> VectorStore:
+        if self._memory_vector_store is None:
+            self._memory_vector_store = VectorStore(Path("data/vector_store"))
+        return self._memory_vector_store
+
+    @property
+    def summary_vector_store(self) -> ConversationSummaryVectorStore:
+        if self._summary_vector_store is None:
+            self._summary_vector_store = ConversationSummaryVectorStore(Path("data/vector_store"))
+        return self._summary_vector_store
 
     def is_bootstrap_stale(self, character_id: str) -> bool:
         """Return True if summaries or memories exist after last bootstrap."""
@@ -170,7 +198,9 @@ class ContinuityBootstrapService:
 
         selected_core, selected_active, score_map = self._select_arcs(
             character_id=character_id,
-            arcs=normalized_arcs
+            arcs=normalized_arcs,
+            summaries=summaries,
+            memories=memories
         )
 
         internal_packet = await self._assemble_internal_packet(
@@ -226,10 +256,26 @@ class ContinuityBootstrapService:
         return result
 
     def _load_recent_summaries(self, character_id: str, limit: int = 5) -> List[ConversationSummary]:
-        return (
-            self.db.query(ConversationSummary)
+        latest_per_conversation = (
+            self.db.query(
+                ConversationSummary.conversation_id.label("conversation_id"),
+                func.max(ConversationSummary.created_at).label("max_created_at")
+            )
             .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
             .filter(Conversation.character_id == character_id)
+            .group_by(ConversationSummary.conversation_id)
+            .subquery()
+        )
+
+        return (
+            self.db.query(ConversationSummary)
+            .join(
+                latest_per_conversation,
+                and_(
+                    ConversationSummary.conversation_id == latest_per_conversation.c.conversation_id,
+                    ConversationSummary.created_at == latest_per_conversation.c.max_created_at
+                )
+            )
             .order_by(ConversationSummary.created_at.desc())
             .limit(limit)
             .all()
@@ -391,6 +437,10 @@ class ContinuityBootstrapService:
             "- Phrase arcs in a way appropriate to role_type and immersion_level.\n"
             "- Avoid overly specific details unless strongly supported.\n"
             "- Avoid emotional dependency framing.\n\n"
+            "- Treat existing arcs as weak hypotheses, not ground truth.\n"
+            "- Keep an existing arc only when recent summaries/memories support it.\n"
+            "- If an existing arc lacks recent support, drop it or lower its confidence.\n"
+            "- Prefer arcs that are visible in the most recent conversations.\n\n"
             "Output JSON ONLY as an array of objects:\n"
             "[\n"
             "  {\n"
@@ -527,24 +577,72 @@ class ContinuityBootstrapService:
     def _select_arcs(
         self,
         character_id: str,
-        arcs: List[ContinuityArc]
+        arcs: List[ContinuityArc],
+        summaries: List[ConversationSummary],
+        memories: List[Memory]
     ) -> Tuple[List[ContinuityArc], List[ContinuityArc], Dict[str, dict]]:
         if not arcs:
             return [], [], {}
 
+        # Use the latest summary per conversation in the recent window.
+        recent_summaries = summaries
+        recent_memories = memories[:15]
+        summary_embeddings, summary_embed_stats = self._get_recent_summary_embeddings(
+            character_id, recent_summaries
+        )
+        memory_embeddings, memory_embed_stats = self._get_recent_memory_embeddings(
+            character_id, recent_memories
+        )
         scored = []
+        info_by_arc_key: Dict[str, dict] = {}
+
         for arc in arcs:
-            score_info = self._score_arc(character_id, arc)
-            scored.append((score_info["score"], arc, score_info))
+            score_info = self._score_arc(
+                character_id=character_id,
+                arc=arc,
+                recent_summaries=recent_summaries,
+                recent_memories=recent_memories,
+                summary_embeddings=summary_embeddings,
+                summary_embed_stats=summary_embed_stats,
+                memory_embeddings=memory_embeddings,
+                memory_embed_stats=memory_embed_stats
+            )
+            arc_key = arc.id or self._normalize_key(arc.title)
+            info_by_arc_key[arc_key] = score_info
+            scored.append((score_info["core_score"], score_info["active_score"], arc, score_info))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        ordered = [a for _, a, _ in scored]
+        # Core ranking favors stability with low recent-evidence contribution.
+        scored_core = sorted(scored, key=lambda item: item[0], reverse=True)
+        # Active ranking is more responsive to recent evidence.
+        scored_active = sorted(scored, key=lambda item: item[1], reverse=True)
 
-        core = self._select_diverse(ordered, max_count=3)
-        remaining = [a for a in ordered if a not in core]
-        active = self._select_diverse(remaining, max_count=7)
+        # Hysteresis: only promote arcs to core when evidence persists across recent context.
+        core_persistent = []
+        for _, _, arc, info in scored_core:
+            if info["summary_hits"] >= 2 or info["distinct_conversation_hits"] >= 2:
+                core_persistent.append(arc)
+
+        if core_persistent:
+            core = self._select_diverse(core_persistent, max_count=3)
+        else:
+            core = self._select_diverse([arc for _, _, arc, _ in scored_core], max_count=3)
+
+        remaining = [arc for _, _, arc, _ in scored_active if arc not in core]
+        active_evidence = []
+        for arc in remaining:
+            arc_key = arc.id or self._normalize_key(arc.title)
+            info = info_by_arc_key.get(arc_key, {})
+            if (
+                info.get("summary_hits", 0) >= 1
+                or info.get("memory_hits", 0) >= 1
+                or info.get("recent_evidence_score", 0.0) >= 0.15
+            ):
+                active_evidence.append(arc)
+        active_pool = active_evidence or remaining
+        active = self._select_diverse(active_pool, max_count=7)
+
         score_map: Dict[str, dict] = {}
-        for _, arc, info in scored:
+        for _, _, arc, info in scored:
             if not arc:
                 continue
             key = arc.id or self._normalize_key(arc.title)
@@ -562,7 +660,17 @@ class ContinuityBootstrapService:
                 seen_kinds.add(arc.kind)
         return selected
 
-    def _score_arc(self, character_id: str, arc: ContinuityArc) -> dict:
+    def _score_arc(
+        self,
+        character_id: str,
+        arc: ContinuityArc,
+        recent_summaries: List[ConversationSummary],
+        recent_memories: List[Memory],
+        summary_embeddings: List[Tuple[ConversationSummary, List[float]]],
+        summary_embed_stats: Dict[str, int],
+        memory_embeddings: List[Tuple[Memory, List[float]]],
+        memory_embed_stats: Dict[str, int]
+    ) -> dict:
         confidence_weight = {"high": 1.0, "medium": 0.7, "low": 0.4}
         stickiness_weight = {"high": 1.2, "normal": 1.0, "low": 0.8}
         confidence_factor = confidence_weight.get(arc.confidence, 0.7)
@@ -583,15 +691,202 @@ class ContinuityBootstrapService:
             conversations_ago = count
             recency_penalty = min(0.3, 0.05 * count)
 
-        final_score = max(0.0, base * (1.0 - recency_penalty))
+        arc_vector = None
+        try:
+            arc_vector = self.embedding_service.embed(f"{arc.title} - {arc.summary}")
+        except Exception:
+            arc_vector = None
+
+        summary_hits = 0
+        memory_hits = 0
+        distinct_conversation_ids = set()
+        summary_similarity_details: List[Dict[str, Any]] = []
+        memory_similarity_details: List[Dict[str, Any]] = []
+        if arc_vector:
+            for summary, summary_vector in summary_embeddings:
+                score = self._cosine_similarity(arc_vector, summary_vector)
+                summary_similarity_details.append(
+                    {
+                        "summary_id": summary.id,
+                        "conversation_id": summary.conversation_id,
+                        "similarity": score,
+                        "excerpt": (summary.summary or "")[:140]
+                    }
+                )
+                if score >= self.SUMMARY_SIM_THRESHOLD:
+                    summary_hits += 1
+                    if summary.conversation_id:
+                        distinct_conversation_ids.add(summary.conversation_id)
+            for memory, memory_vector in memory_embeddings:
+                score = self._cosine_similarity(arc_vector, memory_vector)
+                memory_similarity_details.append(
+                    {
+                        "memory_id": memory.id,
+                        "conversation_id": memory.conversation_id,
+                        "similarity": score,
+                        "excerpt": (memory.content or "")[:140]
+                    }
+                )
+                if score >= self.MEMORY_SIM_THRESHOLD:
+                    memory_hits += 1
+                    if memory.conversation_id:
+                        distinct_conversation_ids.add(memory.conversation_id)
+
+        top_summary_matches = sorted(
+            summary_similarity_details,
+            key=lambda item: item["similarity"],
+            reverse=True
+        )[:3]
+        top_memory_matches = sorted(
+            memory_similarity_details,
+            key=lambda item: item["similarity"],
+            reverse=True
+        )[:3]
+
+        summary_norm = min(1.0, summary_hits / max(1, len(recent_summaries)))
+        memory_norm = min(1.0, memory_hits / max(1, len(recent_memories)))
+        distinct_conversation_hits = len(distinct_conversation_ids)
+        recent_evidence_score = min(
+            1.0,
+            max(0.0, (0.70 * summary_norm) + (0.30 * memory_norm))
+        )
+
+        base_score = max(0.0, base * (1.0 - recency_penalty))
+        core_score = (base_score * 0.85) + (recent_evidence_score * 0.15)
+        active_score = (base_score * 0.60) + (recent_evidence_score * 0.40)
         return {
-            "score": final_score,
+            "score": active_score,
+            "base_score": base_score,
+            "core_score": core_score,
+            "active_score": active_score,
+            "recent_evidence_score": recent_evidence_score,
             "base": base,
             "confidence_factor": confidence_factor,
             "stickiness_factor": stickiness_factor,
             "recency_penalty": recency_penalty,
-            "conversations_ago": conversations_ago
+            "conversations_ago": conversations_ago,
+            "summary_hits": summary_hits,
+            "memory_hits": memory_hits,
+            "distinct_conversation_hits": distinct_conversation_hits,
+            "summary_context_count": len(recent_summaries),
+            "summary_ids_used": [s.id for s in recent_summaries if s.id],
+            "summary_vectors_used": len(summary_embeddings),
+            "summary_vectors_embedded_on_the_fly": summary_embed_stats.get("embedded_on_the_fly", 0),
+            "summary_vector_lookup_errors": summary_embed_stats.get("lookup_errors", 0),
+            "summary_vector_embed_errors": summary_embed_stats.get("embed_errors", 0),
+            "memory_vectors_used": len(memory_embeddings),
+            "memory_vector_lookup_errors": memory_embed_stats.get("lookup_errors", 0),
+            "memory_vector_embed_errors": memory_embed_stats.get("embed_errors", 0),
+            "missing_summary_vectors": max(0, len(recent_summaries) - len(summary_embeddings)),
+            "missing_memory_vectors": memory_embed_stats.get("missing_vectors", 0),
+            "memory_vectors_embedded_on_the_fly": memory_embed_stats.get("embedded_on_the_fly", 0),
+            "top_summary_matches": top_summary_matches,
+            "top_memory_matches": top_memory_matches,
+            "summary_similarity_threshold": self.SUMMARY_SIM_THRESHOLD,
+            "memory_similarity_threshold": self.MEMORY_SIM_THRESHOLD
         }
+
+    def _get_recent_summary_embeddings(
+        self,
+        character_id: str,
+        summaries: List[ConversationSummary]
+    ) -> Tuple[List[Tuple[ConversationSummary, List[float]]], Dict[str, int]]:
+        embedded: List[Tuple[ConversationSummary, List[float]]] = []
+        stats = {
+            "embedded_on_the_fly": 0,
+            "lookup_errors": 0,
+            "embed_errors": 0
+        }
+        for summary in summaries:
+            if not summary.conversation_id:
+                continue
+            vector = None
+            try:
+                record = self.summary_vector_store.get_summary(character_id, summary.conversation_id)
+                vector = record.get("embedding") if record else None
+                # Chroma may return numpy arrays; avoid truthiness checks.
+                if vector is not None:
+                    try:
+                        if len(vector) > 0:
+                            embedded.append((summary, vector))
+                            continue
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"[CONTINUITY] Failed summary embedding lookup for {summary.id}: {e}")
+                stats["lookup_errors"] += 1
+            if summary.summary:
+                try:
+                    fallback_vector = self.embedding_service.embed(summary.summary)
+                    embedded.append((summary, fallback_vector))
+                    stats["embedded_on_the_fly"] += 1
+                except Exception:
+                    stats["embed_errors"] += 1
+        return embedded, stats
+
+    def _get_recent_memory_embeddings(
+        self,
+        character_id: str,
+        memories: List[Memory]
+    ) -> Tuple[List[Tuple[Memory, List[float]]], Dict[str, int]]:
+        embedded: List[Tuple[Memory, List[float]]] = []
+        stats = {
+            "embedded_on_the_fly": 0,
+            "missing_vectors": 0,
+            "lookup_errors": 0,
+            "embed_errors": 0
+        }
+
+        vector_id_to_embedding: Dict[str, List[float]] = {}
+        vector_ids = [m.vector_id for m in memories if m.vector_id]
+        if vector_ids:
+            try:
+                collection = self.memory_vector_store.get_collection(character_id)
+                if collection is not None:
+                    results = collection.get(ids=vector_ids, include=["embeddings"])
+                    ids = results.get("ids") or []
+                    embeddings = results.get("embeddings") or []
+                    for idx, vector_id in enumerate(ids):
+                        if idx < len(embeddings) and embeddings[idx] is not None:
+                            vector_id_to_embedding[vector_id] = embeddings[idx]
+            except Exception as e:
+                logger.debug(f"[CONTINUITY] Failed memory embedding bulk lookup: {e}")
+                stats["lookup_errors"] += 1
+
+        for memory in memories:
+            vector = vector_id_to_embedding.get(memory.vector_id) if memory.vector_id else None
+            if vector is None and memory.content:
+                try:
+                    # Missing extracted-memory vectors are embedded on demand for scoring only.
+                    vector = self.embedding_service.embed(memory.content)
+                    stats["embedded_on_the_fly"] += 1
+                except Exception:
+                    vector = None
+                    stats["embed_errors"] += 1
+            if vector is not None:
+                embedded.append((memory, vector))
+            else:
+                stats["missing_vectors"] += 1
+        return embedded, stats
+
+    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+        if vec_a is None or vec_b is None:
+            return 0.0
+        try:
+            if len(vec_a) == 0 or len(vec_b) == 0 or len(vec_a) != len(vec_b):
+                return 0.0
+        except Exception:
+            return 0.0
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for a, b in zip(vec_a, vec_b):
+            dot += a * b
+            norm_a += a * a
+            norm_b += b * b
+        if norm_a <= 0.0 or norm_b <= 0.0:
+            return 0.0
+        return dot / ((norm_a ** 0.5) * (norm_b ** 0.5))
 
     async def _assemble_internal_packet(
         self,

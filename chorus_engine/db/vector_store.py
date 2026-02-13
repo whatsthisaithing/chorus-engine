@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 import logging
 import os
+import sqlite3
+from chorus_engine.db.chroma_config_fix import normalize_collection_configs
 
 # Disable ChromaDB telemetry to avoid noisy warnings
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -36,6 +38,7 @@ class VectorStore:
         
         self.persist_directory = persist_directory
         self.persist_directory.mkdir(parents=True, exist_ok=True)
+        normalize_collection_configs(self.persist_directory)
         
         # Initialize ChromaDB client with persistence
         self.client = chromadb.PersistentClient(
@@ -73,11 +76,17 @@ class VectorStore:
             }
         
         try:
-            collection = self.client.get_or_create_collection(
+            # Prefer get-then-create; get_or_create can fail on some persisted config variants.
+            try:
+                collection = self.client.get_collection(name=collection_name)
+                return collection
+            except Exception:
+                pass
+            collection = self.client.create_collection(
                 name=collection_name,
                 metadata=metadata
             )
-            logger.debug(f"Collection '{collection_name}' ready (count: {collection.count()})")
+            logger.debug(f"Collection '{collection_name}' created (count: {collection.count()})")
             return collection
         except Exception as e:
             logger.error(f"Failed to get/create collection '{collection_name}': {e}")
@@ -133,6 +142,20 @@ class VectorStore:
             collections = self.client.list_collections()
             return [col.name for col in collections]
         except Exception as e:
+            # Fallback for Chroma config parse regressions (e.g., missing _type in config JSON).
+            if "_type" in str(e):
+                try:
+                    db_path = self.persist_directory / "chroma.sqlite3"
+                    conn = sqlite3.connect(str(db_path))
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT name FROM collections WHERE name LIKE 'character_%' ORDER BY name"
+                    )
+                    names = [row[0] for row in cur.fetchall()]
+                    conn.close()
+                    return names
+                except Exception as fallback_error:
+                    logger.error(f"Failed fallback list_collections: {fallback_error}")
             logger.error(f"Failed to list collections: {e}")
             return []
     
@@ -249,7 +272,7 @@ class VectorStore:
             )
             return results
         except Exception as e:
-            logger.error(f"Failed to query memories: {e}")
+            logger.error(f"[VECTOR_HEALTH][MEMORY_QUERY_ERROR] Failed to query memories for '{character_id}': {e}")
             return {
                 'ids': [[]],
                 'distances': [[]],

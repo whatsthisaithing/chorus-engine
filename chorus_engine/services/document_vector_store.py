@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import chromadb
 from chromadb.config import Settings
+from chorus_engine.db.chroma_config_fix import normalize_collection_configs
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class DocumentVectorStore:
         """
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
+        normalize_collection_configs(self.persist_directory)
         
         # Initialize ChromaDB client with persistence
         self.client = chromadb.PersistentClient(
@@ -37,14 +39,18 @@ class DocumentVectorStore:
             )
         )
         
-        # Get or create document collection
-        self.collection = self.client.get_or_create_collection(
-            name=self.COLLECTION_NAME,
-            metadata={
-                "hnsw:space": "cosine",  # Use cosine similarity
-                "description": "Document chunks for semantic retrieval"
-            }
-        )
+        metadata = {
+            "hnsw:space": "cosine",  # Use cosine similarity
+            "description": "Document chunks for semantic retrieval"
+        }
+        # Prefer get-then-create; get_or_create can fail on some persisted config variants.
+        try:
+            self.collection = self.client.get_collection(self.COLLECTION_NAME)
+        except Exception:
+            self.collection = self.client.create_collection(
+                name=self.COLLECTION_NAME,
+                metadata=metadata
+            )
         
         logger.info(f"DocumentVectorStore initialized: {self.persist_directory}")
         logger.info(f"Collection '{self.COLLECTION_NAME}' has {self.collection.count()} chunks")
@@ -127,11 +133,15 @@ class DocumentVectorStore:
         search_n = n_results * 3 if character_id is not None else n_results
         
         # Perform search
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=search_n,
-            where=where_filter if where_filter else None
-        )
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=search_n,
+                where=where_filter if where_filter else None
+            )
+        except Exception as e:
+            logger.error(f"[VECTOR_HEALTH][DOCUMENT_QUERY_ERROR] Document query failed: {e}")
+            return [], [], [], []
         
         # Extract results
         chunk_ids = results["ids"][0] if results["ids"] else []
@@ -205,10 +215,14 @@ class DocumentVectorStore:
             # Fetch more results for filtering
             search_n = n_results * 3
             
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=search_n
-            )
+            try:
+                results = self.collection.query(
+                    query_texts=[query],
+                    n_results=search_n
+                )
+            except Exception as e:
+                logger.error(f"[VECTOR_HEALTH][DOCUMENT_QUERY_ERROR] Scoped document query failed: {e}")
+                return [], [], [], []
             
             # Filter by document_ids
             chunk_ids = []
@@ -246,10 +260,14 @@ class DocumentVectorStore:
         )
         
         # Fallback: search all character's documents
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=n_results * 2  # Get extra for filtering
-        )
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=n_results * 2  # Get extra for filtering
+            )
+        except Exception as e:
+            logger.error(f"[VECTOR_HEALTH][DOCUMENT_QUERY_ERROR] Fallback document query failed: {e}")
+            return [], [], [], []
         
         # Post-filter by character_id
         chunk_ids = []

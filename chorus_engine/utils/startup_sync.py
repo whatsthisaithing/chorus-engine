@@ -17,8 +17,16 @@ from chorus_engine.db.conversation_summary_vector_store import ConversationSumma
 from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.models.conversation import ConversationSummary, Conversation, Memory
+from chorus_engine.models.document import Document, DocumentChunk
+from chorus_engine.services.document_vector_store import DocumentVectorStore
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_prefix(text: str, max_len: int = 160) -> str:
+    if not text:
+        return ""
+    return text[:max_len]
 
 
 async def sync_conversation_summary_vectors(
@@ -288,6 +296,173 @@ async def sync_memory_vectors(
         logger.error(f"Failed to sync memory vectors: {e}")
         stats["errors"] += 1
         return stats
+
+
+async def sync_document_vectors(
+    db_session: Session,
+    document_vector_store: DocumentVectorStore
+) -> dict:
+    """
+    Sync document vectors from SQL document_chunks into Chroma document library.
+
+    Rebuilds missing chunk vectors and removes orphaned chunk vectors.
+    """
+    stats = {
+        "synced": 0,
+        "skipped": 0,
+        "deleted_orphans": 0,
+        "errors": 0,
+        "documents": 0
+    }
+    try:
+        chunks = (
+            db_session.query(DocumentChunk, Document)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .filter(Document.processing_status == "completed")
+            .all()
+        )
+        stats["documents"] = len({doc.id for _, doc in chunks})
+
+        sql_chunk_ids = {chunk.chunk_id for chunk, _ in chunks if chunk.chunk_id}
+        collection = document_vector_store.collection
+
+        existing_ids = set()
+        try:
+            results = collection.get(include=[])
+            existing_ids = set(results.get("ids") or [])
+        except Exception as e:
+            logger.warning(f"[VECTOR_HEALTH] Could not enumerate document vector IDs: {e}")
+            stats["errors"] += 1
+            return stats
+
+        orphan_ids = existing_ids - sql_chunk_ids
+        if orphan_ids:
+            ids = list(orphan_ids)
+            batch_size = 200
+            for i in range(0, len(ids), batch_size):
+                batch = ids[i:i + batch_size]
+                try:
+                    collection.delete(ids=batch)
+                except Exception as e:
+                    logger.warning(f"Failed to delete document vector orphan batch: {e}")
+                    stats["errors"] += 1
+            stats["deleted_orphans"] = len(orphan_ids)
+
+        missing_ids = sql_chunk_ids - existing_ids
+        if not missing_ids:
+            stats["skipped"] = len(sql_chunk_ids)
+            return stats
+
+        # Re-add missing chunks with metadata equivalent to upload-time format.
+        to_add = [(chunk, doc) for chunk, doc in chunks if chunk.chunk_id in missing_ids]
+        chunk_ids: List[str] = []
+        texts: List[str] = []
+        metadatas: List[dict] = []
+        for chunk, doc in to_add:
+            metadata = {
+                "document_id": doc.id,
+                "document_title": doc.title or doc.filename,
+                "chunk_index": chunk.chunk_index,
+                "chunk_method": chunk.chunk_method,
+                "document_scope": doc.document_scope or "conversation",
+            }
+            if doc.character_id:
+                metadata["character_id"] = doc.character_id
+            if doc.conversation_id:
+                metadata["conversation_id"] = doc.conversation_id
+            if isinstance(chunk.metadata_json, dict):
+                for k, v in chunk.metadata_json.items():
+                    if v is not None:
+                        metadata[k] = v
+
+            chunk_ids.append(chunk.chunk_id)
+            texts.append(chunk.content)
+            metadatas.append(metadata)
+
+        try:
+            document_vector_store.add_chunks(
+                chunk_ids=chunk_ids,
+                texts=texts,
+                metadatas=metadatas
+            )
+            stats["synced"] = len(chunk_ids)
+            stats["skipped"] = len(sql_chunk_ids) - len(chunk_ids)
+        except Exception as e:
+            logger.error(f"Failed to add missing document vectors: {e}")
+            stats["errors"] += 1
+
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to sync document vectors: {e}")
+        stats["errors"] += 1
+        return stats
+
+
+def run_vector_health_checks(
+    db_session: Session,
+    vector_store: VectorStore,
+    summary_vector_store: ConversationSummaryVectorStore,
+    document_vector_store: DocumentVectorStore
+) -> dict:
+    """
+    Run lightweight operational checks for memory/summary/document vector stores.
+    """
+    report = {
+        "ok": True,
+        "issues": [],
+        "characters_checked": 0
+    }
+
+    # Collection listing checks.
+    _ = vector_store.list_collections()
+    _ = summary_vector_store.list_collections()
+    try:
+        _ = document_vector_store.collection.count()
+    except Exception as e:
+        report["issues"].append(f"document collection count failed: {e}")
+
+    # Character-level smoke tests for query/get paths.
+    character_ids = set()
+    for row in db_session.query(Memory.character_id).distinct().all():
+        if row[0]:
+            character_ids.add(row[0])
+    for row in db_session.query(Conversation.character_id).distinct().all():
+        if row[0]:
+            character_ids.add(row[0])
+
+    for character_id in sorted(character_ids):
+        report["characters_checked"] += 1
+        collection = vector_store.get_collection(character_id)
+        if collection is not None:
+            try:
+                count = collection.count()
+                if count > 0:
+                    # Use get-path smoke check to avoid false positives on fresh empty segment files.
+                    collection.get(limit=1, include=[])
+            except Exception as e:
+                report["issues"].append(
+                    f"memory get failed for '{character_id}': {e}"
+                )
+
+        summary_collection = summary_vector_store.get_collection(character_id)
+        if summary_collection is not None:
+            try:
+                count = summary_collection.count()
+                if count > 0:
+                    summary_collection.get(limit=1, include=[])
+            except Exception as e:
+                report["issues"].append(
+                    f"summary get failed for '{character_id}': {e}"
+                )
+
+    # Document collection get path smoke test.
+    try:
+        document_vector_store.collection.get(limit=1, include=[])
+    except Exception as e:
+        report["issues"].append(f"document get failed: {e}")
+
+    report["ok"] = len(report["issues"]) == 0
+    return report
 
 
 def _get_existing_vector_ids(

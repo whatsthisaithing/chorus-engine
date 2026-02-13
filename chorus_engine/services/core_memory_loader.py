@@ -87,17 +87,37 @@ class CoreMemoryLoader:
             logger.warning(f"Character {character_id} has no core memories defined")
             return 0
         
-        # Check if core memories already exist
-        existing_count = self.db.query(Memory).filter(
+        # Load existing core memories for incremental sync behavior.
+        # This allows newly added YAML core memories to be picked up on startup
+        # without requiring a full reload endpoint call.
+        existing_core_memories = self.db.query(Memory).filter(
             Memory.character_id == character_id,
             Memory.memory_type == MemoryType.CORE
-        ).count()
-        
-        if existing_count > 0:
-            logger.info(f"Core memories already loaded for {character_id} ({existing_count} memories)")
+        ).all()
+
+        existing_content_set = {
+            (m.content or "").strip()
+            for m in existing_core_memories
+            if m.content
+        }
+
+        missing_core_memories = [
+            core_mem
+            for core_mem in core_memories
+            if (core_mem.content or "").strip() not in existing_content_set
+        ]
+
+        if not missing_core_memories:
+            logger.info(
+                f"Core memories already loaded for {character_id} "
+                f"({len(existing_core_memories)} memories, 0 missing from YAML)"
+            )
             return 0
-        
-        logger.info(f"Found {len(core_memories)} core memories to load")
+
+        logger.info(
+            f"Found {len(missing_core_memories)} missing core memories to load "
+            f"for {character_id} (existing: {len(existing_core_memories)}, yaml: {len(core_memories)})"
+        )
         
         # Prepare memory contents and metadata
         memory_contents = []
@@ -106,7 +126,7 @@ class CoreMemoryLoader:
         # Priority mapping: low=60, medium=80, high=95
         priority_map = {"low": 60, "medium": 80, "high": 95}
         
-        for idx, core_mem in enumerate(core_memories):
+        for idx, core_mem in enumerate(missing_core_memories):
             memory_contents.append(core_mem.content)
             priority = priority_map.get(core_mem.embedding_priority, 80)
             
@@ -145,7 +165,7 @@ class CoreMemoryLoader:
         new_memories = []
         
         for idx, (content, vector_id, metadata, core_mem) in enumerate(zip(
-            memory_contents, vector_ids, memory_metadata_list, core_memories
+            memory_contents, vector_ids, memory_metadata_list, missing_core_memories
         )):
             memory = Memory(
                 character_id=character_id,
