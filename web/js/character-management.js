@@ -122,6 +122,12 @@ window.CharacterManagement = {
             document.getElementById('ttsComfyuiSettings').style.display = isComfyui ? 'block' : 'none';
             document.getElementById('ttsChatterboxSettings').style.display = isComfyui ? 'none' : 'block';
         });
+
+        // Character backup settings toggle
+        document.getElementById('charBackupEnabled')?.addEventListener('change', (e) => {
+            const settings = document.getElementById('charBackupSettings');
+            if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
+        });
         
         // LLM Model mode toggle
         document.querySelectorAll('input[name="charLlmModelMode"]').forEach(radio => {
@@ -537,6 +543,17 @@ window.CharacterManagement = {
         document.getElementById('charCodeExecEnabled').checked = Boolean(codeExec.enabled);
         document.getElementById('charCodeMaxTime').value = codeExec.max_execution_time || 30;
         document.getElementById('charCodeAllowedLibs').value = codeExec.allowed_libraries ? codeExec.allowed_libraries.join(', ') : '';
+
+        // Character scheduled backup settings
+        const backup = character.backup || {};
+        const backupEnabled = Boolean(backup.enabled);
+        document.getElementById('charBackupEnabled').checked = backupEnabled;
+        document.getElementById('charBackupSettings').style.display = backupEnabled ? 'block' : 'none';
+        document.getElementById('charBackupSchedule').value = backup.schedule || 'daily';
+        document.getElementById('charBackupLocalTime').value = backup.local_time || '03:00';
+        document.getElementById('charBackupDestinationOverride').value = backup.destination_override ? String(backup.destination_override) : '';
+        document.getElementById('charBackupIncludeWorkflows').checked = backup.include_workflows !== false;
+        document.getElementById('charBackupNotesTemplate').value = backup.notes_template || '';
         
         // VOICE/TTS TAB
         const voice = character.voice || {};
@@ -691,6 +708,13 @@ window.CharacterManagement = {
         document.getElementById('charOfferCooldownMinutes').value = '';
         document.getElementById('charOfferMinTurnGap').value = '';
         document.getElementById('charOfferMaxPerConversation').value = '';
+        document.getElementById('charBackupEnabled').checked = false;
+        document.getElementById('charBackupSchedule').value = 'daily';
+        document.getElementById('charBackupLocalTime').value = '03:00';
+        document.getElementById('charBackupDestinationOverride').value = '';
+        document.getElementById('charBackupIncludeWorkflows').checked = true;
+        document.getElementById('charBackupNotesTemplate').value = '';
+        document.getElementById('charBackupSettings').style.display = 'none';
         
         // User identity defaults
         document.getElementById('charUserIdentityMode').value = 'canonical';
@@ -799,8 +823,19 @@ window.CharacterManagement = {
             },
             code_execution: {
                 enabled: document.getElementById('charCodeExecEnabled').checked
+            },
+            backup: {
+                enabled: document.getElementById('charBackupEnabled').checked,
+                schedule: document.getElementById('charBackupSchedule').value || 'daily',
+                local_time: document.getElementById('charBackupLocalTime').value || '03:00',
+                include_workflows: document.getElementById('charBackupIncludeWorkflows').checked
             }
         };
+
+        const backupDestinationOverride = document.getElementById('charBackupDestinationOverride').value.trim();
+        characterData.backup.destination_override = backupDestinationOverride || null;
+        const backupNotesTemplate = document.getElementById('charBackupNotesTemplate').value.trim();
+        characterData.backup.notes_template = backupNotesTemplate || null;
 
         // Proactive offer overrides (nullable -> inherit system defaults)
         const imageOfferMode = document.getElementById('charImageOfferEnabledMode').value;
@@ -981,6 +1016,30 @@ window.CharacterManagement = {
             if (this.isEditMode && IMMUTABLE_CHARACTERS.includes(character.id)) {
                 this.showFormStatus('Cannot modify immutable character. Clone it instead.', 'danger');
                 return;
+            }
+
+            if (character.backup?.enabled) {
+                const timeText = character.backup.local_time || '';
+                const timeMatch = /^(\d{2}):(\d{2})$/.exec(timeText);
+                if (!timeMatch) {
+                    this.showFormStatus('Backup local time must be in HH:MM format.', 'warning');
+                    return;
+                }
+                const hour = parseInt(timeMatch[1], 10);
+                const minute = parseInt(timeMatch[2], 10);
+                if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+                    this.showFormStatus('Backup local time must be a valid 24h time.', 'warning');
+                    return;
+                }
+            }
+
+            if (character.backup?.destination_override) {
+                const overridePath = character.backup.destination_override;
+                const isAbsolute = /^([a-zA-Z]:[\\/]|\/)/.test(overridePath);
+                if (!isAbsolute) {
+                    this.showFormStatus('Backup destination override must be an absolute path.', 'warning');
+                    return;
+                }
             }
             
             this.showFormStatus('Saving...', 'info');

@@ -1346,6 +1346,100 @@
                                         background tasks like conversation analysis run automatically. The GPU check adds a final safety gate 
                                         to avoid interfering with external GPU workloads.
                                     </div>
+
+                                    <!-- Daily Character Backups -->
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-save2 me-2"></i>Daily Character Backups</h6>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="heartbeat_backups_enabled">
+                                                <label class="form-check-label text-light" for="heartbeat_backups_enabled">
+                                                    Enable Daily Backup Scheduler
+                                                </label>
+                                            </div>
+                                            <div class="form-text text-secondary">Runs opt-in character backups during idle heartbeat cycles.</div>
+                                        </div>
+                                    </div>
+                                    <div id="heartbeat_backups_settings" style="display: none;">
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label text-light">Destination Folder (absolute path)</label>
+                                                <input type="text" class="form-control bg-dark text-light border-secondary" id="heartbeat_backups_destination_dir" placeholder="D:/Backups/Chorus">
+                                                <div class="form-text text-secondary">Global backup destination. Required when enabled.</div>
+                                            </div>
+                                            <div class="col-md-3 mb-3">
+                                                <label class="form-label text-light">Interval (hours)</label>
+                                                <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_backups_interval_hours" min="1" max="168" placeholder="24">
+                                                <div class="form-text text-secondary">Minimum hours between scheduled runs.</div>
+                                            </div>
+                                            <div class="col-md-3 mb-3">
+                                                <label class="form-label text-light">Retention (days)</label>
+                                                <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_backups_retention_days" min="1" max="365" placeholder="14">
+                                                <div class="form-text text-secondary">Delete backups older than this many days.</div>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-md-3 mb-3">
+                                                <label class="form-label text-light">Max Backups/Cycle</label>
+                                                <input type="number" class="form-control bg-dark text-light border-secondary" id="heartbeat_backups_max_backups_per_cycle" min="1" max="20" placeholder="2">
+                                                <div class="form-text text-secondary">Safety cap per heartbeat cycle.</div>
+                                            </div>
+                                            <div class="col-md-3 mb-3">
+                                                <div class="form-check form-switch mt-4">
+                                                    <input class="form-check-input" type="checkbox" id="heartbeat_backups_skip_if_unchanged">
+                                                    <label class="form-check-label text-light" for="heartbeat_backups_skip_if_unchanged">
+                                                        Skip If Unchanged
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3 mb-3">
+                                                <div class="form-check form-switch mt-4">
+                                                    <input class="form-check-input" type="checkbox" id="heartbeat_backups_verify_archive">
+                                                    <label class="form-check-label text-light" for="heartbeat_backups_verify_archive">
+                                                        Verify Archive
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Startup Vector Sync Configuration -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header bg-secondary">
+                                <h6 class="mb-0"><i class="bi bi-arrow-repeat me-2"></i>Startup Vector Sync</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="startup_sync_memory_vectors">
+                                            <label class="form-check-label text-light" for="startup_sync_memory_vectors">
+                                                Sync Memory Vectors
+                                            </label>
+                                        </div>
+                                        <div class="form-text text-secondary">Reconcile missing/orphaned memory vectors at startup.</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="startup_sync_summary_vectors">
+                                            <label class="form-check-label text-light" for="startup_sync_summary_vectors">
+                                                Sync Summary Vectors
+                                            </label>
+                                        </div>
+                                        <div class="form-text text-secondary">Reconcile conversation summary vectors at startup.</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="startup_sync_moment_pin_vectors">
+                                            <label class="form-check-label text-light" for="startup_sync_moment_pin_vectors">
+                                                Sync Moment Pin Vectors
+                                            </label>
+                                        </div>
+                                        <div class="form-text text-secondary">Reconcile moment pin vectors at startup.</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2357,6 +2451,51 @@
                                         <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#codeExecAdvanced">
                                             <i class="bi bi-chevron-down"></i> Advanced Options
                                         </button>
+
+                                        <h6 class="mt-4 mb-3">Scheduled Backups</h6>
+                                        <div class="mb-2">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charBackupEnabled">
+                                                <label class="form-check-label" for="charBackupEnabled">
+                                                    <strong>Enable Daily Backups For This Character</strong>
+                                                </label>
+                                            </div>
+                                            <small class="text-theme-secondary d-block mt-1">Requires global heartbeat backups to be enabled in system settings.</small>
+                                        </div>
+                                        <div id="charBackupSettings" class="card card-body bg-dark mt-2" style="display: none;">
+                                            <div class="row">
+                                                <div class="col-md-4 mb-2">
+                                                    <label class="form-label">Schedule</label>
+                                                    <select class="form-select form-select-sm" id="charBackupSchedule">
+                                                        <option value="daily">Daily</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-4 mb-2">
+                                                    <label class="form-label">Local Time</label>
+                                                    <input type="time" class="form-control form-control-sm" id="charBackupLocalTime" value="03:00">
+                                                    <small class="text-theme-secondary">24h format (HH:MM)</small>
+                                                </div>
+                                                <div class="col-md-4 mb-2">
+                                                    <div class="form-check mt-4">
+                                                        <input class="form-check-input" type="checkbox" id="charBackupIncludeWorkflows" checked>
+                                                        <label class="form-check-label" for="charBackupIncludeWorkflows">
+                                                            Include Workflows
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="mb-2">
+                                                <label class="form-label">Destination Override (optional absolute path)</label>
+                                                <input type="text" class="form-control form-control-sm" id="charBackupDestinationOverride"
+                                                       placeholder="e.g., D:/Backups/CharacterSpecific">
+                                                <small class="text-theme-secondary">Leave empty to use global destination.</small>
+                                            </div>
+                                            <div class="mb-0">
+                                                <label class="form-label">Notes Template (optional)</label>
+                                                <textarea class="form-control form-control-sm" id="charBackupNotesTemplate" rows="2"
+                                                          placeholder="Optional backup notes template"></textarea>
+                                            </div>
+                                        </div>
                                     </div>
                                     
                                     <!-- VOICE/TTS TAB -->

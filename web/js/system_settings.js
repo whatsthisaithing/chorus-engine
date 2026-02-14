@@ -53,6 +53,14 @@ class SystemSettingsManager {
                 if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
             });
         }
+
+        const heartbeatBackupsToggle = document.getElementById('heartbeat_backups_enabled');
+        if (heartbeatBackupsToggle) {
+            heartbeatBackupsToggle.addEventListener('change', (e) => {
+                const settings = document.getElementById('heartbeat_backups_settings');
+                if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
+            });
+        }
         
         // Save button
         const saveBtn = document.getElementById('saveSystemSettingsBtn');
@@ -213,6 +221,23 @@ class SystemSettingsManager {
         document.getElementById('heartbeat_analysis_memories_batch_size').value = heartbeat.analysis_memories_batch_size || 3;
         document.getElementById('heartbeat_gpu_check_enabled').checked = heartbeat.gpu_check_enabled || false;
         document.getElementById('heartbeat_gpu_max_utilization_percent').value = heartbeat.gpu_max_utilization_percent || 15;
+
+        const heartbeatBackups = heartbeat.backups || {};
+        const heartbeatBackupsEnabled = heartbeatBackups.enabled !== false;
+        document.getElementById('heartbeat_backups_enabled').checked = heartbeatBackupsEnabled;
+        document.getElementById('heartbeat_backups_settings').style.display = heartbeatBackupsEnabled ? 'block' : 'none';
+        document.getElementById('heartbeat_backups_destination_dir').value = heartbeatBackups.destination_dir || '';
+        document.getElementById('heartbeat_backups_interval_hours').value = heartbeatBackups.interval_hours ?? 24;
+        document.getElementById('heartbeat_backups_retention_days').value = heartbeatBackups.retention_days ?? 14;
+        document.getElementById('heartbeat_backups_max_backups_per_cycle').value = heartbeatBackups.max_backups_per_cycle ?? 2;
+        document.getElementById('heartbeat_backups_skip_if_unchanged').checked = heartbeatBackups.skip_if_unchanged !== false;
+        document.getElementById('heartbeat_backups_verify_archive').checked = heartbeatBackups.verify_archive !== false;
+
+        // Startup vector sync configuration
+        const startup = config.startup || {};
+        document.getElementById('startup_sync_memory_vectors').checked = startup.sync_memory_vectors !== false;
+        document.getElementById('startup_sync_summary_vectors').checked = startup.sync_summary_vectors !== false;
+        document.getElementById('startup_sync_moment_pin_vectors').checked = startup.sync_moment_pin_vectors !== false;
         
         // Time Context Configuration
         const timeContext = config.time_context || {};
@@ -333,7 +358,21 @@ class SystemSettingsManager {
                 analysis_memories_min_messages: parseInt(document.getElementById('heartbeat_analysis_memories_min_messages').value),
                 analysis_memories_batch_size: parseInt(document.getElementById('heartbeat_analysis_memories_batch_size').value),
                 gpu_check_enabled: document.getElementById('heartbeat_gpu_check_enabled').checked,
-                gpu_max_utilization_percent: parseInt(document.getElementById('heartbeat_gpu_max_utilization_percent').value)
+                gpu_max_utilization_percent: parseInt(document.getElementById('heartbeat_gpu_max_utilization_percent').value),
+                backups: {
+                    enabled: document.getElementById('heartbeat_backups_enabled').checked,
+                    destination_dir: document.getElementById('heartbeat_backups_destination_dir').value.trim(),
+                    interval_hours: parseInt(document.getElementById('heartbeat_backups_interval_hours').value),
+                    retention_days: parseInt(document.getElementById('heartbeat_backups_retention_days').value),
+                    max_backups_per_cycle: parseInt(document.getElementById('heartbeat_backups_max_backups_per_cycle').value),
+                    skip_if_unchanged: document.getElementById('heartbeat_backups_skip_if_unchanged').checked,
+                    verify_archive: document.getElementById('heartbeat_backups_verify_archive').checked
+                }
+            },
+            startup: {
+                sync_memory_vectors: document.getElementById('startup_sync_memory_vectors').checked,
+                sync_summary_vectors: document.getElementById('startup_sync_summary_vectors').checked,
+                sync_moment_pin_vectors: document.getElementById('startup_sync_moment_pin_vectors').checked
             },
             time_context: {
                 enabled: document.getElementById('time_context_enabled').checked,
@@ -357,8 +396,15 @@ class SystemSettingsManager {
             return;
         }
 
+        const backupsEnabled = document.getElementById('heartbeat_backups_enabled').checked;
+        const backupsDestination = document.getElementById('heartbeat_backups_destination_dir').value.trim();
+        if (backupsEnabled && !backupsDestination) {
+            UI.showToast('Heartbeat backups are enabled, but destination folder is empty.', 'danger');
+            return;
+        }
+
         // Confirm restart
-        if (!confirm('⚠️ Saving will restart the server. All active connections will be closed.\n\nContinue?')) {
+        if (!confirm('WARNING: Saving will restart the server. All active connections will be closed.\n\nContinue?')) {
             return;
         }
 
