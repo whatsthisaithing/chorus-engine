@@ -7,6 +7,7 @@ class SystemSettingsManager {
     constructor() {
         this.modal = null;
         this.form = null;
+        this.loadedConfig = null;
     }
 
     init() {
@@ -83,6 +84,7 @@ class SystemSettingsManager {
         try {
             // Load current settings
             const config = await this.loadSystemConfig();
+            this.loadedConfig = config;
             this.populateForm(config);
             this.modal.show();
         } catch (error) {
@@ -384,7 +386,9 @@ class SystemSettingsManager {
             },
             api_host: document.getElementById('api_host').value,
             api_port: parseInt(document.getElementById('api_port').value),
-            debug: document.getElementById('debug').checked
+            debug: document.getElementById('debug').checked,
+            // Preserve debug_ui as a dev-only flag managed outside the normal UI.
+            debug_ui: !!(this.loadedConfig && this.loadedConfig.debug_ui)
         };
         
         return data;

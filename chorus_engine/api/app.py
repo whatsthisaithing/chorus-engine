@@ -7,7 +7,7 @@ import subprocess
 import json
 import yaml
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
@@ -117,6 +117,7 @@ from chorus_engine.services.intent_detection_service import IntentDetectionServi
 
 # Phase 10 imports (Integrated LLM)
 from chorus_engine.api.model_routes import router as model_router
+from chorus_engine.ens import ENSRuntime, ENSContext, SignalEnvelope
 
 logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
@@ -331,6 +332,7 @@ app_state = {
     "analysis_service": None,  # Phase 8
     "document_manager": None,  # Phase 1: Document analysis
     "idle_detector": None,  # Phase D: Activity tracking for background processing
+    "ens_runtime": None,  # ENS runtime
 }
 
 
@@ -581,6 +583,7 @@ async def lifespan(app: FastAPI):
         app_state["analysis_service"] = analysis_service  # Phase 8
         app_state["continuity_service"] = continuity_service
         app_state["db_session"] = db_session  # Store for cleanup on shutdown
+        app_state["ens_runtime"] = ENSRuntime(app_state)
         
         # Initialize document management service (Phase 1)
         document_manager = DocumentManagementService()
@@ -759,6 +762,7 @@ async def lifespan(app: FastAPI):
                 CharacterBackupTaskHandler,
                 queue_due_character_backups,
             )
+            from chorus_engine.services.ens_retention_task import ENSRetentionTaskHandler
             
             summary_batch_size = getattr(heartbeat_config, "analysis_summary_batch_size", heartbeat_config.analysis_batch_size)
             memories_batch_size = getattr(heartbeat_config, "analysis_memories_batch_size", heartbeat_config.analysis_batch_size)
@@ -779,6 +783,7 @@ async def lifespan(app: FastAPI):
             heartbeat_service.register_handler(ConversationAnalysisTaskHandler())
             heartbeat_service.register_handler(ContinuityBootstrapTaskHandler())
             heartbeat_service.register_handler(CharacterBackupTaskHandler())
+            heartbeat_service.register_handler(ENSRetentionTaskHandler())
             
             # Create stale conversation finder
             stale_finder = StaleConversationFinder(
@@ -844,11 +849,35 @@ async def lifespan(app: FastAPI):
                             max_backups_per_cycle=backups_cfg.max_backups_per_cycle,
                             global_destination=backups_cfg.destination_dir,
                         )
+                    queued_retention = 0
+                    ens_cfg = getattr(app_st.get("system_config"), "ens", None)
+                    if ens_cfg and ens_cfg.enabled:
+                        existing = getattr(heartbeat_svc, "_task_queue", [])
+                        already_queued = any(
+                            t.task_type == "ens_retention" and t.status.value == "pending"
+                            for t in existing
+                        )
+                        if not already_queued:
+                            heartbeat_svc.queue_task(
+                                task_type="ens_retention",
+                                data={
+                                    "max_rows_per_run": 500,
+                                    "max_seconds_per_run": 2.5,
+                                    "sql_retention_days": 30,
+                                    "jsonl_retention_days": 14,
+                                    "compress_on_rotation": True,
+                                    "max_jsonl_size_mb": 25,
+                                },
+                                priority=TaskPriority.LOW,
+                                task_id="ens_retention_maintenance",
+                            )
+                            queued_retention = 1
                     logger.info(
                         f"[TASK FINDER] Queued {queued_summary} summaries and "
                         f"{queued_memories} memory extractions for analysis "
                         f"and {queued_continuity} continuity refresh(es) "
-                        f"and {queued_backups} scheduled backup(s)"
+                        f"and {queued_backups} scheduled backup(s) "
+                        f"and {queued_retention} retention maintenance task(s)"
                     )
                 except Exception as e:
                     logger.error(f"[TASK FINDER] Error finding stale conversations: {e}", exc_info=True)
@@ -3181,6 +3210,184 @@ async def get_intent_detection_log(lines: int = Query(default=100, le=1000)):
         raise HTTPException(status_code=500, detail=f"Failed to read intent detection log: {e}")
 
 
+def _ens_flags():
+    system_config = app_state.get("system_config")
+    ens_cfg = getattr(system_config, "ens", None) if system_config else None
+    return {
+        "enabled": bool(ens_cfg and ens_cfg.enabled),
+        "slice1_chat_ownership": bool(ens_cfg and ens_cfg.slice1_chat_ownership),
+        "nonstream_intake_only": bool(ens_cfg and getattr(ens_cfg, "nonstream_intake_only", False)),
+        "streaming_intake_only": bool(ens_cfg and ens_cfg.streaming_intake_only),
+    }
+
+
+async def _ens_simple_chat(request: ChatRequest) -> ChatResponse:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="chat.simple",
+        scope="ASSISTANT",
+        source="external",
+        assistant_id=request.character_id,
+        payload={"content": request.message},
+    )
+    outcome = await runtime.ingest(signal, ENSContext(app_state=app_state, surface="web", source="web"))
+    return ChatResponse(
+        response=outcome.response_payload.get("content", ""),
+        character_name=outcome.response_payload.get("character_name", request.character_id),
+    )
+
+
+async def _ens_thread_chat(
+    *,
+    thread_id: str,
+    request: ChatInThreadRequest,
+    db: Session,
+    conversation: Conversation,
+    character_id: str,
+) -> ChatInThreadResponse:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="user.message",
+        scope="SESSION",
+        source="external",
+        assistant_id=character_id,
+        payload={
+            "thread_id": thread_id,
+            "conversation_id": conversation.id,
+            "content": request.message,
+            "metadata": request.metadata,
+            "is_private": conversation.is_private == "true",
+            "client_message_id": (request.metadata or {}).get("client_message_id"),
+        },
+        tags=["latency_sensitive"] if (request.conversation_source or conversation.source) == "voice" else [],
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=request.conversation_source or conversation.source or "web",
+            source=request.conversation_source or conversation.source or "web",
+        ),
+    )
+
+    user_message_id = outcome.response_payload.get("user_message_id")
+    assistant_message_id = outcome.response_payload.get("assistant_message_id")
+    if not user_message_id or not assistant_message_id:
+        raise HTTPException(status_code=500, detail="ENS chat outcome missing message identifiers")
+
+    msg_repo = MessageRepository(db)
+    user_message = msg_repo.get_by_id(user_message_id)
+    assistant_message = msg_repo.get_by_id(assistant_message_id)
+    if not user_message or not assistant_message:
+        raise HTTPException(status_code=500, detail="ENS chat persisted messages could not be loaded")
+
+    return ChatInThreadResponse(
+        user_message=MessageResponse.from_orm(user_message, db_session=db),
+        assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
+        pending_tool_calls=[],
+        conversation_title_updated=None,
+    )
+
+
+async def _ens_nonstream_intake_only(
+    *,
+    thread_id: str,
+    request: ChatInThreadRequest,
+    conversation: Conversation,
+    character_id: str,
+) -> None:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="user.message.nonstream_intake",
+        scope="SESSION",
+        source="external",
+        assistant_id=character_id,
+        payload={
+            "thread_id": thread_id,
+            "conversation_id": conversation.id,
+            "content": request.message,
+            "metadata": request.metadata,
+            "is_private": conversation.is_private == "true",
+            "client_message_id": (request.metadata or {}).get("client_message_id"),
+            "speaker_external_id": (request.metadata or {}).get("discord_user_id"),
+            "speaker_role": "user",
+            "latency_sensitive": False,
+        },
+    )
+    await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=request.conversation_source or conversation.source or "web",
+            source=request.conversation_source or conversation.source or "web",
+        ),
+    )
+
+
+async def _ens_history_message_add(
+    *,
+    thread_id: str,
+    message: dict,
+    conversation: Conversation,
+    db: Session,
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="external.history.message",
+        scope="SESSION",
+        source="external",
+        assistant_id=conversation.character_id,
+        payload={
+            "thread_id": thread_id,
+            "conversation_id": conversation.id,
+            "content": message.get("content"),
+            "role": message.get("role", "user"),
+            "metadata": message.get("metadata", {}),
+            "is_private": conversation.is_private == "true",
+            "client_message_id": (message.get("metadata") or {}).get("client_message_id"),
+            "speaker_external_id": (message.get("metadata") or {}).get("discord_user_id"),
+            "speaker_role": "assistant" if message.get("role") == "assistant" else "user",
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=conversation.source or "web",
+            source=conversation.source or "web",
+        ),
+    )
+
+    history_message_id = outcome.response_payload.get("history_message_id")
+    if not history_message_id:
+        raise HTTPException(status_code=500, detail="ENS history ingestion failed")
+
+    msg_repo = MessageRepository(db)
+    new_message = msg_repo.get_by_id(history_message_id)
+    if not new_message:
+        raise HTTPException(status_code=500, detail="ENS history message not found after write")
+
+    return {
+        "id": new_message.id,
+        "thread_id": new_message.thread_id,
+        "role": new_message.role.value if hasattr(new_message.role, "value") else str(new_message.role),
+        "content": new_message.content,
+        "created_at": new_message.created_at.isoformat(),
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -3200,6 +3407,10 @@ async def chat(request: ChatRequest):
         )
     
     character = characters[request.character_id]
+
+    flags = _ens_flags()
+    if flags["enabled"]:
+        return await _ens_simple_chat(request)
     
     # Check LLM availability
     if not llm_client:
@@ -4360,6 +4571,26 @@ async def send_message(
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
     
     character = app_state["characters"][character_id]
+
+    flags = _ens_flags()
+    if flags["enabled"] and (flags["nonstream_intake_only"] or not flags["slice1_chat_ownership"]):
+        try:
+            await _ens_nonstream_intake_only(
+                thread_id=thread_id,
+                request=request,
+                conversation=conversation,
+                character_id=character_id,
+            )
+        except Exception as e:
+            logger.error(f"ENS non-stream intake failed: {e}", exc_info=True)
+    elif flags["enabled"]:
+        return await _ens_thread_chat(
+            thread_id=thread_id,
+            request=request,
+            db=db,
+            conversation=conversation,
+            character_id=character_id,
+        )
     
     # Check LLM availability
     llm_client = app_state["llm_client"]
@@ -5474,6 +5705,15 @@ async def add_message_without_response(
     
     if role not in ['user', 'assistant']:
         raise HTTPException(status_code=400, detail="Role must be 'user' or 'assistant'")
+
+    flags = _ens_flags()
+    if flags["enabled"] and flags["slice1_chat_ownership"]:
+        return await _ens_history_message_add(
+            thread_id=thread_id,
+            message=message,
+            conversation=conversation,
+            db=db,
+        )
     
     # Create message
     msg_repo = MessageRepository(db)
@@ -5688,6 +5928,37 @@ async def send_message_stream(
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
     
     character = app_state["characters"][character_id]
+
+    flags = _ens_flags()
+    if flags["enabled"] and flags["streaming_intake_only"]:
+        try:
+            intake_signal = SignalEnvelope(
+                type="user.message.stream_intake",
+                scope="SESSION",
+                source="external",
+                assistant_id=character_id,
+                payload={
+                    "thread_id": thread_id,
+                    "conversation_id": conversation.id,
+                    "content": request.message,
+                    "metadata": request.metadata,
+                    "is_private": conversation.is_private == "true",
+                    "client_message_id": (request.metadata or {}).get("client_message_id"),
+                    "speaker_external_id": (request.metadata or {}).get("discord_user_id"),
+                    "speaker_role": "user",
+                    "latency_sensitive": True,
+                },
+            )
+            await app_state["ens_runtime"].ingest(
+                intake_signal,
+                ENSContext(
+                    app_state=app_state,
+                    surface=request.conversation_source or conversation.source or "web",
+                    source=request.conversation_source or conversation.source or "web",
+                ),
+            )
+        except Exception as e:
+            logger.error(f"ENS stream intake failed: {e}", exc_info=True)
     
     # Check LLM availability
     llm_client = app_state["llm_client"]

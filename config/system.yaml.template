@@ -231,6 +231,14 @@ heartbeat:
     skip_if_unchanged: true          # Skip if manifest fingerprint unchanged since last success
     verify_archive: true             # Validate archive integrity with zipfile test
 
+# Executive Nervous System (ENS) rollout flags
+ens:
+  enabled: false
+  slice1_chat_ownership: false
+  nonstream_intake_only: true
+  streaming_intake_only: true
+  slice1_compat_postprocessing_enabled: false
+
 # Startup synchronization
 startup:
   sync_summary_vectors: true         # Auto-sync missing conversation summaries on startup
@@ -250,3 +258,4 @@ ui:
 api_host: localhost
 api_port: 8080
 debug: true
+debug_ui: false

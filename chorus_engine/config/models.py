@@ -517,6 +517,19 @@ class HeartbeatConfig(BaseModel):
     backups: HeartbeatBackupsConfig = Field(default_factory=HeartbeatBackupsConfig)
 
 
+class ENSConfig(BaseModel):
+    """ENS feature flags for incremental rollout."""
+
+    enabled: bool = Field(default=False, description="Enable ENS routing")
+    slice1_chat_ownership: bool = Field(default=False, description="Route non-stream chat through ENS core actions")
+    nonstream_intake_only: bool = Field(
+        default=True,
+        description="When true, non-stream /messages remains on legacy execution and ENS records intake decisions only",
+    )
+    streaming_intake_only: bool = Field(default=True, description="Stream route uses ENS intake only")
+    slice1_compat_postprocessing_enabled: bool = Field(default=False, description="Temporary legacy post-processing after ENS core actions")
+
+
 class SystemConfig(BaseModel):
     """Top-level system configuration."""
     
@@ -532,12 +545,14 @@ class SystemConfig(BaseModel):
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     conversation_context: ConversationContextConfig = Field(default_factory=ConversationContextConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    ens: ENSConfig = Field(default_factory=ENSConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     startup: StartupConfig = Field(default_factory=StartupConfig)
     user_identity: UserIdentityConfig = Field(default_factory=UserIdentityConfig)
     time_context: TimeContextConfig = Field(default_factory=TimeContextConfig)
     debug: bool = False
+    debug_ui: bool = False
     api_host: str = "localhost"
     api_port: int = Field(default=8080, gt=0, le=65535)
     

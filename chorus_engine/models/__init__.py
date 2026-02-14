@@ -14,6 +14,7 @@ from .continuity import (
 from .workflow import Workflow
 from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
 from .custom_model import DownloadedModel
+from .ens import ENSSession, ENSDecision, ENSActionResult
 
 __all__ = [
     "Conversation",
@@ -38,4 +39,7 @@ __all__ = [
     "DocumentAccessLog",
     "CodeExecutionLog",
     "DownloadedModel",
+    "ENSSession",
+    "ENSDecision",
+    "ENSActionResult",
 ]

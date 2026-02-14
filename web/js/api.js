@@ -284,25 +284,85 @@ class API {
             body: JSON.stringify({ message_ids: messageIds }),
         });
     }
-    
-    static async sendMessage(threadId, message, attachmentId = null) {
-        // Get user metadata if UserManager is available
+
+    static createClientMessageId() {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+        return `cmid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    static _buildMessageMetadata(extraMetadata = null) {
+        const metadata = {};
+        if (typeof userManager !== 'undefined') {
+            Object.assign(metadata, userManager.getUserMetadata());
+        }
+        if (extraMetadata && typeof extraMetadata === 'object') {
+            Object.assign(metadata, extraMetadata);
+        }
+        return metadata;
+    }
+
+    static buildNonStreamMessagePayload(message, attachmentId = null, options = {}) {
         const payload = { message };
-        
         if (attachmentId) {
             payload.image_attachment_ids = Array.isArray(attachmentId) ? attachmentId : [attachmentId];
         }
-        
+
+        const metadata = this._buildMessageMetadata(options.metadata || null);
+        if (options.clientMessageId) {
+            metadata.client_message_id = options.clientMessageId;
+        }
+        if (Object.keys(metadata).length > 0) {
+            payload.metadata = metadata;
+        }
+
         if (typeof userManager !== 'undefined') {
-            payload.metadata = userManager.getUserMetadata();
             payload.primary_user = userManager.getUsername();
             payload.conversation_source = 'web';
         }
-        
-        return this.request(`/threads/${threadId}/messages`, {
+
+        return payload;
+    }
+
+    static buildNonStreamMessageRequest(threadId, payload) {
+        return {
+            url: `/threads/${threadId}/messages`,
             method: 'POST',
-            body: JSON.stringify(payload),
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.parse(JSON.stringify(payload)),
+            client_message_id: (payload.metadata || {}).client_message_id || null,
+        };
+    }
+
+    static async sendMessageWithPayload(threadId, payload) {
+        const requestSnapshot = this.buildNonStreamMessageRequest(threadId, payload);
+        const response = await this.request(requestSnapshot.url, {
+            method: requestSnapshot.method,
+            headers: requestSnapshot.headers,
+            body: JSON.stringify(requestSnapshot.body),
         });
+        return { response, requestSnapshot };
+    }
+
+    static async replayNonStreamAttempt(requestSnapshot) {
+        if (!requestSnapshot || !requestSnapshot.url || !requestSnapshot.method) {
+            throw new Error('No stored send attempt available to replay');
+        }
+        const response = await this.request(requestSnapshot.url, {
+            method: requestSnapshot.method,
+            headers: requestSnapshot.headers || { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestSnapshot.body || {}),
+        });
+        return response;
+    }
+
+    static async sendMessage(threadId, message, attachmentId = null) {
+        const payload = this.buildNonStreamMessagePayload(message, attachmentId);
+        const result = await this.sendMessageWithPayload(threadId, payload);
+        return result.response;
     }
     
     /**
@@ -317,19 +377,7 @@ class API {
         const url = `${API_BASE_URL}/threads/${threadId}/messages/stream`;
         
         // Build payload with user metadata
-        const payload = { message };
-        
-        // Task 1.8 & 3.1: Add attachment_ids array if present (backward compatible with single ID)
-        if (attachmentId) {
-            // Always send as array for consistency with backend
-            payload.image_attachment_ids = Array.isArray(attachmentId) ? attachmentId : [attachmentId];
-        }
-        
-        if (typeof userManager !== 'undefined') {
-            payload.metadata = userManager.getUserMetadata();
-            payload.primary_user = userManager.getUsername();
-            payload.conversation_source = 'web';
-        }
+        const payload = this.buildNonStreamMessagePayload(message, attachmentId);
         
         try {
             const response = await fetch(url, {

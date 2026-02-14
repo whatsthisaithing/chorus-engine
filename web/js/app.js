@@ -27,7 +27,9 @@ window.App = {
         memoryPollTimer: null, // Timer for memory polling
         ttsEnabled: false, // Phase 6: TTS status for current conversation
         galleryImages: [], // Phase 9: Image gallery
-        galleryVideos: [] // Video gallery
+        galleryVideos: [], // Video gallery
+        debugMode: false,
+        lastSendAttempt: null
     },
     
     /**
@@ -89,6 +91,8 @@ window.App = {
         try {
             const response = await fetch('/system/config');
             const config = await response.json();
+            this.state.debugMode = !!config.debug_ui;
+            this.updateRetryLastSendControl();
             
             // Update Model Manager visibility based on provider
             if (typeof modelManager !== 'undefined') {
@@ -173,6 +177,12 @@ window.App = {
             e.preventDefault();
             this.sendMessage();
         });
+        const retryLastSendBtn = document.getElementById('retryLastSendBtn');
+        if (retryLastSendBtn) {
+            retryLastSendBtn.addEventListener('click', () => {
+                this.retryLastSendAttempt();
+            });
+        }
 
         // Message selection (checkboxes)
         const messagesContainer = document.getElementById('messagesContainer');
@@ -880,6 +890,7 @@ window.App = {
      */
     async selectThread(threadId) {
         this.state.selectedThreadId = threadId;
+        this.updateRetryLastSendControl();
         
         try {
             // Load thread details
@@ -909,6 +920,39 @@ window.App = {
             console.error('Failed to select thread:', error);
             UI.showToast('Failed to load thread', 'error');
         }
+    },
+
+    setLastSendAttempt(requestSnapshot) {
+        this.state.lastSendAttempt = requestSnapshot
+            ? JSON.parse(JSON.stringify(requestSnapshot))
+            : null;
+        this.updateRetryLastSendControl();
+    },
+
+    updateRetryLastSendControl() {
+        const container = document.getElementById('retryLastSendContainer');
+        const button = document.getElementById('retryLastSendBtn');
+        const info = document.getElementById('retryLastSendInfo');
+        if (!container || !button || !info) return;
+
+        const visible = !!this.state.debugMode;
+        container.classList.toggle('d-none', !visible);
+        if (!visible) return;
+
+        const attempt = this.state.lastSendAttempt;
+        if (!attempt) {
+            button.disabled = true;
+            info.textContent = 'No captured non-stream send attempt yet.';
+            return;
+        }
+
+        const sameThread = !!this.state.selectedThreadId
+            && attempt.url === `/threads/${this.state.selectedThreadId}/messages`;
+        button.disabled = !sameThread;
+        const clientMessageId = attempt.client_message_id || '(none)';
+        info.textContent = sameThread
+            ? `client_message_id: ${clientMessageId}`
+            : `Stored thread differs from current thread (client_message_id: ${clientMessageId})`;
     },
     
     clearMessageSelection() {
@@ -1314,14 +1358,17 @@ window.App = {
             UI.showTypingIndicator();
             
             // Non-streaming: show typing indicator, then render full response
-            let imagePromptPreview = null;
-            let videoPromptPreview = null;
-            
-            const response = await API.sendMessage(
-                this.state.selectedThreadId,
+            const clientMessageId = API.createClientMessageId();
+            const payload = API.buildNonStreamMessagePayload(
                 message,
-                attachmentIds.length > 0 ? attachmentIds : null
+                attachmentIds.length > 0 ? attachmentIds : null,
+                { clientMessageId }
             );
+            const requestSnapshot = API.buildNonStreamMessageRequest(this.state.selectedThreadId, payload);
+            this.setLastSendAttempt(requestSnapshot);
+
+            const sendResult = await API.sendMessageWithPayload(this.state.selectedThreadId, payload);
+            const response = sendResult.response;
             
             UI.hideTypingIndicator();
             
@@ -1406,6 +1453,106 @@ window.App = {
             // Re-enable input
             input.disabled = false;
             document.getElementById('sendBtn').disabled = false;
+            input.focus();
+        }
+    },
+
+    async retryLastSendAttempt() {
+        const attempt = this.state.lastSendAttempt;
+        if (!attempt) {
+            UI.showToast('No previous send attempt to retry.', 'warning');
+            return;
+        }
+        if (!this.state.selectedThreadId || attempt.url !== `/threads/${this.state.selectedThreadId}/messages`) {
+            UI.showToast('Retry requires the same thread as the captured attempt.', 'warning');
+            return;
+        }
+
+        const input = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const retryBtn = document.getElementById('retryLastSendBtn');
+        const snapshot = JSON.parse(JSON.stringify(attempt));
+
+        input.disabled = true;
+        sendBtn.disabled = true;
+        if (retryBtn) retryBtn.disabled = true;
+
+        try {
+            UI.showTypingIndicator();
+            const response = await API.replayNonStreamAttempt(snapshot);
+            UI.hideTypingIndicator();
+
+            let userMessageId = null;
+            let assistantMessageId = null;
+            let replayed = true;
+
+            if (response.user_message && response.user_message.id) {
+                userMessageId = response.user_message.id;
+                const userExists = this.state.messages.some((m) => m.id === userMessageId);
+                if (!userExists) {
+                    replayed = false;
+                    const userMsg = {
+                        role: 'user',
+                        content: response.user_message.content,
+                        created_at: response.user_message.created_at || new Date().toISOString(),
+                        id: userMessageId,
+                        attachments: response.user_message.attachments || [],
+                        metadata: response.user_message.metadata || null
+                    };
+                    this.state.messages.push(userMsg);
+                    UI.appendMessage(userMsg);
+                }
+            }
+
+            if (response.assistant_message && response.assistant_message.id) {
+                assistantMessageId = response.assistant_message.id;
+                const assistantExists = this.state.messages.some((m) => m.id === assistantMessageId);
+                if (!assistantExists) {
+                    replayed = false;
+                    const assistantMsg = {
+                        role: 'assistant',
+                        content: response.assistant_message.content,
+                        created_at: response.assistant_message.created_at || new Date().toISOString(),
+                        id: assistantMessageId,
+                        metadata: response.assistant_message.metadata || null
+                    };
+                    this.state.messages.push(assistantMsg);
+                    UI.appendMessage(assistantMsg);
+                }
+            }
+
+            if (response.conversation_title_updated) {
+                this.updateConversationTitle(this.state.selectedConversationId, response.conversation_title_updated);
+            }
+
+            console.log('[ENS_RETRY_DEBUG]', {
+                client_message_id: snapshot.client_message_id || null,
+                user_message_id: userMessageId,
+                assistant_message_id: assistantMessageId,
+                replayed: replayed
+            });
+
+            if (response.pending_tool_calls && response.pending_tool_calls.length > 0) {
+                for (const toolCall of response.pending_tool_calls) {
+                    await this.handlePendingToolCall(toolCall);
+                }
+            }
+
+            setTimeout(() => UI.scrollToBottom(), 0);
+            UI.showToast(
+                replayed
+                    ? 'Retry replayed previous send attempt (no duplicate messages).'
+                    : 'Retry created new message rows. Verify idempotency settings.',
+                replayed ? 'success' : 'warning'
+            );
+        } catch (error) {
+            console.error('Retry failed:', error);
+            UI.hideTypingIndicator();
+            UI.showToast('Retry failed: ' + error.message, 'error');
+        } finally {
+            input.disabled = false;
+            sendBtn.disabled = false;
+            this.updateRetryLastSendControl();
             input.focus();
         }
     },

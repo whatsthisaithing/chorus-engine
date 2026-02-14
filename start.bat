@@ -1,6 +1,7 @@
 @echo off
 REM Chorus Engine - Windows Startup Script
 REM Launches the backend server and opens web UI in browser
+setlocal
 
 echo ============================================
 echo    Chorus Engine - Starting Up
@@ -9,6 +10,13 @@ echo.
 
 REM Change to script directory
 cd /d "%~dp0"
+
+REM Keep proxy changes local to this script execution.
+set "HTTP_PROXY="
+set "HTTPS_PROXY="
+set "ALL_PROXY="
+set "GIT_HTTP_PROXY="
+set "GIT_HTTPS_PROXY="
 
 REM Check for embedded Python first (portable installation)
 if exist python_embeded\python.exe (
@@ -111,3 +119,5 @@ if %EXIT_CODE% NEQ 0 (
     echo [ERROR] Server exited with an error
     pause
 )
+
+endlocal & exit /b %EXIT_CODE%

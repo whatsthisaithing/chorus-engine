@@ -40,9 +40,35 @@ echo.
 REM Change to script directory
 cd /d "%~dp0"
 
+REM Determine Python environment early so diagnostics and updates use the same interpreter
+set PYTHON_CMD=
+set PIP_CMD=
+
+if exist python_embeded\python.exe (
+    echo [INFO] Using embedded Python ^(portable mode^)
+    set "PYTHON_CMD=python_embeded\python.exe"
+    set "PIP_CMD=python_embeded\python.exe -m pip"
+    goto :python_found
+)
+
+echo [INFO] Using system Python ^(developer mode^)
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python not found!
+    echo Please run install.bat first
+    pause
+    exit /b 1
+)
+set "PYTHON_CMD=python"
+set "PIP_CMD=python -m pip"
+
+:python_found
+echo [OK] Python found
+echo.
+
 REM Run pre-update diagnostics
-echo [1/5] Running pre-update diagnostics...
-python check_before_update.py --fix
+echo [1/6] Running pre-update diagnostics...
+%PYTHON_CMD% check_before_update.py --fix
 if errorlevel 2 (
     echo.
     echo ============================================================
@@ -66,7 +92,7 @@ if errorlevel 2 (
 echo.
 
 REM Check for Git and pull latest code
-echo [2/5] Checking for code updates...
+echo [2/6] Checking for code updates...
 git --version >nul 2>&1
 if errorlevel 1 (
     echo [SKIP] Git not found - skipping code update
@@ -95,40 +121,14 @@ if errorlevel 1 (
 :after_git_update
 echo.
 
-REM Determine Python environment
-set PYTHON_CMD=
-set PIP_CMD=
-
-if exist python_embeded\python.exe (
-    echo [INFO] Using embedded Python ^(portable mode^)
-    set "PYTHON_CMD=python_embeded\python.exe"
-    set "PIP_CMD=python_embeded\python.exe -m pip"
-    goto :python_found
-)
-
-echo [INFO] Using system Python ^(developer mode^)
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Python not found!
-    echo Please run install.bat first
-    pause
-    exit /b 1
-)
-set "PYTHON_CMD=python"
-set "PIP_CMD=pip"
-
-:python_found
-echo [OK] Python found
-echo.
-
-echo [3/5] Upgrading pip...
+echo [3/6] Upgrading pip...
 %PIP_CMD% install --upgrade pip
 if errorlevel 1 (
     echo [WARNING] Pip upgrade failed, continuing anyway...
 )
 echo.
 
-echo [4/5] Updating PyTorch with CUDA 13.0 support...
+echo [4/6] Updating PyTorch with CUDA 13.0 support...
 %PIP_CMD% install --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/cu130
 if errorlevel 1 (
     echo [WARNING] PyTorch CUDA update failed, keeping existing version
@@ -141,7 +141,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [4/5] Updating core dependencies...
+echo [5/6] Updating core dependencies...
 %PIP_CMD% install --upgrade fastapi uvicorn[standard] pydantic pydantic-settings httpx pyyaml python-multipart sqlalchemy alembic chromadb sentence-transformers transformers huggingface_hub nvidia-ml-py
 if errorlevel 1 (
     echo [ERROR] Failed to update dependencies
@@ -150,12 +150,19 @@ if errorlevel 1 (
 )
 
 echo.
+echo [6/6] Updating test tooling...
+%PIP_CMD% install --upgrade pytest==8.3.5 requests==2.32.3
+if errorlevel 1 (
+    echo [WARNING] Failed to update pytest/requests test tooling
+)
+
+echo.
 echo ============================================================
 echo Update Complete!
 ============================================================
 echo.
 echo Summary:
-echo - Dependencies updated from requirements.txt
+echo - Core dependencies and test tooling updated
 echo - Database migrations will run automatically on next start
 echo - Model Manager requires Ollama (download from https://ollama.com/download)
 echo.

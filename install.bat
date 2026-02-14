@@ -145,6 +145,14 @@ if errorlevel 1 (
 )
 
 echo.
+echo Installing test tooling...
+python_embeded\python.exe -m pip install pytest==8.3.5 requests==2.32.3
+
+if errorlevel 1 (
+    echo [WARNING] Failed to install pytest/requests test tooling
+)
+
+echo.
 echo Installing chatterbox-tts (without deps to preserve PyTorch CUDA)...
 python_embeded\python.exe -m pip install chatterbox-tts --no-deps
 

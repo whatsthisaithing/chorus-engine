@@ -64,6 +64,7 @@ def init_db():
     
     # Import all models so they're registered with Base
     from chorus_engine.models import conversation  # noqa: F401
+    from chorus_engine.models import ens  # noqa: F401
     
     # Create all tables
     Base.metadata.create_all(bind=engine)

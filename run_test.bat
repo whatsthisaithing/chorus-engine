@@ -1,36 +1,63 @@
 @echo off
-REM Helper script to run test scripts with correct Python environment
-REM
-REM Usage: run_test.bat testing\test_chatterbox.py
-REM    or: run_test.bat testing\test_chatterbox.py --verbose
-
 setlocal
 
-REM Check if embedded Python exists
-if exist python_embeded\python.exe (
-    echo [Using Embedded Python]
-    set PYTHON_CMD=python_embeded\python.exe
+REM Run pytest with embedded Python when available.
+REM Usage:
+REM   run_test.bat
+REM   run_test.bat all
+REM   run_test.bat all -k vector_store
+REM   run_test.bat testing\test_ens_slice01_integration.py -q
+
+REM Keep proxy changes local to this script execution.
+set "HTTP_PROXY="
+set "HTTPS_PROXY="
+set "ALL_PROXY="
+set "GIT_HTTP_PROXY="
+set "GIT_HTTPS_PROXY="
+
+set "PYTHON_CMD="
+if exist "python_embeded\python.exe" (
+    echo [Using Embedded Python: python_embeded]
+    set "PYTHON_CMD=python_embeded\python.exe"
+) else if exist "python_embedded\python.exe" (
+    echo [Using Embedded Python: python_embedded]
+    set "PYTHON_CMD=python_embedded\python.exe"
 ) else (
     echo [Using System Python]
-    set PYTHON_CMD=python
+    set "PYTHON_CMD=python"
 )
 
-REM Check if arguments provided
-if "%~1"=="" (
-    echo.
-    echo Usage: run_test.bat ^<script_path^> [args...]
-    echo.
-    echo Examples:
-    echo   run_test.bat testing\test_chatterbox.py
-    echo   run_test.bat testing\check_memories.py
-    echo   run_test.bat view_debug_log.py
-    echo.
-    exit /b 1
-)
-
-REM Run the script with all arguments
-echo Running: %PYTHON_CMD% %*
 echo.
-%PYTHON_CMD% %*
+if "%~1"=="" goto :smoke
+if /i "%~1"=="all" goto :full
+goto :custom
 
-endlocal
+:smoke
+echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py
+%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py
+goto :done
+
+:full
+shift
+if "%~1"=="" (
+    echo Running: %PYTHON_CMD% -m pytest -q
+    %PYTHON_CMD% -m pytest -q
+) else (
+    echo Running: %PYTHON_CMD% -m pytest %*
+    %PYTHON_CMD% -m pytest %*
+)
+goto :done
+
+:custom
+echo Running: %PYTHON_CMD% -m pytest %*
+%PYTHON_CMD% -m pytest %*
+
+:done
+
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" (
+    echo.
+    echo Pytest exited with code %EXIT_CODE%.
+)
+
+endlocal & exit /b %EXIT_CODE%
