@@ -220,11 +220,23 @@ heartbeat:
   # (gaming, training, external ComfyUI/Ollama, etc.)
   gpu_check_enabled: false           # Enable GPU utilization check
   gpu_max_utilization_percent: 15    # Skip tasks if GPU busier than this %
+  
+  # Scheduled Character Backups (idle-only, optional per character)
+  backups:
+    enabled: true                    # Enable heartbeat backup scheduling engine
+    interval_hours: 24               # Target cadence for due checks and run frequency
+    destination_dir: null            # ABSOLUTE path required to write scheduled backup archives
+    retention_days: 14               # Prune scheduled archives older than this many days
+    max_backups_per_cycle: 2         # Maximum scheduled backup jobs processed per heartbeat cycle
+    skip_if_unchanged: true          # Skip if manifest fingerprint unchanged since last success
+    verify_archive: true             # Validate archive integrity with zipfile test
 
 # Startup synchronization
 startup:
   sync_summary_vectors: true         # Auto-sync missing conversation summaries on startup
                                      # Provides self-healing after restore, migration, or corruption
+  sync_memory_vectors: true          # Auto-sync memory vectors on startup
+  sync_moment_pin_vectors: true      # Auto-sync moment pin vectors on startup
 
 paths:
   characters: characters

@@ -258,6 +258,17 @@ proactive_offers:
   # offer_min_turn_gap: 8
   # max_offers_per_conversation_per_media: 2
 
+# SCHEDULED BACKUP (optional)
+# ---------------------------
+# Per-character opt-in for heartbeat-driven daily backups.
+backup:
+  enabled: false
+  schedule: daily
+  local_time: "03:00"
+  destination_override: null   # Optional absolute path; null uses system heartbeat.backups.destination_dir
+  include_workflows: true
+  notes_template: null
+
 # VOICE/TTS CONFIGURATION
 # -----------------------
 # Text-to-speech settings for this character

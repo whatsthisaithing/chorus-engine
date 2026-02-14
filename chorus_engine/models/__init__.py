@@ -9,6 +9,7 @@ from .continuity import (
     ContinuityArc,
     ContinuityBootstrapCache,
     ContinuityPreference,
+    CharacterBackupState,
 )
 from .workflow import Workflow
 from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
@@ -30,6 +31,7 @@ __all__ = [
     "ContinuityArc",
     "ContinuityBootstrapCache",
     "ContinuityPreference",
+    "CharacterBackupState",
     "Workflow",
     "Document",
     "DocumentChunk",

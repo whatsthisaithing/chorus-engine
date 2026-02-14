@@ -368,6 +368,64 @@ class StartupConfig(BaseModel):
         default=True,
         description="Sync missing conversation summary vectors on startup (self-healing)"
     )
+    sync_memory_vectors: bool = Field(
+        default=True,
+        description="Sync missing memory vectors on startup (self-healing)"
+    )
+    sync_moment_pin_vectors: bool = Field(
+        default=True,
+        description="Sync missing moment pin vectors on startup (self-healing)"
+    )
+
+
+class HeartbeatBackupsConfig(BaseModel):
+    """Configuration for heartbeat-driven scheduled character backups."""
+
+    model_config = ConfigDict(extra='ignore')
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable scheduled heartbeat backups"
+    )
+    interval_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        description="Target backup cadence in hours"
+    )
+    destination_dir: Optional[Path] = Field(
+        default=None,
+        description="Absolute directory where scheduled backup archives are written"
+    )
+    retention_days: int = Field(
+        default=14,
+        ge=1,
+        le=365,
+        description="Delete scheduled backups older than this many days"
+    )
+    max_backups_per_cycle: int = Field(
+        default=2,
+        ge=1,
+        le=20,
+        description="Maximum characters to process per heartbeat cycle"
+    )
+    skip_if_unchanged: bool = Field(
+        default=True,
+        description="Skip scheduled backups when data fingerprint has not changed"
+    )
+    verify_archive: bool = Field(
+        default=True,
+        description="Validate ZIP archive integrity after writing"
+    )
+
+    @field_validator("destination_dir")
+    @classmethod
+    def validate_destination_dir(cls, v: Optional[Path]) -> Optional[Path]:
+        if v is None:
+            return None
+        if not v.is_absolute():
+            raise ValueError("heartbeat.backups.destination_dir must be an absolute path")
+        return v
 
 
 class HeartbeatConfig(BaseModel):
@@ -456,6 +514,7 @@ class HeartbeatConfig(BaseModel):
         ge=5, le=95,
         description="Skip background tasks if GPU utilization exceeds this percentage"
     )
+    backups: HeartbeatBackupsConfig = Field(default_factory=HeartbeatBackupsConfig)
 
 
 class SystemConfig(BaseModel):
@@ -709,6 +768,43 @@ class ContinuityPreferencesConfig(BaseModel):
         description="Default continuity mode when preference is remembered"
     )
 
+
+class CharacterBackupConfig(BaseModel):
+    """Per-character scheduled backup preferences."""
+
+    enabled: bool = Field(default=False, description="Enable scheduled backups for this character")
+    schedule: Literal["daily"] = Field(default="daily", description="Scheduled backup cadence")
+    local_time: str = Field(default="03:00", description="24h local time for scheduled backup trigger")
+    destination_override: Optional[Path] = Field(
+        default=None,
+        description="Optional absolute destination directory for this character"
+    )
+    include_workflows: bool = Field(default=True, description="Include workflows in scheduled backups")
+    notes_template: Optional[str] = Field(default=None, description="Optional notes template written into backup manifest")
+
+    @field_validator("local_time")
+    @classmethod
+    def validate_local_time(cls, v: str) -> str:
+        if len(v) != 5 or v[2] != ":":
+            raise ValueError("backup.local_time must be in HH:MM format")
+        hour_text, minute_text = v.split(":")
+        if not (hour_text.isdigit() and minute_text.isdigit()):
+            raise ValueError("backup.local_time must be numeric HH:MM")
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError("backup.local_time must be a valid 24h time")
+        return v
+
+    @field_validator("destination_override")
+    @classmethod
+    def validate_destination_override(cls, v: Optional[Path]) -> Optional[Path]:
+        if v is None:
+            return None
+        if not v.is_absolute():
+            raise ValueError("backup.destination_override must be an absolute path")
+        return v
+
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""
     
@@ -780,6 +876,7 @@ class CharacterConfig(BaseModel):
     continuity_preferences: ContinuityPreferencesConfig = Field(
         default_factory=ContinuityPreferencesConfig
     )
+    backup: CharacterBackupConfig = Field(default_factory=CharacterBackupConfig)
     
     # User identity override (conversation runtime only)
     user_identity: UserIdentityOverrideConfig = Field(default_factory=UserIdentityOverrideConfig)

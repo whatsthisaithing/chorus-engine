@@ -196,8 +196,20 @@ window.CharacterRestore = {
                     characterSelect.dispatchEvent(new Event('change'));
                 }
                 
-                // Check if vectors need regeneration
-                if (result.vector_health && result.vector_health.needs_regeneration) {
+                // Check if vector rebuild reported errors
+                if (result.rebuild_stats) {
+                    const rebuild = result.rebuild_stats;
+                    const hasErrors = (rebuild.memory_vectors?.errors || 0) > 0
+                        || (rebuild.summary_vectors?.errors || 0) > 0
+                        || (rebuild.moment_pin_vectors?.errors || 0) > 0;
+                    if (hasErrors) {
+                        this.showVectorRegenerationPrompt({
+                            character_id: result.character_id,
+                            vector_health: { missing_vectors: 0 }
+                        });
+                    }
+                } else if (result.vector_health && result.vector_health.needs_regeneration) {
+                    // Backward compatibility with older server responses
                     this.showVectorRegenerationPrompt(result);
                 }
             }
@@ -325,10 +337,6 @@ window.CharacterRestore = {
                                 <td>${counts.memories || 0}</td>
                             </tr>
                             <tr>
-                                <td><strong>Vectors:</strong></td>
-                                <td>${counts.vectors || 0}</td>
-                            </tr>
-                            <tr>
                                 <td><strong>Images:</strong></td>
                                 <td>${counts.images || 0}</td>
                             </tr>
@@ -355,6 +363,10 @@ window.CharacterRestore = {
                             <tr>
                                 <td><strong>Workflow Records:</strong></td>
                                 <td>${counts.workflow_records || 0}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Vector Rebuild:</strong></td>
+                                <td>${result.rebuild_stats ? 'Completed' : 'Not reported'}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -400,7 +412,11 @@ window.CharacterRestore = {
      * Show prompt to regenerate missing vectors after restore
      */
     showVectorRegenerationPrompt(restoreResult) {
-        const health = restoreResult.vector_health;
+        const health = restoreResult.vector_health || {
+            memory_count: 0,
+            vector_count: 0,
+            missing_vectors: 0
+        };
         
         const shouldRegenerate = confirm(
             '⚠️ Vector Embeddings Missing\n\n' +

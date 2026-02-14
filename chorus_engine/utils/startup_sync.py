@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
+from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
 from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.db.vector_store import VectorStore
-from chorus_engine.models.conversation import ConversationSummary, Conversation, Memory
+from chorus_engine.models.conversation import ConversationSummary, Conversation, Memory, MomentPin
 from chorus_engine.models.document import Document, DocumentChunk
 from chorus_engine.services.document_vector_store import DocumentVectorStore
 
@@ -398,10 +399,99 @@ async def sync_document_vectors(
         return stats
 
 
+async def sync_moment_pin_vectors(
+    db_session: Session,
+    moment_pin_vector_store: MomentPinVectorStore,
+    embedding_service: EmbeddingService,
+    character_id: Optional[str] = None
+) -> dict:
+    """Sync moment pin vectors from SQL to Chroma collections."""
+    stats = {
+        "synced": 0,
+        "deleted_orphans": 0,
+        "errors": 0,
+        "characters": [],
+    }
+    try:
+        query = db_session.query(MomentPin).filter(MomentPin.archived == 0)
+        if character_id:
+            query = query.filter(MomentPin.character_id == character_id)
+        pins = query.all()
+
+        pins_by_character: dict[str, list[MomentPin]] = {}
+        for pin in pins:
+            pins_by_character.setdefault(pin.character_id, []).append(pin)
+
+        existing_collections = moment_pin_vector_store.list_collections()
+        existing_char_ids = {
+            name.replace("moment_pins_", "", 1)
+            for name in existing_collections
+            if name.startswith("moment_pins_")
+        }
+        all_char_ids = set(pins_by_character.keys()) | existing_char_ids
+
+        for char_id in all_char_ids:
+            char_pins = pins_by_character.get(char_id, [])
+            collection = moment_pin_vector_store.get_collection(char_id)
+            existing_ids: Set[str] = set()
+            if collection is not None:
+                try:
+                    results = collection.get(include=[])
+                    existing_ids = set(results.get("ids") or [])
+                except Exception as e:
+                    logger.warning(f"Could not read moment pin IDs for '{char_id}': {e}")
+                    stats["errors"] += 1
+                    continue
+
+            sql_ids = {pin.id for pin in char_pins}
+            orphan_ids = existing_ids - sql_ids
+            if orphan_ids:
+                _delete_moment_pin_vectors(moment_pin_vector_store, char_id, orphan_ids)
+                stats["deleted_orphans"] += len(orphan_ids)
+
+            missing_pins = [pin for pin in char_pins if pin.id not in existing_ids]
+            for pin in missing_pins:
+                try:
+                    hot_text = "\n".join([
+                        pin.what_happened or "",
+                        pin.why_user or pin.why_model or "",
+                        pin.quote_snippet or "",
+                        ", ".join(pin.tags or []),
+                    ]).strip()
+                    if not hot_text:
+                        continue
+                    embedding = embedding_service.embed(hot_text)
+                    ok = moment_pin_vector_store.upsert_pin(
+                        character_id=char_id,
+                        pin_id=pin.id,
+                        hot_text=hot_text,
+                        embedding=embedding,
+                        metadata={
+                            "user_id": pin.user_id,
+                            "conversation_id": pin.conversation_id or "",
+                        },
+                    )
+                    if ok:
+                        stats["synced"] += 1
+                except Exception as e:
+                    logger.warning(f"Failed syncing moment pin {pin.id}: {e}")
+                    stats["errors"] += 1
+
+            if char_id not in stats["characters"] and (missing_pins or orphan_ids):
+                stats["characters"].append(char_id)
+
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to sync moment pin vectors: {e}")
+        stats["errors"] += 1
+        return stats
+
+
 def run_vector_health_checks(
     db_session: Session,
     vector_store: VectorStore,
     summary_vector_store: ConversationSummaryVectorStore,
+    moment_pin_vector_store: MomentPinVectorStore,
     document_vector_store: DocumentVectorStore
 ) -> dict:
     """
@@ -416,6 +506,7 @@ def run_vector_health_checks(
     # Collection listing checks.
     _ = vector_store.list_collections()
     _ = summary_vector_store.list_collections()
+    _ = moment_pin_vector_store.list_collections()
     try:
         _ = document_vector_store.collection.count()
     except Exception as e:
@@ -427,6 +518,9 @@ def run_vector_health_checks(
         if row[0]:
             character_ids.add(row[0])
     for row in db_session.query(Conversation.character_id).distinct().all():
+        if row[0]:
+            character_ids.add(row[0])
+    for row in db_session.query(MomentPin.character_id).distinct().all():
         if row[0]:
             character_ids.add(row[0])
 
@@ -453,6 +547,17 @@ def run_vector_health_checks(
             except Exception as e:
                 report["issues"].append(
                     f"summary get failed for '{character_id}': {e}"
+                )
+
+        pin_collection = moment_pin_vector_store.get_collection(character_id)
+        if pin_collection is not None:
+            try:
+                count = pin_collection.count()
+                if count > 0:
+                    pin_collection.get(limit=1, include=[])
+            except Exception as e:
+                report["issues"].append(
+                    f"moment pin get failed for '{character_id}': {e}"
                 )
 
     # Document collection get path smoke test.
@@ -624,6 +729,24 @@ def _delete_memory_vectors(
             collection.delete(ids=batch)
         except Exception as e:
             logger.warning(f"Failed to delete memory vectors batch for '{character_id}': {e}")
+
+
+def _delete_moment_pin_vectors(
+    moment_pin_vector_store: MomentPinVectorStore,
+    character_id: str,
+    vector_ids: Set[str]
+) -> None:
+    collection = moment_pin_vector_store.get_collection(character_id)
+    if collection is None:
+        return
+    ids = list(vector_ids)
+    batch_size = 200
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i:i + batch_size]
+        try:
+            collection.delete(ids=batch)
+        except Exception as e:
+            logger.warning(f"Failed to delete moment pin vectors batch for '{character_id}': {e}")
 
 
 def _add_memory_vectors(

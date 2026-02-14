@@ -70,3 +70,17 @@ class ContinuityPreference(Base):
     default_mode = Column(String(10), nullable=False, default="ask")
     skip_preview = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CharacterBackupState(Base):
+    """Track scheduled backup execution state per character."""
+
+    __tablename__ = "character_backup_state"
+
+    character_id = Column(String(50), primary_key=True)
+    last_success_at = Column(DateTime, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    last_status = Column(String(20), nullable=False, default="never")
+    last_error = Column(Text, nullable=True)
+    last_manifest_fingerprint = Column(String(128), nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

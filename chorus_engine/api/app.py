@@ -23,6 +23,7 @@ from chorus_engine.config import IMMUTABLE_CHARACTERS
 from chorus_engine.llm import create_llm_client, LLMError
 from chorus_engine.db import get_db, init_db
 from chorus_engine.models import Conversation, Thread, Message, Memory, MessageRole, MemoryType, ConversationSummary, MomentPin
+from chorus_engine.models.continuity import CharacterBackupState
 from chorus_engine.repositories import (
     ConversationRepository,
     ThreadRepository,
@@ -100,6 +101,7 @@ from chorus_engine.services.media_offer_policy import (
 from chorus_engine.utils.startup_sync import (
     sync_conversation_summary_vectors,
     sync_memory_vectors,
+    sync_moment_pin_vectors,
     sync_document_vectors,
     run_vector_health_checks,
 )
@@ -621,8 +623,13 @@ async def lifespan(app: FastAPI):
             app_state["vision_service"] = None
             app_state["image_attachment_service"] = None
         
-        # Startup sync: Ensure vectors are in sync with SQL (summaries + memories)
-        if summary_vector_store and embedding_service:
+        startup_config = getattr(system_config, "startup", None)
+        sync_summary_on_startup = getattr(startup_config, "sync_summary_vectors", True)
+        sync_memory_on_startup = getattr(startup_config, "sync_memory_vectors", True)
+        sync_pin_on_startup = getattr(startup_config, "sync_moment_pin_vectors", True)
+
+        # Startup sync: Ensure vectors are in sync with SQL (summaries + memories + moment pins)
+        if sync_summary_on_startup and summary_vector_store and embedding_service:
             try:
                 sync_stats = await sync_conversation_summary_vectors(
                     db_session=db_session,
@@ -644,9 +651,9 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"⚠ Failed to sync conversation summary vectors: {e}")
         else:
-            logger.debug("Summary vector sync skipped (missing vector store or embedding service)")
+            logger.debug("Summary vector sync skipped (disabled or missing vector store or embedding service)")
         
-        if vector_store and embedding_service:
+        if sync_memory_on_startup and vector_store and embedding_service:
             try:
                 memory_sync_stats = await sync_memory_vectors(
                     db_session=db_session,
@@ -668,7 +675,27 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"⚠ Failed to sync memory vectors: {e}")
         else:
-            logger.debug("Memory vector sync skipped (missing vector store or embedding service)")
+            logger.debug("Memory vector sync skipped (disabled or missing vector store or embedding service)")
+
+        if sync_pin_on_startup and moment_pin_vector_store and embedding_service:
+            try:
+                pin_sync_stats = await sync_moment_pin_vectors(
+                    db_session=db_session,
+                    moment_pin_vector_store=moment_pin_vector_store,
+                    embedding_service=embedding_service
+                )
+                if pin_sync_stats["synced"] > 0 or pin_sync_stats.get("deleted_orphans", 0) > 0:
+                    logger.info(
+                        f"Moment pin vectors synced: +{pin_sync_stats['synced']} / "
+                        f"-{pin_sync_stats.get('deleted_orphans', 0)} "
+                        f"(characters: {', '.join(pin_sync_stats['characters'])})"
+                    )
+                else:
+                    logger.debug("Moment pin vectors in sync")
+            except Exception as e:
+                logger.warning(f"Failed to sync moment pin vectors: {e}")
+        else:
+            logger.debug("Moment pin vector sync skipped (disabled or missing vector store or embedding service)")
 
         if document_manager:
             try:
@@ -695,6 +722,7 @@ async def lifespan(app: FastAPI):
                 db_session=db_session,
                 vector_store=vector_store,
                 summary_vector_store=summary_vector_store,
+                moment_pin_vector_store=moment_pin_vector_store,
                 document_vector_store=document_manager.vector_store
             )
             if health_report["ok"]:
@@ -727,6 +755,10 @@ async def lifespan(app: FastAPI):
                 ConversationAnalysisTaskHandler, StaleConversationFinder
             )
             from chorus_engine.services.continuity_bootstrap_task import ContinuityBootstrapTaskHandler
+            from chorus_engine.services.character_backup_task import (
+                CharacterBackupTaskHandler,
+                queue_due_character_backups,
+            )
             
             summary_batch_size = getattr(heartbeat_config, "analysis_summary_batch_size", heartbeat_config.analysis_batch_size)
             memories_batch_size = getattr(heartbeat_config, "analysis_memories_batch_size", heartbeat_config.analysis_batch_size)
@@ -746,6 +778,7 @@ async def lifespan(app: FastAPI):
             # Register task handlers
             heartbeat_service.register_handler(ConversationAnalysisTaskHandler())
             heartbeat_service.register_handler(ContinuityBootstrapTaskHandler())
+            heartbeat_service.register_handler(CharacterBackupTaskHandler())
             
             # Create stale conversation finder
             stale_finder = StaleConversationFinder(
@@ -801,10 +834,21 @@ async def lifespan(app: FastAPI):
                                     task_id=f"continuity_{character_id}"
                                 )
                                 queued_continuity += 1
+                    queued_backups = 0
+                    backups_cfg = getattr(heartbeat_config, "backups", None)
+                    if backups_cfg and backups_cfg.enabled:
+                        queued_backups = queue_due_character_backups(
+                            heartbeat_service=heartbeat_svc,
+                            characters=app_st.get("characters", {}),
+                            db=db,
+                            max_backups_per_cycle=backups_cfg.max_backups_per_cycle,
+                            global_destination=backups_cfg.destination_dir,
+                        )
                     logger.info(
                         f"[TASK FINDER] Queued {queued_summary} summaries and "
                         f"{queued_memories} memory extractions for analysis "
-                        f"and {queued_continuity} continuity refresh(es)"
+                        f"and {queued_continuity} continuity refresh(es) "
+                        f"and {queued_backups} scheduled backup(s)"
                     )
                 except Exception as e:
                     logger.error(f"[TASK FINDER] Error finding stale conversations: {e}", exc_info=True)
@@ -2043,11 +2087,11 @@ async def backup_character(
     Backs up:
     - Character configuration (YAML)
     - All conversations, threads, messages
-    - All memories (SQL + vector store)
+    - All memories and character-linked SQL data
     - All media files (images, videos, audio, voice samples)
     - ComfyUI workflows (optional)
     
-    Returns a .cbak file (ZIP archive) for download.
+    Returns a .zip archive for download.
     The backup is also saved to data/backups/{character_id}/ for future reference.
     """
     from chorus_engine.services.backup_service import CharacterBackupService, BackupError
@@ -2090,12 +2134,72 @@ async def backup_character(
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
 
+@app.get("/backups/status")
+async def get_scheduled_backup_status(db: Session = Depends(get_db)):
+    """Return scheduled backup status per loaded character."""
+    characters = app_state.get("characters", {})
+    system_config = app_state.get("system_config")
+    heartbeat_backups = getattr(getattr(system_config, "heartbeat", None), "backups", None)
+    global_enabled = bool(heartbeat_backups and heartbeat_backups.enabled)
+    destination = str(heartbeat_backups.destination_dir) if heartbeat_backups and heartbeat_backups.destination_dir else None
+
+    states = db.query(CharacterBackupState).all()
+    state_map = {row.character_id: row for row in states}
+    rows = []
+    for character_id, character in characters.items():
+        state = state_map.get(character_id)
+        rows.append({
+            "character_id": character_id,
+            "enabled": bool(getattr(character, "backup", None) and character.backup.enabled),
+            "schedule": character.backup.schedule if getattr(character, "backup", None) else "daily",
+            "local_time": character.backup.local_time if getattr(character, "backup", None) else "03:00",
+            "destination_override": str(character.backup.destination_override) if getattr(character, "backup", None) and character.backup.destination_override else None,
+            "effective_destination": (
+                str(character.backup.destination_override)
+                if getattr(character, "backup", None) and character.backup.destination_override
+                else destination
+            ),
+            "last_success_at": state.last_success_at.isoformat() if state and state.last_success_at else None,
+            "last_attempt_at": state.last_attempt_at.isoformat() if state and state.last_attempt_at else None,
+            "last_status": state.last_status if state else "never",
+            "last_error": state.last_error if state else None,
+        })
+
+    return {
+        "global_enabled": global_enabled,
+        "global_destination": destination,
+        "characters": rows,
+    }
+
+
+@app.post("/characters/{character_id}/backup/run-now")
+async def queue_character_backup_now(character_id: str):
+    """Queue a non-blocking heartbeat backup task for a character."""
+    heartbeat_service = app_state.get("heartbeat_service")
+    if not heartbeat_service:
+        raise HTTPException(status_code=503, detail="Heartbeat service is not available")
+
+    characters = app_state.get("characters", {})
+    if character_id not in characters:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+
+    from chorus_engine.services.heartbeat_service import TaskPriority
+
+    task_id = heartbeat_service.queue_task(
+        task_type="character_backup",
+        data={"character_id": character_id},
+        priority=TaskPriority.HIGH,
+        task_id=f"character_backup_manual_{character_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+    )
+    return {"queued": True, "task_id": task_id, "character_id": character_id}
+
+
 @app.post("/characters/restore")
 async def restore_character(
     file: UploadFile = File(...),
     new_character_id: Optional[str] = Query(None, description="Custom ID for restored character"),
     rename_if_exists: bool = Query(False, description="Auto-rename character if ID already exists"),
-    overwrite: bool = Query(False, description="Overwrite existing character (not yet implemented)"),
+    overwrite: bool = Query(False, description="Overwrite existing character"),
     cleanup_orphans: bool = Query(False, description="Clean up orphaned data before restore"),
     db: Session = Depends(get_db)
 ):
@@ -2105,14 +2209,15 @@ async def restore_character(
     Uploads a .zip backup file and restores:
     - Character configuration (YAML)
     - All conversations, threads, messages
-    - All memories (SQL + vector store)
+    - All memories and character-linked SQL data
     - All media files (images, videos, audio, voice samples)
     - ComfyUI workflows
+    - Vector indexes are rebuilt from SQL after restore
     
     Options:
     - new_character_id: Specify custom ID (e.g., "nova_backup", "sarah_v2")
     - rename_if_exists: If character exists and no custom ID, append timestamp
-    - overwrite: Delete existing character and replace (requires confirmation, not yet implemented)
+    - overwrite: Delete existing character and replace
     
     Priority: new_character_id > rename_if_exists > fail if exists
     
@@ -2161,7 +2266,8 @@ async def restore_character(
             "original_id": result['original_id'],
             "renamed": result['renamed'],
             "backup_date": result.get('backup_date'),
-            "restored_counts": result['restored_counts']
+            "restored_counts": result['restored_counts'],
+            "rebuild_stats": result.get("rebuild_stats", {})
         }
     
     except RestoreError as e:
