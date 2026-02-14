@@ -127,15 +127,20 @@ class CharacterBackupService:
                 image_attachments = self._export_image_attachments(character_id)
                 document_data = self._export_document_data(character_id, conversations)
                 
-                # Step 2: Collect media files
-                logger.info("Collecting media files...")
-                media_files = self._collect_media_files(
-                    character_id, conversations, media_records, image_attachments, document_data
-                )
-                
-                # Step 3: Get character configuration
+                # Step 2: Get character configuration
                 logger.info("Loading character configuration...")
                 character_config = self._get_character_config(character_id)
+
+                # Step 3: Collect media files
+                logger.info("Collecting media files...")
+                media_files = self._collect_media_files(
+                    character_id,
+                    conversations,
+                    media_records,
+                    image_attachments,
+                    document_data,
+                    character_config
+                )
                 
                 # Step 4: Collect workflow files
                 workflows = {}
@@ -703,6 +708,7 @@ class CharacterBackupService:
         media_records: Dict[str, List[Dict]],
         image_attachments: List[Dict[str, Any]],
         document_data: Dict[str, Any],
+        character_config: Dict[str, Any],
     ) -> Dict[str, Path]:
         """
         Identify and collect all media files for backup.
@@ -805,15 +811,21 @@ class CharacterBackupService:
                 logger.warning(f"Document source file not found: {src}")
         
         # Collect character profile image
-        profile_image = self._find_profile_image(character_id)
+        profile_image = self._find_profile_image(character_id, character_config)
         if profile_image and profile_image.exists():
             media_files[f"profile_image{profile_image.suffix}"] = profile_image
         
         logger.info(f"Collected {len(media_files)} media files for backup")
         return media_files
     
-    def _find_profile_image(self, character_id: str) -> Optional[Path]:
+    def _find_profile_image(self, character_id: str, character_config: Optional[Dict[str, Any]] = None) -> Optional[Path]:
         """Find character profile image."""
+        configured_image = (character_config or {}).get("profile_image")
+        if configured_image:
+            configured_path = self.images_dir / Path(str(configured_image)).name
+            if configured_path.exists():
+                return configured_path
+
         for ext in ['.png', '.jpg', '.jpeg', '.webp']:
             # Try exact character_id match
             image_path = self.images_dir / f"{character_id}{ext}"

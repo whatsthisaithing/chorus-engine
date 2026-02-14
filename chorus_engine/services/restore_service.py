@@ -7,6 +7,7 @@ import zipfile
 import os
 import yaml
 import uuid
+import copy
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
@@ -588,21 +589,32 @@ class CharacterRestoreService:
         # Update ID if character was renamed
         if 'id' in char_config:
             char_config['id'] = character_id
-        
+
+        # Restore profile image while keeping YAML filename aligned with actual file.
+        configured_profile = char_config.get("profile_image")
+        profile_src, profile_dest_name = self._resolve_profile_image_restore(temp_dir, character_id, configured_profile)
+        if profile_src and profile_dest_name:
+            profile_dest = self.data_dir / "character_images" / profile_dest_name
+            profile_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(profile_src, profile_dest)
+            char_config["profile_image"] = profile_dest_name
+            logger.debug(f"Restored profile image to: {profile_dest}")
+        elif configured_profile:
+            existing_profile = self.data_dir / "character_images" / Path(str(configured_profile)).name
+            if existing_profile.exists():
+                char_config["profile_image"] = existing_profile.name
+            else:
+                logger.warning(
+                    f"Profile image '{configured_profile}' was referenced by character config but not found in backup archive; "
+                    "falling back to default avatar."
+                )
+                char_config["profile_image"] = None
+
         # Write to characters directory
         with open(dest_yaml, 'w', encoding='utf-8') as f:
             yaml.dump(char_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        
+
         logger.info(f"Restored character configuration to: {dest_yaml}")
-        
-        # Restore profile image if present
-        profile_images = list(temp_dir.glob("profile_image.*"))
-        if profile_images:
-            profile_src = profile_images[0]
-            profile_dest = self.data_dir / "character_images" / f"{character_id}{profile_src.suffix}"
-            profile_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(profile_src, profile_dest)
-            logger.debug(f"Restored profile image to: {profile_dest}")
     
     def _restore_sql_data(
         self,
@@ -729,7 +741,10 @@ class CharacterRestoreService:
                             thread_id=new_thread_id,  # Use new thread ID
                             role=msg_data['role'],
                             content=msg_data['content'],
-                            meta_data=msg_data.get('meta_data'),
+                            meta_data=self._remap_media_urls_in_metadata(
+                                msg_data.get('meta_data'),
+                                id_maps['conversations']
+                            ),
                             created_at=datetime.fromisoformat(msg_data['created_at']),
                             is_private=msg_data.get('is_private', 'false'),
                             emotional_weight=msg_data.get('emotional_weight'),
@@ -819,7 +834,10 @@ class CharacterRestoreService:
                     key_moments=mem_data.get('key_moments'),
                     summary=mem_data.get('summary'),
                     source=mem_data.get('source', 'web'),
-                    meta_data=mem_data.get('meta_data'),
+                    meta_data=self._remap_media_urls_in_metadata(
+                        mem_data.get('meta_data'),
+                        id_maps['conversations']
+                    ),
                     created_at=datetime.fromisoformat(mem_data['created_at'])
                 )
                 self.db.add(memory)
@@ -1353,6 +1371,68 @@ class CharacterRestoreService:
         if processed and not stem.startswith("processed_"):
             stem = f"processed_{stem}"
         return str(folder / f"{stem}{suffix}")
+
+    def _resolve_profile_image_restore(
+        self,
+        temp_dir: Path,
+        character_id: str,
+        configured_profile_name: Optional[str]
+    ) -> Tuple[Optional[Path], Optional[str]]:
+        """Resolve avatar source file in backup and destination filename under data/character_images."""
+        configured_name = Path(str(configured_profile_name)).name if configured_profile_name else None
+
+        if configured_name and configured_name.lower() != "default.svg":
+            configured_src = temp_dir / f"profile_image{Path(configured_name).suffix}"
+            if configured_src.exists():
+                return configured_src, configured_name
+
+        profile_images = sorted(temp_dir.glob("profile_image.*"))
+        if profile_images:
+            profile_src = profile_images[0]
+            if configured_name and configured_name.lower() != "default.svg":
+                return profile_src, configured_name
+            return profile_src, f"{character_id}{profile_src.suffix}"
+
+        if configured_name and configured_name.lower() != "default.svg":
+            for root_name in ["images", "attachments"]:
+                candidate = next((p for p in (temp_dir / "media" / root_name).rglob(configured_name)), None)
+                if candidate:
+                    return candidate, configured_name
+
+        return None, None
+
+    def _remap_media_urls_in_metadata(self, metadata: Any, conversation_id_map: Dict[str, str]) -> Any:
+        """Recursively remap media URLs/paths in JSON metadata from old conversation IDs to new IDs."""
+        if metadata is None or not conversation_id_map:
+            return metadata
+
+        def remap_value(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: remap_value(inner) for key, inner in value.items()}
+            if isinstance(value, list):
+                return [remap_value(inner) for inner in value]
+            if not isinstance(value, str):
+                return value
+
+            text = value
+            for old_conv_id, new_conv_id in conversation_id_map.items():
+                if old_conv_id == new_conv_id:
+                    continue
+                replacements = [
+                    (f"/images/{old_conv_id}/", f"/images/{new_conv_id}/"),
+                    (f"/videos/{old_conv_id}/", f"/videos/{new_conv_id}/"),
+                    (f"data/images/{old_conv_id}/", f"data/images/{new_conv_id}/"),
+                    (f"data/videos/{old_conv_id}/", f"data/videos/{new_conv_id}/"),
+                    (f"images/{old_conv_id}/", f"images/{new_conv_id}/"),
+                    (f"videos/{old_conv_id}/", f"videos/{new_conv_id}/"),
+                    (f"\\images\\{old_conv_id}\\", f"\\images\\{new_conv_id}\\"),
+                    (f"\\videos\\{old_conv_id}\\", f"\\videos\\{new_conv_id}\\"),
+                ]
+                for before, after in replacements:
+                    text = text.replace(before, after)
+            return text
+
+        return remap_value(copy.deepcopy(metadata))
 
     def _rebuild_vectors(self, character_id: str) -> Dict[str, Any]:
         vector_store = VectorStore(persist_directory=self.data_dir / "vector_store")
