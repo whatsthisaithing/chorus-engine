@@ -19,6 +19,28 @@ ACKNOWLEDGEMENT_PATTERNS = (
 ACK_MAX_WORDS = 6
 ACK_MAX_CHARS = 40
 
+IMAGE_LEXICAL_PATTERNS = (
+    r"\b(selfie|photo|picture|pic|image)\b",
+    r"\b(send|show|share|take|generate|make|create|draw)\b.{0,24}\b(selfie|photo|picture|pic|image)\b",
+    r"\b(selfie|photo|picture|pic|image)\b.{0,24}\b(please|pls|now|again|another)\b",
+)
+
+VIDEO_LEXICAL_PATTERNS = (
+    r"\b(video|clip|animation|movie)\b",
+    r"\b(send|show|share|generate|make|create|render)\b.{0,24}\b(video|clip|animation|movie)\b",
+    r"\b(video|clip|animation|movie)\b.{0,24}\b(please|pls|now|again|another)\b",
+)
+
+NEGATION_PATTERNS = (
+    r"\b(don't|do not|no)\s+(send|show|make|create|generate)\b",
+    r"\b(not)\s+(a\s+)?(selfie|photo|picture|pic|image|video|clip|animation|movie)\b",
+)
+
+ITERATION_PATTERNS = (
+    r"\b(another|again|retry|redo|regenerate|variation|different one)\b",
+    r"\b(try|do)\s+(another|again)\b",
+)
+
 
 @dataclass
 class MediaTurnSignals:
@@ -64,6 +86,22 @@ def classify_media_turn(
     explicit_image = image_conf >= explicit_image_threshold
     explicit_video = video_conf >= explicit_video_threshold
     is_iteration_request = iterate_conf > 0.0
+
+    # Deterministic lexical fallback when SID confidence is absent/low.
+    # This keeps direct requests usable even if embedding-backed SID is unavailable.
+    has_negation = any(re.search(pattern, text) for pattern in NEGATION_PATTERNS)
+    if not has_negation:
+        lexical_image = any(re.search(pattern, text) for pattern in IMAGE_LEXICAL_PATTERNS)
+        lexical_video = any(re.search(pattern, text) for pattern in VIDEO_LEXICAL_PATTERNS)
+        lexical_iteration = any(re.search(pattern, text) for pattern in ITERATION_PATTERNS)
+        if lexical_image:
+            explicit_image = True
+            image_conf = max(image_conf, explicit_image_threshold)
+        if lexical_video:
+            explicit_video = True
+            video_conf = max(video_conf, explicit_video_threshold)
+        if lexical_iteration:
+            is_iteration_request = True
 
     # Deterministic short acknowledgement block applies only when SID has no
     # explicit media request and no iteration intent.

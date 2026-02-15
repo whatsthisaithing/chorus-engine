@@ -73,6 +73,111 @@ class ENSRuntime:
                         )
                         llm_content = (llm_result or {}).get("output", {}).get("content", "")
                         action.params["content"] = llm_content
+                if action.kind == "tool_call.persist_pending":
+                    if resolved_signal.type == "scene_capture.preview_requested":
+                        preview_result = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "scene_capture.prompt_generate" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        if not preview_result:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="preview_not_available",
+                                )
+                            )
+                            continue
+                        preview_output = (preview_result or {}).get("output") or {}
+                        tool_call_id = preview_output.get("tool_call_id")
+                        if not tool_call_id:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="preview_missing_tool_call_id",
+                                )
+                            )
+                            continue
+                        action.params["session_id"] = resolved_signal.session_id or "na"
+                        action.params["assistant_message_id"] = None
+                        action.params["tool_call"] = {
+                            "tool_call_id": tool_call_id,
+                            "tool_name": "scene_capture.generate",
+                            "args_json": {
+                                "conversation_id": resolved_signal.payload.get("conversation_id"),
+                                "thread_id": resolved_signal.payload.get("thread_id"),
+                                "media_type": resolved_signal.payload.get("media_type"),
+                                "client_capture_id": preview_output.get("client_capture_id"),
+                                "preview": {
+                                    "prompt": preview_output.get("prompt"),
+                                    "negative_prompt": preview_output.get("negative_prompt"),
+                                    "reasoning": preview_output.get("reasoning"),
+                                    "type": preview_output.get("type"),
+                                    "needs_trigger": preview_output.get("needs_trigger"),
+                                },
+                                "prompt": preview_output.get("prompt"),
+                                "negative_prompt": preview_output.get("negative_prompt"),
+                                "workflow_id": resolved_signal.payload.get("workflow_id"),
+                            },
+                            "status": "pending",
+                            "idempotency_key": f"scene:preview:{resolved_signal.payload.get('conversation_id')}:{resolved_signal.payload.get('thread_id')}:{resolved_signal.payload.get('media_type')}:{preview_output.get('client_capture_id')}",
+                            "client_payload": {
+                                "id": tool_call_id,
+                                "tool": "scene_capture.generate",
+                                "args": {
+                                    "media_type": resolved_signal.payload.get("media_type"),
+                                    "prompt": preview_output.get("prompt"),
+                                    "negative_prompt": preview_output.get("negative_prompt"),
+                                },
+                                "requires_approval": True,
+                                "classification": "explicit_request",
+                                "needs_confirmation": True,
+                            },
+                        }
+                    else:
+                        llm_result = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        assistant_write = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "message.write_assistant" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        if not llm_result or not assistant_write:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="llm_or_assistant_missing",
+                                )
+                            )
+                            continue
+                        action.params["pending_tool_calls"] = (llm_result or {}).get("output", {}).get("pending_tool_calls", [])
+                        action.params["assistant_message_id"] = (assistant_write or {}).get("output", {}).get("message_id")
+                        action.params["session_id"] = resolved_signal.session_id or "na"
+                        if not action.params["pending_tool_calls"] or not action.params["assistant_message_id"]:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="no_tool_calls",
+                                    output={"reason": "no_tool_calls", "pending_tool_calls": []},
+                                )
+                            )
+                            continue
 
                 result = await self.dispatcher.execute(db, action, decision_id=decision_id)
                 action_results.append(result)
@@ -89,6 +194,29 @@ class ENSRuntime:
             return outcome
         finally:
             db.close()
+
+    def _skipped_action_result(
+        self,
+        *,
+        action: ENSAction,
+        decision_id: str,
+        reason: str,
+        output: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "action_result_id": str(uuid.uuid4()),
+            "decision_id": decision_id,
+            "action_id": action.action_id,
+            "idempotency_key": action.idempotency_key,
+            "kind": action.kind,
+            "execution_class": action.execution_class,
+            "status": "skipped",
+            "error_code": None,
+            "error_message": None,
+            "timestamp": datetime.utcnow().isoformat(),
+            "metrics": {"skipped": True},
+            "output": output if output is not None else {"reason": reason},
+        }
 
     def _resolve_signal_session(self, db, signal: SignalEnvelope, ctx: ENSContext) -> SignalEnvelope:
         if signal.scope == "SESSION" and not signal.session_id:
@@ -110,6 +238,10 @@ class ENSRuntime:
 
     def _propose_actions(self, signal: SignalEnvelope, ctx: ENSContext) -> List[ENSAction]:
         if signal.type == "user.message":
+            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+            slice2_tool_parsing_ownership = bool(
+                ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)
+            )
             thread_id = signal.payload["thread_id"]
             content = signal.payload["content"]
             metadata = signal.payload.get("metadata")
@@ -117,7 +249,7 @@ class ENSRuntime:
             client_message_id = signal.payload.get("client_message_id")
             user_key = self.dispatcher.user_message_key(signal.session_id or "na", content, client_message_id)
 
-            return [
+            actions = [
                 ENSAction(
                     kind="message.write_user",
                     idempotency_key=user_key,
@@ -133,6 +265,10 @@ class ENSRuntime:
                     params={
                         "thread_id": thread_id,
                         "character_id": signal.assistant_id,
+                        "user_id": signal.user_id,
+                        "user_content": content,
+                        "conversation_source": signal.payload.get("conversation_source"),
+                        "slice2_tool_parsing_ownership": slice2_tool_parsing_ownership,
                     },
                 ),
                 ENSAction(
@@ -147,6 +283,14 @@ class ENSRuntime:
                     },
                 ),
             ]
+            if slice2_tool_parsing_ownership:
+                actions.append(
+                    ENSAction(
+                        kind="tool_call.persist_pending",
+                        params={},
+                    )
+                )
+            return actions
 
         if signal.type == "external.history.message":
             role = signal.payload.get("role", "user")
@@ -187,6 +331,34 @@ class ENSRuntime:
         if signal.type == "user.message.nonstream_intake":
             return []
 
+        if signal.type == "tool.execute_requested":
+            return [
+                ENSAction(
+                    kind="tool.execute_media",
+                    idempotency_key=f"tool:dispatch:{signal.payload.get('tool_call_id')}",
+                    params=dict(signal.payload),
+                )
+            ]
+        if signal.type == "scene_capture.preview_requested":
+            media_type = signal.payload.get("media_type")
+            client_capture_id = signal.payload.get("client_capture_id")
+            preview_idempotency = (
+                f"scene:preview:{signal.payload.get('conversation_id')}:"
+                f"{signal.payload.get('thread_id')}:{media_type}:{client_capture_id}"
+            )
+            return [
+                ENSAction(
+                    kind="scene_capture.prompt_generate",
+                    idempotency_key=preview_idempotency,
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="tool_call.persist_pending",
+                    idempotency_key=preview_idempotency,
+                    params={},
+                ),
+            ]
+
         return []
 
     def _build_outcome(
@@ -201,6 +373,9 @@ class ENSRuntime:
 
         user_write = next((r for r in action_results if r.get("kind") in ("message.write_user", "message.write_history")), None)
         assistant_write = next((r for r in action_results if r.get("kind") == "message.write_assistant"), None)
+        pending_write = next((r for r in action_results if r.get("kind") == "tool_call.persist_pending"), None)
+        tool_exec = next((r for r in action_results if r.get("kind") == "tool.execute_media"), None)
+        scene_preview = next((r for r in action_results if r.get("kind") == "scene_capture.prompt_generate"), None)
 
         if signal.type == "external.history.message":
             response_payload = {
@@ -217,7 +392,17 @@ class ENSRuntime:
             response_payload = {
                 "user_message_id": user_write["output"]["message_id"],
                 "assistant_message_id": assistant_write["output"]["message_id"],
+                "pending_tool_calls": (pending_write or {}).get("output", {}).get("pending_tool_calls", []),
             }
+        elif signal.type == "tool.execute_requested" and tool_exec:
+            response_payload = dict((tool_exec or {}).get("output") or {})
+        elif signal.type == "scene_capture.preview_requested" and scene_preview:
+            preview_output = dict((scene_preview or {}).get("output") or {})
+            if pending_write:
+                pending = (pending_write or {}).get("output", {}).get("pending_tool_calls", [])
+                if pending:
+                    preview_output["tool_call_id"] = pending[0].get("id")
+            response_payload = preview_output
 
         return ENSOutcome(
             decision_id=decision_id,

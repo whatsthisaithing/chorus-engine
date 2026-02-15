@@ -1565,6 +1565,7 @@ window.App = {
 
         if (toolCall.tool === 'image.generate') {
             const preview = {
+                tool_call_id: toolCall.id || null,
                 prompt: toolCall.args?.prompt || '',
                 negative_prompt: null,
                 needs_confirmation: toolCall.needs_confirmation !== false,
@@ -1580,6 +1581,7 @@ window.App = {
 
         if (toolCall.tool === 'video.generate') {
             const preview = {
+                tool_call_id: toolCall.id || null,
                 prompt: toolCall.args?.prompt || '',
                 negative_prompt: null,
                 needs_confirmation: toolCall.needs_confirmation !== false,
@@ -2809,7 +2811,8 @@ window.App = {
                         this.state.selectedThreadId,
                         editedPrompt,
                         editedNegativePrompt,
-                        workflowId
+                        workflowId,
+                        this.pendingImageRequest.tool_call_id || null
                     );
                     
                     // Remove progress indicator
@@ -2832,7 +2835,8 @@ window.App = {
                         editedPrompt,
                         editedNegativePrompt,
                         disableConfirmation,
-                        workflowId
+                        workflowId,
+                        this.pendingImageRequest.tool_call_id || null
                     );
                     
                     // Remove progress indicator
@@ -2948,7 +2952,9 @@ window.App = {
                 this.state.selectedThreadId,
                 imagePromptPreview.prompt,
                 imagePromptPreview.negative_prompt,
-                false
+                false,
+                null,
+                imagePromptPreview.tool_call_id || null
             );
             
             // Remove progress and show image
@@ -3015,7 +3021,8 @@ window.App = {
                         this.state.selectedThreadId,
                         editedPrompt,
                         null, // No negative prompt for video
-                        workflowId
+                        workflowId,
+                        this.pendingVideoRequest.tool_call_id || null
                     );
                 } else {
                     // Regular generation path
@@ -3024,7 +3031,8 @@ window.App = {
                         editedPrompt,
                         null, // No negative prompt
                         disableConfirmation,
-                        workflowId
+                        workflowId,
+                        this.pendingVideoRequest.tool_call_id || null
                     );
                 }
                 
@@ -3072,7 +3080,8 @@ window.App = {
                 videoPromptPreview.prompt,  // Use generated prompt
                 null,  // No negative prompt
                 false,  // Don't disable confirmations
-                null   // Use default workflow
+                null,   // Use default workflow
+                videoPromptPreview.tool_call_id || null
             );
             
             // Remove progress and show video

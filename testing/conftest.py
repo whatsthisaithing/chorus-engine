@@ -70,6 +70,10 @@ class AppHelper:
         slice1_chat_ownership: bool,
         nonstream_intake_only: bool = True,
         streaming_intake_only: bool = True,
+        slice2_tool_parsing_ownership: bool = False,
+        slice2_tool_dispatch_ownership: bool = False,
+        slice2_scene_capture_ownership: bool = False,
+        slice2_scene_capture_legacy_confirm_without_tool_call: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -77,6 +81,10 @@ class AppHelper:
             nonstream_intake_only=nonstream_intake_only,
             streaming_intake_only=streaming_intake_only,
             slice1_compat_postprocessing_enabled=False,
+            slice2_tool_parsing_ownership=slice2_tool_parsing_ownership,
+            slice2_tool_dispatch_ownership=slice2_tool_dispatch_ownership,
+            slice2_scene_capture_ownership=slice2_scene_capture_ownership,
+            slice2_scene_capture_legacy_confirm_without_tool_call=slice2_scene_capture_legacy_confirm_without_tool_call,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:
@@ -149,6 +157,8 @@ def app(tmp_path, monkeypatch) -> Generator:
         name="Test Character",
         role="assistant",
         system_prompt="You are a concise test assistant.",
+        image_generation={"enabled": True},
+        video_generation={"enabled": True},
     )
 
     app_module.app_state.update(
@@ -162,6 +172,8 @@ def app(tmp_path, monkeypatch) -> Generator:
             "vision_service": None,
             "title_service": None,
             "ens_runtime": None,
+            "ens_tool_executor": app_module._ens_execute_tool_call,
+            "ens_scene_preview_executor": app_module._ens_scene_preview,
         }
     )
     app_module.app_state["ens_runtime"] = ENSRuntime(app_module.app_state)

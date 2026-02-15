@@ -528,6 +528,13 @@ class ENSConfig(BaseModel):
     )
     streaming_intake_only: bool = Field(default=True, description="Stream route uses ENS intake only")
     slice1_compat_postprocessing_enabled: bool = Field(default=False, description="Temporary legacy post-processing after ENS core actions")
+    slice2_tool_parsing_ownership: bool = Field(default=False, description="ENS owns non-stream tool payload parsing")
+    slice2_tool_dispatch_ownership: bool = Field(default=False, description="ENS owns tool-originated media dispatch")
+    slice2_scene_capture_ownership: bool = Field(default=False, description="ENS owns scene-capture preview and confirm flows")
+    slice2_scene_capture_legacy_confirm_without_tool_call: bool = Field(
+        default=False,
+        description="Dev-only compat: allow scene-capture confirm without tool_call_id while scene-capture ownership is enabled",
+    )
 
 
 class SystemConfig(BaseModel):

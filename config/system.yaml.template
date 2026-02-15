@@ -238,6 +238,10 @@ ens:
   nonstream_intake_only: true
   streaming_intake_only: true
   slice1_compat_postprocessing_enabled: false
+  slice2_tool_parsing_ownership: false
+  slice2_tool_dispatch_ownership: false
+  slice2_scene_capture_ownership: false
+  slice2_scene_capture_legacy_confirm_without_tool_call: false
 
 # Startup synchronization
 startup:

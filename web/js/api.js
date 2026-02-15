@@ -545,12 +545,15 @@ class API {
     
     // === Phase 5: Image Generation ===
     
-    static async generateImage(threadId, prompt, negativePrompt = null, disableConfirmation = false, workflowId = null) {
+    static async generateImage(threadId, prompt, negativePrompt = null, disableConfirmation = false, workflowId = null, toolCallId = null) {
         const body = {
             prompt: prompt,
             negative_prompt: negativePrompt,
             disable_future_confirmations: disableConfirmation
         };
+        if (toolCallId) {
+            body.tool_call_id = toolCallId;
+        }
         
         if (workflowId) {
             body.workflow_id = workflowId;
@@ -563,11 +566,14 @@ class API {
     }
     
     // Phase 9: Scene Capture
-    static async captureScene(threadId, prompt, negativePrompt = null, workflowId = null) {
+    static async captureScene(threadId, prompt, negativePrompt = null, workflowId = null, toolCallId = null) {
         const body = {
             prompt: prompt,
             negative_prompt: negativePrompt
         };
+        if (toolCallId) {
+            body.tool_call_id = toolCallId;
+        }
         
         if (workflowId) {
             body.workflow_id = workflowId;
@@ -846,15 +852,19 @@ class API {
     
     // === Video Generation ===
     
-    static async generateVideo(threadId, prompt, negativePrompt, disableFutureConfirmations, workflowId = null) {
+    static async generateVideo(threadId, prompt, negativePrompt, disableFutureConfirmations, workflowId = null, toolCallId = null) {
+        const body = {
+            prompt,
+            negative_prompt: negativePrompt,
+            disable_future_confirmations: disableFutureConfirmations,
+            workflow_id: workflowId
+        };
+        if (toolCallId) {
+            body.tool_call_id = toolCallId;
+        }
         return this.request(`/threads/${threadId}/generate-video`, {
             method: 'POST',
-            body: JSON.stringify({
-                prompt,
-                negative_prompt: negativePrompt,
-                disable_future_confirmations: disableFutureConfirmations,
-                workflow_id: workflowId
-            })
+            body: JSON.stringify(body)
         });
     }
     
@@ -865,11 +875,14 @@ class API {
         });
     }
     
-    static async captureVideoScene(threadId, prompt, negativePrompt = null, workflowId = null) {
+    static async captureVideoScene(threadId, prompt, negativePrompt = null, workflowId = null, toolCallId = null) {
         const body = {
             prompt: prompt,
             negative_prompt: negativePrompt
         };
+        if (toolCallId) {
+            body.tool_call_id = toolCallId;
+        }
         
         if (workflowId) {
             body.workflow_id = workflowId;

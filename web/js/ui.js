@@ -475,6 +475,7 @@ const UI = {
      */
     appendSceneCaptureImage(message) {
         const container = document.getElementById('messagesContainer');
+        const promptText = message.metadata.prompt || message.metadata.final_prompt || message.metadata.image_prompt || '';
         
         const imageDiv = document.createElement('div');
         imageDiv.className = 'message assistant-message image-only-message mt-3';
@@ -492,7 +493,7 @@ const UI = {
                     </span>
                     <div class="image-actions">
                         <button class="btn btn-sm btn-outline-secondary" 
-                                onclick="UI.viewInlineImage('${message.metadata.image_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', true)"
+                                onclick="UI.viewInlineImage('${message.metadata.image_path}', '${this.escapeHtml(promptText).replace(/'/g, '\\&apos;')}', true)"
                                 title="View full size">
                             <i class="bi bi-arrows-fullscreen"></i>
                         </button>
@@ -507,9 +508,9 @@ const UI = {
                            title="Download">
                             <i class="bi bi-download"></i>
                         </a>
-                        ${message.metadata.prompt ? `
+                        ${promptText ? `
                         <button class="btn btn-sm btn-outline-secondary" 
-                                onclick="UI.showImagePrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                onclick="UI.showImagePrompt('${this.escapeHtml(promptText).replace(/'/g, '\\&apos;')}')"
                                 title="View prompt">
                             <i class="bi bi-chat-left-text"></i>
                         </button>
@@ -1283,6 +1284,7 @@ const UI = {
 
     appendSceneCaptureVideo(message) {
         const container = document.getElementById('messagesContainer');
+        const promptText = message.metadata.prompt || message.metadata.final_prompt || message.metadata.image_prompt || '';
         
         const videoDiv = document.createElement('div');
         videoDiv.className = 'message assistant-message video-only-message mt-3';
@@ -1309,7 +1311,7 @@ const UI = {
                     </span>
                     <div class="video-actions">
                         <button class="btn btn-sm btn-outline-secondary" 
-                                onclick="UI.viewInlineVideo('${message.metadata.video_path}', '${this.escapeHtml(message.metadata.prompt || '').replace(/'/g, '\\&apos;')}', true, '${message.metadata.format || 'mp4'}')"
+                                onclick="UI.viewInlineVideo('${message.metadata.video_path}', '${this.escapeHtml(promptText).replace(/'/g, '\\&apos;')}', true, '${message.metadata.format || 'mp4'}')"
                                 title="View fullscreen">
                             <i class="bi bi-arrows-fullscreen"></i>
                         </button>
@@ -1319,9 +1321,9 @@ const UI = {
                            title="Download">
                             <i class="bi bi-download"></i>
                         </a>
-                        ${message.metadata.prompt ? `
+                        ${promptText ? `
                         <button class="btn btn-sm btn-outline-secondary" 
-                                onclick="UI.showVideoPrompt('${this.escapeHtml(message.metadata.prompt).replace(/'/g, '\\&apos;')}')"
+                                onclick="UI.showVideoPrompt('${this.escapeHtml(promptText).replace(/'/g, '\\&apos;')}')"
                                 title="View prompt">
                             <i class="bi bi-chat-left-text"></i>
                         </button>

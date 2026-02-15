@@ -27,14 +27,19 @@ if exist "python_embeded\python.exe" (
     set "PYTHON_CMD=python"
 )
 
+REM Clean pytest temp dir used by tests (best-effort).
+if exist ".pytest_tmp" (
+    rmdir /s /q ".pytest_tmp" >nul 2>&1
+)
+
 echo.
 if "%~1"=="" goto :smoke
 if /i "%~1"=="all" goto :full
 goto :custom
 
 :smoke
-echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py
-%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py
+echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py
+%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py
 goto :done
 
 :full
@@ -58,6 +63,11 @@ set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
     echo Pytest exited with code %EXIT_CODE%.
+)
+
+REM Clean pytest temp dir after run to avoid stale tracked artifacts.
+if exist ".pytest_tmp" (
+    rmdir /s /q ".pytest_tmp" >nul 2>&1
 )
 
 endlocal & exit /b %EXIT_CODE%

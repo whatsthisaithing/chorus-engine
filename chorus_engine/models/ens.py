@@ -74,3 +74,24 @@ class ENSActionResult(Base):
     metrics_json = Column(JSON, nullable=True)
     output_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ENSToolCallRequest(Base):
+    """Persistent tool call request for ENS tool dispatch and replay safety."""
+
+    __tablename__ = "ens_tool_call_requests"
+
+    tool_call_id = Column(String(100), primary_key=True)
+    session_id = Column(String(36), nullable=False, index=True)
+    assistant_message_id = Column(String(36), nullable=True, index=True)
+    tool_name = Column(String(100), nullable=False, index=True)
+    args_json = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, index=True, default="pending")
+    idempotency_key = Column(String(255), nullable=False, index=True)
+    result_ref = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ens_tool_call_requests_session_status", "session_id", "status"),
+    )

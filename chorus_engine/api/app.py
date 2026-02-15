@@ -5,6 +5,7 @@ import uuid
 import asyncio
 import subprocess
 import json
+import hashlib
 import yaml
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -22,7 +23,7 @@ from chorus_engine.config import ConfigLoader, SystemConfig, CharacterConfig, Us
 from chorus_engine.config import IMMUTABLE_CHARACTERS
 from chorus_engine.llm import create_llm_client, LLMError
 from chorus_engine.db import get_db, init_db
-from chorus_engine.models import Conversation, Thread, Message, Memory, MessageRole, MemoryType, ConversationSummary, MomentPin
+from chorus_engine.models import Conversation, Thread, Message, Memory, MessageRole, MemoryType, ConversationSummary, MomentPin, ENSToolCallRequest
 from chorus_engine.models.continuity import CharacterBackupState
 from chorus_engine.repositories import (
     ConversationRepository,
@@ -118,6 +119,7 @@ from chorus_engine.services.intent_detection_service import IntentDetectionServi
 # Phase 10 imports (Integrated LLM)
 from chorus_engine.api.model_routes import router as model_router
 from chorus_engine.ens import ENSRuntime, ENSContext, SignalEnvelope
+from chorus_engine.ens.media_generation import ENSMediaGenerator
 
 logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
@@ -333,6 +335,8 @@ app_state = {
     "document_manager": None,  # Phase 1: Document analysis
     "idle_detector": None,  # Phase D: Activity tracking for background processing
     "ens_runtime": None,  # ENS runtime
+    "ens_tool_executor": None,  # ENS tool execution callback
+    "ens_scene_preview_executor": None,  # ENS scene preview callback
 }
 
 
@@ -584,6 +588,8 @@ async def lifespan(app: FastAPI):
         app_state["continuity_service"] = continuity_service
         app_state["db_session"] = db_session  # Store for cleanup on shutdown
         app_state["ens_runtime"] = ENSRuntime(app_state)
+        app_state["ens_tool_executor"] = _ens_execute_tool_call
+        app_state["ens_scene_preview_executor"] = _ens_scene_preview
         
         # Initialize document management service (Phase 1)
         document_manager = DocumentManagementService()
@@ -1550,6 +1556,7 @@ class MomentPinResponse(BaseModel):
 class ImageGenerationConfirmRequest(BaseModel):
     """Request to confirm and generate an image."""
     message_id: Optional[int] = None
+    tool_call_id: Optional[str] = None
     prompt: str
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
@@ -1559,6 +1566,8 @@ class ImageGenerationConfirmRequest(BaseModel):
 
 class SceneCaptureRequest(BaseModel):
     """Request to capture scene image."""
+    tool_call_id: Optional[str] = None
+    client_capture_id: Optional[str] = None
     prompt: Optional[str] = None
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
@@ -1578,6 +1587,7 @@ class ImageGenerationResponse(BaseModel):
 
 class VideoGenerationConfirmRequest(BaseModel):
     """Request to confirm and generate a video."""
+    tool_call_id: Optional[str] = None
     prompt: Optional[str] = None  # User-confirmed video prompt (from dialog)
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
@@ -1588,6 +1598,8 @@ class VideoGenerationConfirmRequest(BaseModel):
 
 class VideoCaptureRequest(BaseModel):
     """Request to capture scene video."""
+    tool_call_id: Optional[str] = None
+    client_capture_id: Optional[str] = None
     prompt: Optional[str] = None
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
@@ -3218,6 +3230,12 @@ def _ens_flags():
         "slice1_chat_ownership": bool(ens_cfg and ens_cfg.slice1_chat_ownership),
         "nonstream_intake_only": bool(ens_cfg and getattr(ens_cfg, "nonstream_intake_only", False)),
         "streaming_intake_only": bool(ens_cfg and ens_cfg.streaming_intake_only),
+        "slice2_tool_parsing_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)),
+        "slice2_tool_dispatch_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_tool_dispatch_ownership", False)),
+        "slice2_scene_capture_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_scene_capture_ownership", False)),
+        "slice2_scene_capture_legacy_confirm_without_tool_call": bool(
+            ens_cfg and getattr(ens_cfg, "slice2_scene_capture_legacy_confirm_without_tool_call", False)
+        ),
     }
 
 
@@ -3264,6 +3282,7 @@ async def _ens_thread_chat(
             "metadata": request.metadata,
             "is_private": conversation.is_private == "true",
             "client_message_id": (request.metadata or {}).get("client_message_id"),
+            "conversation_source": request.conversation_source or conversation.source or "web",
         },
         tags=["latency_sensitive"] if (request.conversation_source or conversation.source) == "voice" else [],
     )
@@ -3290,7 +3309,7 @@ async def _ens_thread_chat(
     return ChatInThreadResponse(
         user_message=MessageResponse.from_orm(user_message, db_session=db),
         assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
-        pending_tool_calls=[],
+        pending_tool_calls=outcome.response_payload.get("pending_tool_calls", []),
         conversation_title_updated=None,
     )
 
@@ -3386,6 +3405,486 @@ async def _ens_history_message_add(
         "content": new_message.content,
         "created_at": new_message.created_at.isoformat(),
     }
+
+
+@asynccontextmanager
+async def _ens_media_guard(*, reload_llm_after: bool):
+    comfyui_lock = app_state.get("comfyui_lock")
+    if not comfyui_lock:
+        raise RuntimeError("ComfyUI coordination lock not initialized")
+    llm_usage_lock = app_state.get("llm_usage_lock")
+    if not llm_usage_lock:
+        raise RuntimeError("LLM usage lock not initialized")
+
+    llm_client = app_state.get("llm_client")
+    unloaded_tts_providers: List[str] = []
+
+    async with comfyui_lock:
+        async with llm_usage_lock:
+            if llm_client:
+                try:
+                    await llm_client.unload_all_models()
+                except Exception as unload_error:
+                    logger.warning("ENS media guard failed to unload LLM models: %s", unload_error)
+
+            from chorus_engine.services.tts.provider_factory import TTSProviderFactory
+
+            try:
+                all_providers = TTSProviderFactory._providers
+                for provider_name, provider in all_providers.items():
+                    if provider.is_model_loaded():
+                        provider.unload_model()
+                        unloaded_tts_providers.append(provider_name)
+            except Exception as tts_unload_error:
+                logger.warning("ENS media guard failed to unload TTS models: %s", tts_unload_error)
+
+            idle_detector = app_state.get("idle_detector")
+            if idle_detector:
+                idle_detector.increment_comfy_jobs()
+            try:
+                yield
+            finally:
+                if idle_detector:
+                    idle_detector.decrement_comfy_jobs()
+                if reload_llm_after and llm_client:
+                    try:
+                        await llm_client.reload_model()
+                    except Exception as reload_error:
+                        logger.warning("ENS media guard failed to reload LLM model: %s", reload_error)
+
+
+async def _ens_scene_preview(db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+    media_type = params.get("media_type") or "image"
+    thread_id = params.get("thread_id")
+    conversation_id = params.get("conversation_id")
+    if not thread_id:
+        raise RuntimeError("thread_id is required")
+
+    thread_repo = ThreadRepository(db)
+    thread = thread_repo.get_by_id(thread_id)
+    if not thread:
+        raise RuntimeError("Thread not found")
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(thread.conversation_id)
+    if not conversation:
+        raise RuntimeError("Conversation not found")
+    if conversation_id and conversation.id != conversation_id:
+        raise RuntimeError("Conversation mismatch for scene preview")
+
+    character_id = conversation.character_id
+    character = app_state["characters"].get(character_id)
+    if not character:
+        raise RuntimeError("Character not found")
+
+    msg_repo = MessageRepository(db)
+    all_messages = msg_repo.get_thread_history(thread_id)
+    messages_dicts = all_messages[-10:] if len(all_messages) > 10 else all_messages
+
+    from chorus_engine.models.conversation import Message as MessageModel
+
+    messages: List[MessageModel] = []
+    for msg_dict in messages_dicts:
+        if msg_dict.get("role") == "scene_capture":
+            continue
+        messages.append(
+            MessageModel(
+                id=msg_dict.get("id"),
+                thread_id=thread_id,
+                role=MessageRole(msg_dict["role"]),
+                content=msg_dict["content"],
+                created_at=msg_dict.get("created_at"),
+            )
+        )
+    if not messages:
+        raise RuntimeError("No messages in thread to capture")
+
+    from chorus_engine.repositories import WorkflowRepository
+
+    workflow_repo = WorkflowRepository(db)
+    workflow_config = workflow_repo.get_default_config(character.id)
+    client_capture_id = params.get("client_capture_id") or f"cap_{uuid.uuid4().hex[:12]}"
+
+    if media_type == "video":
+        video_orchestrator = app_state.get("video_orchestrator")
+        if not video_orchestrator:
+            raise RuntimeError("Video generation not available")
+        prompt_data = await video_orchestrator.prompt_service.generate_scene_capture_prompt(
+            messages=messages,
+            character=character,
+            model=character.preferred_llm.model if character.preferred_llm else None,
+            workflow_config=workflow_config,
+        )
+        payload_type = "video_scene_capture"
+    else:
+        from chorus_engine.services.scene_capture_prompt_service import SceneCapturePromptService
+
+        scene_prompt_service = SceneCapturePromptService(llm_client=app_state["llm_client"])
+        prompt_data = await scene_prompt_service.generate_prompt(
+            messages=messages,
+            character=character,
+            model=character.preferred_llm.model if character.preferred_llm.model else None,
+            workflow_config=workflow_config,
+        )
+        payload_type = "scene_capture"
+
+    key_material = f"{conversation.id}:{thread_id}:{media_type}:{client_capture_id}"
+    digest = hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:24]
+    tool_call_id = f"tc:scene:{media_type}:{digest}"
+
+    return {
+        "tool_call_id": tool_call_id,
+        "client_capture_id": client_capture_id,
+        "prompt": prompt_data.get("prompt"),
+        "negative_prompt": prompt_data.get("negative_prompt"),
+        "reasoning": prompt_data.get("reasoning", ""),
+        "needs_trigger": prompt_data.get("needs_trigger", False),
+        "type": payload_type,
+    }
+
+
+async def _ens_execute_scene_capture_image(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    thread_id = payload["thread_id"]
+    scene_message_id = payload["scene_message_id"]
+    prompt = payload.get("prompt") or ""
+    negative_prompt = payload.get("negative_prompt")
+    seed = payload.get("seed")
+    workflow_id = payload.get("workflow_id")
+
+    thread_repo = ThreadRepository(db)
+    thread = thread_repo.get_by_id(thread_id)
+    if not thread:
+        raise RuntimeError("Thread not found")
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(thread.conversation_id)
+    if not conversation:
+        raise RuntimeError("Conversation not found")
+    character = app_state["characters"].get(conversation.character_id)
+    if not character:
+        raise RuntimeError("Character not found")
+    if not character.image_generation.enabled:
+        raise RuntimeError("Image generation not enabled")
+
+    workflow_name = None
+    if workflow_id:
+        from chorus_engine.repositories import WorkflowRepository
+
+        workflow_repo = WorkflowRepository(db)
+        workflow_entry = workflow_repo.get_by_id(workflow_id)
+        if workflow_entry:
+            workflow_name = workflow_entry.workflow_name
+
+    image_orchestrator = app_state.get("image_orchestrator")
+    if not image_orchestrator:
+        raise RuntimeError("Image generation service not available")
+
+    async with _ens_media_guard(reload_llm_after=True):
+        result = await image_orchestrator.generate_image(
+            db=db,
+            conversation_id=conversation.id,
+            thread_id=thread_id,
+            character=character,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            message_id=scene_message_id,
+            workflow_name=workflow_name,
+        )
+
+    full_path = Path(result["file_path"])
+    relative_path = full_path.relative_to(Path("data/images"))
+    http_path = f"/images/{relative_path.as_posix()}"
+
+    http_thumb_path = None
+    if result.get("thumbnail_path"):
+        thumb_path = Path(result["thumbnail_path"])
+        relative_thumb = thumb_path.relative_to(Path("data/images"))
+        http_thumb_path = f"/images/{relative_thumb.as_posix()}"
+
+    message = MessageRepository(db).get_by_id(scene_message_id)
+    if message and message.meta_data is not None:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        # Canonical scene-capture prompt for inline conversation rendering.
+        canonical_prompt = prompt or message.meta_data.get("final_prompt") or message.meta_data.get("image_prompt")
+        message.meta_data["status"] = "completed"
+        message.meta_data["image_id"] = result["image_id"]
+        message.meta_data["image_path"] = http_path
+        message.meta_data["thumbnail_path"] = http_thumb_path
+        message.meta_data["prompt"] = canonical_prompt
+        message.meta_data["generation_time"] = result["generation_time"]
+        flag_modified(message, "meta_data")
+        db.commit()
+
+    return {
+        "success": True,
+        "image_id": result["image_id"],
+        "file_path": http_path,
+        "thumbnail_path": http_thumb_path,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "generation_time": result["generation_time"],
+        "scene_message_id": scene_message_id,
+    }
+
+
+async def _ens_execute_scene_capture_video(db: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    thread_id = payload["thread_id"]
+    scene_message_id = payload["scene_message_id"]
+    prompt = payload.get("prompt")
+    negative_prompt = payload.get("negative_prompt")
+    seed = payload.get("seed")
+    workflow_id = payload.get("workflow_id")
+
+    thread_repo = ThreadRepository(db)
+    thread = thread_repo.get_by_id(thread_id)
+    if not thread:
+        raise RuntimeError("Thread not found")
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(thread.conversation_id)
+    if not conversation:
+        raise RuntimeError("Conversation not found")
+    character = app_state["characters"].get(conversation.character_id)
+    if not character:
+        raise RuntimeError("Character not found")
+
+    from chorus_engine.repositories import WorkflowRepository
+
+    workflow_repo = WorkflowRepository(db)
+    if workflow_id:
+        workflow_entry = workflow_repo.get_by_id(workflow_id)
+        if not workflow_entry:
+            raise RuntimeError(f"Workflow {workflow_id} not found")
+    else:
+        workflow_entry = workflow_repo.get_default_for_character_and_type(conversation.character_id, "video")
+        if not workflow_entry:
+            raise RuntimeError("No video workflow configured")
+
+    msg_repo = MessageRepository(db)
+    from chorus_engine.models.conversation import Message as MessageModel
+
+    all_messages_dicts = msg_repo.get_thread_history(thread_id)
+    recent_messages_dicts = all_messages_dicts[-10:] if len(all_messages_dicts) > 10 else all_messages_dicts
+    messages = [
+        MessageModel(
+            id=row.get("id"),
+            thread_id=thread_id,
+            role=MessageRole(row["role"]),
+            content=row["content"],
+            created_at=row.get("created_at"),
+        )
+        for row in recent_messages_dicts
+    ]
+    if not messages:
+        raise RuntimeError("No messages in thread to capture")
+
+    video_orchestrator = app_state.get("video_orchestrator")
+    if not video_orchestrator:
+        raise RuntimeError("Video generation not available")
+
+    video_repo = VideoRepository(db)
+    async with _ens_media_guard(reload_llm_after=False):
+        video_record = await video_orchestrator.generate_scene_capture(
+            video_repository=video_repo,
+            conversation_id=conversation.id,
+            thread_id=thread_id,
+            messages=messages,
+            character=character,
+            character_name=character.name,
+            character_id=conversation.character_id,
+            workflow_entry=workflow_entry,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+        )
+
+    video_path_str = str(video_record.file_path).replace("\\", "/")
+    http_path = "/" + video_path_str.replace("data/", "")
+    http_thumb_path = None
+    if video_record.thumbnail_path:
+        thumb_path_str = str(video_record.thumbnail_path).replace("\\", "/")
+        http_thumb_path = "/" + thumb_path_str.replace("data/", "")
+
+    message = msg_repo.get_by_id(scene_message_id)
+    if message and message.meta_data is not None:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        message.meta_data["status"] = "completed"
+        message.meta_data["video_id"] = video_record.id
+        message.meta_data["video_path"] = http_path
+        message.meta_data["prompt"] = video_record.prompt
+        message.meta_data["negative_prompt"] = video_record.negative_prompt
+        message.meta_data["format"] = video_record.format
+        message.meta_data["duration"] = video_record.duration_seconds
+        message.meta_data["generation_time"] = video_record.generation_time_seconds
+        if http_thumb_path:
+            message.meta_data["thumbnail_path"] = http_thumb_path
+        flag_modified(message, "meta_data")
+        db.commit()
+
+    return {
+        "success": True,
+        "video_id": video_record.id,
+        "file_path": http_path,
+        "thumbnail_path": http_thumb_path,
+        "prompt": video_record.prompt,
+        "negative_prompt": video_record.negative_prompt,
+        "format": video_record.format,
+        "duration_seconds": video_record.duration_seconds,
+        "generation_time": video_record.generation_time_seconds,
+        "scene_message_id": scene_message_id,
+    }
+
+
+async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+    tool_call_id = params.get("tool_call_id")
+    if not tool_call_id:
+        raise RuntimeError("tool_call_id is required")
+
+    tool_call = db.query(ENSToolCallRequest).filter(ENSToolCallRequest.tool_call_id == tool_call_id).first()
+    if not tool_call:
+        raise RuntimeError(f"Tool call not found: {tool_call_id}")
+
+    request_prompt = params.get("prompt")
+    current_prompt = (tool_call.args_json or {}).get("prompt")
+    if request_prompt and request_prompt != current_prompt:
+        if tool_call.status != "pending":
+            raise RuntimeError("Prompt override allowed only while tool call is pending")
+        args_json = dict(tool_call.args_json or {})
+        args_json["prompt"] = request_prompt
+        args_json["override_prompt"] = True
+        tool_call.args_json = args_json
+        db.commit()
+        db.refresh(tool_call)
+
+    if tool_call.status == "completed" and tool_call.result_ref:
+        return dict(tool_call.result_ref)
+
+    if tool_call.status not in ("pending", "dispatched"):
+        raise RuntimeError(f"Tool call status does not allow execution: {tool_call.status}")
+
+    if tool_call.status == "pending":
+        tool_call.status = "dispatched"
+        db.commit()
+
+    thread_id = params.get("thread_id") or (tool_call.args_json or {}).get("thread_id")
+    if not thread_id:
+        raise RuntimeError("thread_id is required for tool execution")
+
+    args = dict(tool_call.args_json or {})
+    tool_name = tool_call.tool_name
+    async def _normalize_conversational_image(payload: Dict[str, Any]) -> Dict[str, Any]:
+        result = await generate_image(
+            thread_id=payload["thread_id"],
+            request=ImageGenerationConfirmRequest(
+                message_id=None,
+                prompt=payload.get("prompt") or "",
+                negative_prompt=payload.get("negative_prompt"),
+                seed=payload.get("seed"),
+                disable_future_confirmations=False,
+                workflow_id=payload.get("workflow_id"),
+            ),
+            db=db,
+        )
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+    async def _normalize_conversational_video(payload: Dict[str, Any]) -> Dict[str, Any]:
+        result = await generate_video(
+            thread_id=payload["thread_id"],
+            request=VideoGenerationConfirmRequest(
+                prompt=payload.get("prompt"),
+                negative_prompt=payload.get("negative_prompt"),
+                seed=payload.get("seed"),
+                trigger_words=payload.get("trigger_words"),
+                disable_future_confirmations=False,
+                workflow_id=payload.get("workflow_id"),
+            ),
+            db=db,
+        )
+        return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+    media_wrapper = ENSMediaGenerator(
+        image_executor=lambda payload: (
+            _ens_execute_scene_capture_image(db, payload)
+            if payload.get("scene_capture")
+            else _normalize_conversational_image(payload)
+        ),
+        video_executor=lambda payload: (
+            _ens_execute_scene_capture_video(db, payload)
+            if payload.get("scene_capture")
+            else _normalize_conversational_video(payload)
+        ),
+    )
+
+    try:
+        if tool_name in ("image.generate", "video.generate"):
+            media_type = "image" if tool_name == "image.generate" else "video"
+            media_result = await media_wrapper.execute(
+                media_type,
+                {
+                    "thread_id": thread_id,
+                    "prompt": args.get("prompt"),
+                    "negative_prompt": args.get("negative_prompt"),
+                    "seed": args.get("seed"),
+                    "workflow_id": args.get("workflow_id"),
+                    "trigger_words": args.get("trigger_words"),
+                    "scene_capture": False,
+                },
+            )
+            result_ref = media_result.to_dict()
+        elif tool_name == "scene_capture.generate":
+            media_type = args.get("media_type") or "image"
+            result_ref = dict(tool_call.result_ref or {})
+            scene_message_id = result_ref.get("scene_message_id")
+            if not scene_message_id:
+                scene_message = MessageRepository(db).create(
+                    thread_id=thread_id,
+                    role=MessageRole.SCENE_CAPTURE,
+                    content="",
+                    metadata={
+                        "status": "generating",
+                        "workflow_id": args.get("workflow_id") or "default",
+                        "image_prompt": args.get("prompt"),
+                        "video_prompt": args.get("prompt"),
+                        "negative_prompt": args.get("negative_prompt"),
+                        "seed": args.get("seed"),
+                    },
+                )
+                scene_message_id = scene_message.id
+                result_ref["scene_message_id"] = scene_message_id
+                tool_call.result_ref = result_ref
+                db.commit()
+
+            media_result = await media_wrapper.execute(
+                media_type,
+                {
+                    "thread_id": thread_id,
+                    "scene_message_id": scene_message_id,
+                    "prompt": args.get("prompt"),
+                    "negative_prompt": args.get("negative_prompt"),
+                    "seed": args.get("seed"),
+                    "workflow_id": args.get("workflow_id"),
+                    "scene_capture": True,
+                },
+            )
+            result_ref = media_result.to_dict()
+        else:
+            raise RuntimeError(f"Unsupported tool name: {tool_name}")
+
+        if result_ref.get("success"):
+            tool_call.status = "completed"
+            tool_call.result_ref = result_ref
+            db.commit()
+            return result_ref
+
+        tool_call.status = "failed"
+        tool_call.result_ref = result_ref
+        db.commit()
+        return result_ref
+    except Exception as e:
+        tool_call.status = "failed"
+        tool_call.result_ref = {"success": False, "error": str(e)}
+        db.commit()
+        raise
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -6990,6 +7489,42 @@ async def generate_scene_capture_prompt(
     Returns:
         Prompt data for confirmation dialog
     """
+    flags = _ens_flags()
+    if flags["enabled"] and flags["slice2_scene_capture_ownership"]:
+        client_capture_id = f"cap_{uuid.uuid4().hex[:12]}"
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(thread.conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="scene_capture.preview_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=conversation.character_id,
+            payload={
+                "thread_id": thread_id,
+                "conversation_id": conversation.id,
+                "media_type": "image",
+                "client_capture_id": client_capture_id,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        return outcome.response_payload
+
     # Verify thread exists
     thread_repo = ThreadRepository(db)
     thread = thread_repo.get_by_id(thread_id)
@@ -7146,6 +7681,36 @@ async def capture_scene(
     Returns:
         Message with generating status and prompt data
     """
+    flags = _ens_flags()
+    if flags["enabled"] and flags["slice2_scene_capture_ownership"]:
+        if not request.tool_call_id and not flags["slice2_scene_capture_legacy_confirm_without_tool_call"]:
+            raise HTTPException(status_code=400, detail="tool_call_id is required for ENS scene capture confirm")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="tool.execute_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=None,
+            payload={
+                "tool_call_id": request.tool_call_id,
+                "thread_id": thread_id,
+                "prompt": request.prompt,
+            },
+        )
+        outcome = await runtime.ingest(signal, ENSContext(app_state=app_state, surface="web", source="web"))
+        payload = outcome.response_payload or {}
+        return ImageGenerationResponse(
+            success=bool(payload.get("success")),
+            image_id=payload.get("image_id"),
+            file_path=payload.get("file_path"),
+            thumbnail_path=payload.get("thumbnail_path"),
+            prompt=payload.get("prompt"),
+            generation_time=payload.get("generation_time"),
+            error=payload.get("error"),
+        )
+
     # Import at top of function scope
     from chorus_engine.models.conversation import Message as MessageModel, MessageRole
     
@@ -7421,6 +7986,7 @@ async def capture_scene(
                     message.meta_data["image_id"] = result["image_id"]
                     message.meta_data["image_path"] = http_path
                     message.meta_data["thumbnail_path"] = http_thumb_path
+                    message.meta_data["prompt"] = prompt or final_prompt
                     message.meta_data["generation_time"] = result["generation_time"]
                     # Flag the JSON column as modified so SQLAlchemy knows to update it
                     flag_modified(message, "meta_data")
@@ -8094,6 +8660,36 @@ async def generate_image(
                 status_code=400,
                 detail=f"Image generation not enabled for character {character_id}"
             )
+
+        flags = _ens_flags()
+        if (
+            flags["enabled"]
+            and flags["slice2_tool_dispatch_ownership"]
+            and request.tool_call_id
+        ):
+            runtime = app_state.get("ens_runtime")
+            if not runtime:
+                raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+            signal = SignalEnvelope(
+                type="tool.execute_requested",
+                scope="SESSION",
+                source="external",
+                assistant_id=character_id,
+                payload={
+                    "tool_call_id": request.tool_call_id,
+                    "thread_id": thread_id,
+                    "prompt": request.prompt,
+                },
+            )
+            outcome = await runtime.ingest(
+                signal,
+                ENSContext(
+                    app_state=app_state,
+                    surface=conversation.source or "web",
+                    source=conversation.source or "web",
+                ),
+            )
+            return ImageGenerationResponse(**(outcome.response_payload or {}))
         
         # Get workflow - use selected workflow_id or fall back to default
         from chorus_engine.repositories import WorkflowRepository
@@ -8626,6 +9222,36 @@ async def generate_video(
                 status_code=400,
                 detail=f"Video generation not enabled for character {character_id}"
             )
+
+        flags = _ens_flags()
+        if (
+            flags["enabled"]
+            and flags["slice2_tool_dispatch_ownership"]
+            and request.tool_call_id
+        ):
+            runtime = app_state.get("ens_runtime")
+            if not runtime:
+                raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+            signal = SignalEnvelope(
+                type="tool.execute_requested",
+                scope="SESSION",
+                source="external",
+                assistant_id=character_id,
+                payload={
+                    "tool_call_id": request.tool_call_id,
+                    "thread_id": thread_id,
+                    "prompt": request.prompt,
+                },
+            )
+            outcome = await runtime.ingest(
+                signal,
+                ENSContext(
+                    app_state=app_state,
+                    surface=conversation.source or "web",
+                    source=conversation.source or "web",
+                ),
+            )
+            return VideoGenerationResponse(**(outcome.response_payload or {}))
         
         # Get workflow - use selected workflow_id or fall back to default
         from chorus_engine.repositories import WorkflowRepository
@@ -8837,6 +9463,42 @@ async def generate_video_scene_capture_prompt(
     Returns:
         Prompt data for confirmation dialog
     """
+    flags = _ens_flags()
+    if flags["enabled"] and flags["slice2_scene_capture_ownership"]:
+        client_capture_id = f"cap_{uuid.uuid4().hex[:12]}"
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(thread.conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="scene_capture.preview_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=conversation.character_id,
+            payload={
+                "thread_id": thread_id,
+                "conversation_id": conversation.id,
+                "media_type": "video",
+                "client_capture_id": client_capture_id,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        return outcome.response_payload
+
     # Verify thread exists
     thread_repo = ThreadRepository(db)
     thread = thread_repo.get_by_id(thread_id)
@@ -8954,6 +9616,38 @@ async def capture_video_scene(
     db: Session = Depends(get_db)
 ):
     """Capture current scene as a video (🎥 button) - executes actual generation after user confirms."""
+    flags = _ens_flags()
+    if flags["enabled"] and flags["slice2_scene_capture_ownership"]:
+        if not request.tool_call_id and not flags["slice2_scene_capture_legacy_confirm_without_tool_call"]:
+            raise HTTPException(status_code=400, detail="tool_call_id is required for ENS scene capture confirm")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="tool.execute_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=None,
+            payload={
+                "tool_call_id": request.tool_call_id,
+                "thread_id": thread_id,
+                "prompt": request.prompt,
+            },
+        )
+        outcome = await runtime.ingest(signal, ENSContext(app_state=app_state, surface="web", source="web"))
+        payload = outcome.response_payload or {}
+        return VideoGenerationResponse(
+            success=bool(payload.get("success")),
+            video_id=payload.get("video_id"),
+            file_path=payload.get("file_path"),
+            thumbnail_path=payload.get("thumbnail_path"),
+            prompt=payload.get("prompt"),
+            format=payload.get("format"),
+            duration_seconds=payload.get("duration_seconds"),
+            generation_time=payload.get("generation_time"),
+            error=payload.get("error"),
+        )
+
     video_orchestrator = app_state.get("video_orchestrator")
     
     if not video_orchestrator:

@@ -111,6 +111,7 @@ utilities/inspect_character/reports/
 
 # Testing
 .pytest_cache/
+.pytest_tmp/
 .coverage
 htmlcov/
 
