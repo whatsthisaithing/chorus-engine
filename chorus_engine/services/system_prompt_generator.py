@@ -426,6 +426,8 @@ class SystemPromptGenerator:
                 f"- IS_ITERATION_REQUEST: {iteration_text}",
                 "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT emit any tool payload.",
                 "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is not 'none', you MUST emit exactly one valid tool payload.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is 'none', you may emit at most one tool payload only when making a genuine proactive offer.",
+                "- Do not force or invent a tool payload unless intentionally offering media.",
                 "- When MEDIA_TOOL_CALLS_ALLOWED is NO:",
                 "  - Do not say \"here's the prompt,\" \"I'll craft a prompt,\" \"prompt for the image/video,\" \"ready to generate,\" \"let me create/craft that visual,\" etc.",
                 "  - Respond as normal conversation: acknowledge + (optional) ask a gentle follow-up question.",
@@ -528,6 +530,9 @@ class SystemPromptGenerator:
 - Nothing may appear after ---CHORUS_TOOL_PAYLOAD_END---.
 - Sentinels must match exactly.
 - Do not mention or explain tool JSON in visible prose.
+- Never output tool JSON as prose, markdown, fenced code blocks, or raw JSON text.
+- Tool payloads must appear only inside the exact required sentinel markers.
+- If you are not 100% certain you can format the sentinel block correctly, emit no tool payload.
 
 JSON schema (version 1):
 {
@@ -576,6 +581,8 @@ Only one tool call is recommended."""
             "- Your entire response MUST be wrapped in <assistant_response>...</assistant_response>",
             "- Output exactly one <assistant_response>...</assistant_response> block per message.",
             "- All content must appear inside that single block; do not open a second root.",
+            "- Exception for tool payload placement: if (and only if) you emit a tool call, you may place exactly one sentinel tool payload block immediately after </assistant_response>.",
+            "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block.",
             "- Only allowed child tags may be used",
             "- Do NOT include any text outside the tags",
             "- Tags must NOT include attributes",

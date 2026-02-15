@@ -535,6 +535,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="Dev-only compat: allow scene-capture confirm without tool_call_id while scene-capture ownership is enabled",
     )
+    slice25_media_gating_ownership: bool = Field(
+        default=False,
+        description="ENS owns media gating snapshot + tool payload adjudication actions",
+    )
 
 
 class SystemConfig(BaseModel):

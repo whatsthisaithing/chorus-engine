@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 import re
 
+from chorus_engine.services.tool_payload import detect_malformed_tool_payload_block
+
 
 @dataclass
 class StructuredSegment:
@@ -97,7 +99,11 @@ def parse_structured_response(
     raw_tail = source[cursor:]
     if raw_tail.strip():
         had_untagged = True
-        add_segment("speech", _strip_tags(raw_tail))
+        tail_is_malformed_tool, _payload_type = detect_malformed_tool_payload_block(raw_tail)
+        if tail_is_malformed_tool:
+            parse_error = parse_error or "tool_like_tail_suppressed"
+        else:
+            add_segment("speech", _strip_tags(raw_tail))
 
     if not segments:
         had_untagged = True

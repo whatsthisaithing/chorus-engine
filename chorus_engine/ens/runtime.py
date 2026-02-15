@@ -49,7 +49,7 @@ class ENSRuntime:
             actions = self._propose_actions(resolved_signal, ctx)
             action_results: List[Dict[str, Any]] = []
             for action in actions:
-                if action.kind in ("llm.invoke.chat", "message.write_assistant"):
+                if action.kind in ("media.gating.evaluate", "llm.invoke.chat", "tool_payload.adjudicate", "message.write_assistant"):
                     user_write = next(
                         (
                             r
@@ -59,8 +59,51 @@ class ENSRuntime:
                         None,
                     )
                     user_message_id = (user_write or {}).get("output", {}).get("message_id")
+                    if action.kind == "media.gating.evaluate" and user_message_id:
+                        action.idempotency_key = f"gate:media:{resolved_signal.session_id}:{user_message_id}"
                     if action.kind == "llm.invoke.chat" and user_message_id:
                         action.idempotency_key = f"llm:chat:{resolved_signal.session_id}:{user_message_id}"
+                        media_gate = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "media.gating.evaluate" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        action.params["media_gate_snapshot"] = (media_gate or {}).get("output", {}).get("media_gate_snapshot", {})
+                    if action.kind == "tool_payload.adjudicate" and user_message_id:
+                        action.idempotency_key = f"gate:adjudicate:{resolved_signal.session_id}:{user_message_id}"
+                        llm_result = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        if not llm_result:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="llm_missing",
+                                )
+                            )
+                            continue
+                        media_gate = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "media.gating.evaluate" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        action.params["llm_output"] = (llm_result or {}).get("output", {})
+                        action.params["media_gate_snapshot"] = (media_gate or {}).get("output", {}).get("media_gate_snapshot", {})
+                        action.params["thread_id"] = resolved_signal.payload.get("thread_id")
+                        action.params["character_id"] = resolved_signal.assistant_id
+                        action.params["user_id"] = resolved_signal.user_id
                     if action.kind == "message.write_assistant" and user_message_id:
                         action.idempotency_key = f"msg:assistant:{resolved_signal.session_id}:{user_message_id}"
                         llm_result = next(
@@ -72,7 +115,12 @@ class ENSRuntime:
                             None,
                         )
                         llm_content = (llm_result or {}).get("output", {}).get("content", "")
+                        llm_metadata = (llm_result or {}).get("output", {}).get("assistant_metadata") or {}
                         action.params["content"] = llm_content
+                        if llm_metadata:
+                            existing_metadata = dict(action.params.get("metadata") or {})
+                            existing_metadata.update(llm_metadata)
+                            action.params["metadata"] = existing_metadata
                 if action.kind == "tool_call.persist_pending":
                     if resolved_signal.type == "scene_capture.preview_requested":
                         preview_result = next(
@@ -140,14 +188,6 @@ class ENSRuntime:
                             },
                         }
                     else:
-                        llm_result = next(
-                            (
-                                r
-                                for r in action_results
-                                if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
-                            ),
-                            None,
-                        )
                         assistant_write = next(
                             (
                                 r
@@ -165,7 +205,28 @@ class ENSRuntime:
                                 )
                             )
                             continue
-                        action.params["pending_tool_calls"] = (llm_result or {}).get("output", {}).get("pending_tool_calls", [])
+                        adjudication = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "tool_payload.adjudicate" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        if adjudication:
+                            action.params["pending_tool_calls"] = (
+                                (adjudication or {}).get("output", {}).get("pending_tool_calls", [])
+                            )
+                        else:
+                            llm_result = next(
+                                (
+                                    r
+                                    for r in action_results
+                                    if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                                ),
+                                None,
+                            )
+                            action.params["pending_tool_calls"] = (llm_result or {}).get("output", {}).get("pending_tool_calls", [])
                         action.params["assistant_message_id"] = (assistant_write or {}).get("output", {}).get("message_id")
                         action.params["session_id"] = resolved_signal.session_id or "na"
                         if not action.params["pending_tool_calls"] or not action.params["assistant_message_id"]:
@@ -178,6 +239,29 @@ class ENSRuntime:
                                 )
                             )
                             continue
+
+                if action.kind == "conversation.title.maybe_update":
+                    assistant_write = next(
+                        (
+                            r
+                            for r in action_results
+                            if r.get("kind") == "message.write_assistant" and r.get("status") in ("success", "skipped")
+                        ),
+                        None,
+                    )
+                    assistant_message_id = (assistant_write or {}).get("output", {}).get("message_id")
+                    if not assistant_message_id:
+                        action_results.append(
+                            self._skipped_action_result(
+                                action=action,
+                                decision_id=decision_id,
+                                reason="assistant_missing",
+                            )
+                        )
+                        continue
+                    action.idempotency_key = f"title:maybe:{resolved_signal.session_id}:{assistant_message_id}"
+                    action.params.setdefault("thread_id", resolved_signal.payload.get("thread_id"))
+                    action.params.setdefault("character_id", resolved_signal.assistant_id)
 
                 result = await self.dispatcher.execute(db, action, decision_id=decision_id)
                 action_results.append(result)
@@ -242,6 +326,9 @@ class ENSRuntime:
             slice2_tool_parsing_ownership = bool(
                 ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)
             )
+            slice25_media_gating_ownership = bool(
+                ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice25_media_gating_ownership", False)
+            )
             thread_id = signal.payload["thread_id"]
             content = signal.payload["content"]
             metadata = signal.payload.get("metadata")
@@ -260,6 +347,22 @@ class ENSRuntime:
                         "is_private": is_private,
                     },
                 ),
+            ]
+            if slice2_tool_parsing_ownership and slice25_media_gating_ownership:
+                actions.append(
+                    ENSAction(
+                        kind="media.gating.evaluate",
+                        params={
+                            "thread_id": thread_id,
+                            "character_id": signal.assistant_id,
+                            "user_id": signal.user_id,
+                            "user_content": content,
+                            "conversation_source": signal.payload.get("conversation_source"),
+                        },
+                    )
+                )
+            actions.extend(
+                [
                 ENSAction(
                     kind="llm.invoke.chat",
                     params={
@@ -282,7 +385,15 @@ class ENSRuntime:
                         "is_private": is_private,
                     },
                 ),
-            ]
+                ]
+            )
+            if slice2_tool_parsing_ownership and slice25_media_gating_ownership:
+                actions.append(
+                    ENSAction(
+                        kind="tool_payload.adjudicate",
+                        params={},
+                    )
+                )
             if slice2_tool_parsing_ownership:
                 actions.append(
                     ENSAction(
@@ -290,6 +401,13 @@ class ENSRuntime:
                         params={},
                     )
                 )
+            actions.append(
+                ENSAction(
+                    kind="conversation.title.maybe_update",
+                    execution_class="background",
+                    params={},
+                )
+            )
             return actions
 
         if signal.type == "external.history.message":
@@ -389,10 +507,17 @@ class ENSRuntime:
                     "character_name": llm_result["output"].get("character_name"),
                 }
         elif user_write and assistant_write:
+            title_update = next((r for r in action_results if r.get("kind") == "conversation.title.maybe_update"), None)
+            updated_title = None
+            if title_update and title_update.get("status") in ("success", "skipped"):
+                title_output = (title_update or {}).get("output") or {}
+                if title_output.get("updated"):
+                    updated_title = title_output.get("title")
             response_payload = {
                 "user_message_id": user_write["output"]["message_id"],
                 "assistant_message_id": assistant_write["output"]["message_id"],
                 "pending_tool_calls": (pending_write or {}).get("output", {}).get("pending_tool_calls", []),
+                "conversation_title_updated": updated_title,
             }
         elif signal.type == "tool.execute_requested" and tool_exec:
             response_payload = dict((tool_exec or {}).get("output") or {})
@@ -451,6 +576,9 @@ class ENSRuntime:
             ],
             "explanation": f"Slice 0/1 route for signal {signal.type}",
         }
+        media_gate = next((r for r in action_results if r.get("kind") == "media.gating.evaluate"), None)
+        if media_gate and isinstance(media_gate.get("output"), dict):
+            decision_doc["media_gate_snapshot"] = media_gate["output"].get("media_gate_snapshot")
 
         sql_action_results = self._sql_safe_action_results(action_results)
         self.decision_store.persist(

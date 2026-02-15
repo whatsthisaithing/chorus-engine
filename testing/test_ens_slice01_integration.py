@@ -2,6 +2,7 @@ from pathlib import Path
 
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSDecision, ENSSession
+from chorus_engine.repositories import ConversationRepository
 
 
 def test_slice0_non_stream_creates_session_decision_and_jsonl(client, db, helpers):
@@ -170,3 +171,43 @@ def test_streaming_intake_creates_decision_record(client, db, helpers):
         .count()
     )
     assert decisions >= 1
+
+
+def test_slice1_ens_auto_title_updates_on_second_turn(client, db, helpers):
+    class _FakeTitleResult:
+        def __init__(self, title: str):
+            self.success = True
+            self.title = title
+            self.error = None
+
+    class _FakeTitleService:
+        async def generate_title(self, messages, character_name, model, comfyui_lock=None):
+            _ = (messages, character_name, model, comfyui_lock)
+            return _FakeTitleResult("ENS Auto Title")
+
+    helpers.app_module.app_state["title_service"] = _FakeTitleService()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+
+    r1 = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "first turn", "metadata": {"client_message_id": "title-1"}},
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json().get("conversation_title_updated") in (None, "")
+
+    r2 = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "second turn", "metadata": {"client_message_id": "title-2"}},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json().get("conversation_title_updated") == "ENS Auto Title"
+
+    conversation = ConversationRepository(db).get_by_id(conversation_id)
+    assert conversation is not None
+    assert conversation.title == "ENS Auto Title"

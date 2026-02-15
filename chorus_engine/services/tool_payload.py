@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any, Optional
 
 from chorus_engine.services.json_extraction import extract_json_block
@@ -46,6 +47,51 @@ class ColdRecallToolCall:
     requires_approval: bool
     pin_id: str
     reason: str
+
+
+_HEADING_FENCED_PATTERN = re.compile(
+    r"(?is)(?:\n|^)\s*\*\*[^*\n]*payload[^*\n]*\*\*\s*```json[\s\S]*?```"
+)
+_FENCED_TOOL_JSON_PATTERN = re.compile(
+    r"(?is)(?:\n|^)\s*```json[\s\S]*?\"tool_calls\"[\s\S]*?```"
+)
+_RAW_TOOL_JSON_PATTERN = re.compile(
+    r"(?is)(?:\n|^)\s*\{[\s\S]{0,6000}\"tool_calls\"[\s\S]{0,6000}\}\s*$"
+)
+
+
+def detect_malformed_tool_payload_block(raw_text: str) -> tuple[bool, Optional[str]]:
+    """
+    Detect likely tool payload leaks that are not wrapped in sentinels.
+    """
+    if not raw_text:
+        return False, None
+    if BEGIN_SENTINEL in raw_text:
+        return False, None
+    if _HEADING_FENCED_PATTERN.search(raw_text):
+        return True, "heading_json"
+    if _FENCED_TOOL_JSON_PATTERN.search(raw_text):
+        return True, "fenced_json"
+    if _RAW_TOOL_JSON_PATTERN.search(raw_text) and ("\"image.generate\"" in raw_text or "\"video.generate\"" in raw_text):
+        return True, "raw_json"
+    return False, None
+
+
+def strip_malformed_tool_payload_block(raw_text: str) -> tuple[str, bool, Optional[str]]:
+    """
+    Remove likely malformed tool payload blocks from visible assistant text.
+    """
+    detected, payload_type = detect_malformed_tool_payload_block(raw_text)
+    if not detected:
+        return raw_text, False, None
+
+    stripped = raw_text
+    stripped = _HEADING_FENCED_PATTERN.sub("", stripped)
+    stripped = _FENCED_TOOL_JSON_PATTERN.sub("", stripped)
+    # Only strip trailing raw JSON blobs to reduce false positives.
+    stripped = _RAW_TOOL_JSON_PATTERN.sub("", stripped)
+    stripped = stripped.rstrip()
+    return stripped, True, payload_type
 
 
 def extract_tool_payload(raw_text: str) -> ToolPayloadExtraction:

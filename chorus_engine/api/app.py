@@ -3310,7 +3310,7 @@ async def _ens_thread_chat(
         user_message=MessageResponse.from_orm(user_message, db_session=db),
         assistant_message=MessageResponse.from_orm(assistant_message, db_session=db),
         pending_tool_calls=outcome.response_payload.get("pending_tool_calls", []),
-        conversation_title_updated=None,
+        conversation_title_updated=outcome.response_payload.get("conversation_title_updated"),
     )
 
 
@@ -3744,6 +3744,22 @@ async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[st
     if not tool_call:
         raise RuntimeError(f"Tool call not found: {tool_call_id}")
 
+    thread_id = params.get("thread_id") or (tool_call.args_json or {}).get("thread_id")
+    if not thread_id:
+        raise RuntimeError("thread_id is required for tool execution")
+
+    disable_future_confirmations = bool(params.get("disable_future_confirmations", False))
+    if disable_future_confirmations and tool_call.tool_name in ("image.generate", "video.generate"):
+        thread = ThreadRepository(db).get_by_id(thread_id)
+        if thread:
+            conversation = ConversationRepository(db).get_by_id(thread.conversation_id)
+            if conversation:
+                if tool_call.tool_name == "image.generate":
+                    conversation.image_confirmation_disabled = "true"
+                else:
+                    conversation.video_confirmation_disabled = "true"
+                db.commit()
+
     request_prompt = params.get("prompt")
     current_prompt = (tool_call.args_json or {}).get("prompt")
     if request_prompt and request_prompt != current_prompt:
@@ -3766,10 +3782,6 @@ async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[st
         tool_call.status = "dispatched"
         db.commit()
 
-    thread_id = params.get("thread_id") or (tool_call.args_json or {}).get("thread_id")
-    if not thread_id:
-        raise RuntimeError("thread_id is required for tool execution")
-
     args = dict(tool_call.args_json or {})
     tool_name = tool_call.tool_name
     async def _normalize_conversational_image(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3780,7 +3792,7 @@ async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[st
                 prompt=payload.get("prompt") or "",
                 negative_prompt=payload.get("negative_prompt"),
                 seed=payload.get("seed"),
-                disable_future_confirmations=False,
+                disable_future_confirmations=bool(payload.get("disable_future_confirmations", False)),
                 workflow_id=payload.get("workflow_id"),
             ),
             db=db,
@@ -3795,7 +3807,7 @@ async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[st
                 negative_prompt=payload.get("negative_prompt"),
                 seed=payload.get("seed"),
                 trigger_words=payload.get("trigger_words"),
-                disable_future_confirmations=False,
+                disable_future_confirmations=bool(payload.get("disable_future_confirmations", False)),
                 workflow_id=payload.get("workflow_id"),
             ),
             db=db,
@@ -3827,6 +3839,7 @@ async def _ens_execute_tool_call(db: Session, params: Dict[str, Any]) -> Dict[st
                     "seed": args.get("seed"),
                     "workflow_id": args.get("workflow_id"),
                     "trigger_words": args.get("trigger_words"),
+                    "disable_future_confirmations": disable_future_confirmations,
                     "scene_capture": False,
                 },
             )
@@ -8679,6 +8692,7 @@ async def generate_image(
                     "tool_call_id": request.tool_call_id,
                     "thread_id": thread_id,
                     "prompt": request.prompt,
+                    "disable_future_confirmations": request.disable_future_confirmations,
                 },
             )
             outcome = await runtime.ingest(
@@ -9241,6 +9255,7 @@ async def generate_video(
                     "tool_call_id": request.tool_call_id,
                     "thread_id": thread_id,
                     "prompt": request.prompt,
+                    "disable_future_confirmations": request.disable_future_confirmations,
                 },
             )
             outcome = await runtime.ingest(

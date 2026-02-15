@@ -242,6 +242,7 @@ ens:
   slice2_tool_dispatch_ownership: false
   slice2_scene_capture_ownership: false
   slice2_scene_capture_legacy_confirm_without_tool_call: false
+  slice25_media_gating_ownership: false
 
 # Startup synchronization
 startup:

@@ -1,4 +1,5 @@
 from chorus_engine.models.ens import ENSToolCallRequest
+from chorus_engine.models.conversation import Conversation
 
 
 class _ToolPayloadResponse:
@@ -169,3 +170,66 @@ def test_slice2_prompt_override_blocked_when_tool_not_pending(db, helpers):
                 {"tool_call_id": "tc:test:1", "thread_id": "thread-1", "prompt": "override prompt"},
             )
         )
+
+
+def test_slice2_disable_confirmation_flag_propagates_through_ens_tool_execution(db, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+
+    row = ENSToolCallRequest(
+        tool_call_id="tc:test:disable-confirm:1",
+        session_id="sess-disable-confirm",
+        assistant_message_id="msg-disable-confirm",
+        tool_name="image.generate",
+        args_json={"thread_id": thread_id, "prompt": "portrait", "negative_prompt": "blur"},
+        status="pending",
+        idempotency_key="tool:pending:disable-confirm",
+        result_ref=None,
+    )
+    db.add(row)
+    db.commit()
+
+    captured = {}
+
+    async def _fake_generate_image(thread_id, request, db):
+        _ = db
+        captured["thread_id"] = thread_id
+        captured["disable_future_confirmations"] = request.disable_future_confirmations
+        return {
+            "success": True,
+            "image_id": 99,
+            "file_path": "/images/test.png",
+            "thumbnail_path": "/images/test_thumb.png",
+            "prompt": request.prompt,
+            "negative_prompt": request.negative_prompt,
+            "generation_time": 0.01,
+        }
+
+    helpers.app_module.generate_image = _fake_generate_image
+
+    import asyncio
+
+    result = asyncio.run(
+        helpers.app_module._ens_execute_tool_call(
+            db,
+            {
+                "tool_call_id": "tc:test:disable-confirm:1",
+                "thread_id": thread_id,
+                "disable_future_confirmations": True,
+            },
+        )
+    )
+    assert result["success"] is True
+    assert captured["thread_id"] == thread_id
+    assert captured["disable_future_confirmations"] is True
+
+    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    assert conversation is not None
+    assert conversation.image_confirmation_disabled == "true"
