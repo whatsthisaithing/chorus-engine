@@ -9,6 +9,7 @@ Analyzes complete conversations to extract:
 
 import logging
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -1634,6 +1635,7 @@ TRANSCRIPT_JSON:
                     temperature=temperature_to_use,
                     max_tokens=max_tokens
                 )
+        else:
             response = await self.llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -1839,6 +1841,9 @@ TRANSCRIPT_JSON:
             lines.append(f"{role.upper()}: {msg.content}")
         return "\n\n".join(lines)
 
+    ANALYSIS_VERSION = "ens.slice3.v1"
+    EXTRACTOR_VERSION = "archivist.v1"
+
     async def _save_extracted_memories(
         self,
         conversation_id: str,
@@ -1949,17 +1954,44 @@ TRANSCRIPT_JSON:
         manual: bool = False
     ) -> ConversationSummary:
         """Save conversation summary to database."""
-        # Get message count
         messages = self._get_all_messages(conversation_id)
         message_count = len(messages)
-        
-        # Create summary
+        range_start_message_id = messages[0].id if messages else None
+        range_end_message_id = messages[-1].id if messages else None
+        summary_input_hash = hashlib.sha256(
+            "|".join([m.id for m in messages]).encode("utf-8")
+        ).hexdigest() if messages else None
+
+        existing = (
+            self.db.query(ConversationSummary)
+            .filter(
+                ConversationSummary.conversation_id == conversation_id,
+                ConversationSummary.range_start_message_id == range_start_message_id,
+                ConversationSummary.range_end_message_id == range_end_message_id,
+                ConversationSummary.analysis_version == self.ANALYSIS_VERSION,
+            )
+            .order_by(ConversationSummary.created_at.desc())
+            .first()
+        )
+        if existing:
+            self.db.query(Conversation).filter(Conversation.id == conversation_id).update(
+                {"current_summary_id": existing.id},
+                synchronize_session=False,
+            )
+            self.db.commit()
+            return existing
+
         summary = ConversationSummary(
             conversation_id=conversation_id,
             summary=analysis.summary,
             message_range_start=0,
             message_range_end=message_count - 1,
             message_count=message_count,
+            range_start_message_id=range_start_message_id,
+            range_end_message_id=range_end_message_id,
+            analysis_version=self.ANALYSIS_VERSION,
+            extractor_version=self.EXTRACTOR_VERSION,
+            summary_input_hash=summary_input_hash,
             key_topics=analysis.key_topics,
             participants=analysis.participants,
             emotional_arc=analysis.emotional_arc,
@@ -1967,11 +1999,15 @@ TRANSCRIPT_JSON:
             open_questions=analysis.open_questions,
             manual="true" if manual else "false"
         )
-        
+
         self.db.add(summary)
         self.db.commit()
         self.db.refresh(summary)
-        
+        self.db.query(Conversation).filter(Conversation.id == conversation_id).update(
+            {"current_summary_id": summary.id},
+            synchronize_session=False,
+        )
+        self.db.commit()
         return summary
     
     async def _save_summary_to_vector_store(

@@ -539,6 +539,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns media gating snapshot + tool payload adjudication actions",
     )
+    slice3_continuity_writes_ownership: bool = Field(
+        default=False,
+        description="ENS owns continuity-affecting writes (summaries, memories, pins, continuity state)",
+    )
 
 
 class SystemConfig(BaseModel):

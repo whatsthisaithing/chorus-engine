@@ -96,6 +96,7 @@ class Conversation(Base):
     last_analyzed_at = Column(DateTime, nullable=True, default=None)
     last_summary_analyzed_at = Column(DateTime, nullable=True, default=None)
     last_memories_analyzed_at = Column(DateTime, nullable=True, default=None)
+    current_summary_id = Column(String(36), ForeignKey("conversation_summaries.id"), nullable=True, index=True)
 
     # Continuity bootstrapping (single-user)
     continuity_mode = Column(String(10), nullable=False, default="ask")  # ask | use | fresh
@@ -140,6 +141,11 @@ class ConversationSummary(Base):
     message_range_start = Column(Integer, nullable=False)  # Starting message index
     message_range_end = Column(Integer, nullable=False)  # Ending message index
     message_count = Column(Integer, nullable=False)  # How many messages summarized
+    range_start_message_id = Column(String(36), nullable=True, index=True)
+    range_end_message_id = Column(String(36), nullable=True, index=True)
+    analysis_version = Column(String(50), nullable=True, index=True)
+    extractor_version = Column(String(50), nullable=True)
+    summary_input_hash = Column(String(64), nullable=True, index=True)
     
     # Extracted metadata
     key_topics = Column(JSON, nullable=True)  # List of main topics discussed
@@ -284,6 +290,9 @@ class Memory(Base):
     
     # Existing metadata field (for backwards compatibility)
     meta_data = Column("metadata", JSON, nullable=True)  # Additional flexible storage
+    client_memory_id = Column(String(100), nullable=True, index=True)
+    source_fingerprint = Column(String(128), nullable=True, index=True)
+    source_kind = Column(String(40), nullable=True, index=True)
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
@@ -339,6 +348,8 @@ class MomentPin(Base):
     )
 
     vector_id = Column(String(36), nullable=True)  # ID in moment pin vector store
+    extractor_version = Column(String(50), nullable=True)
+    selection_fingerprint = Column(String(128), nullable=True, index=True)
 
     def __repr__(self):
         preview = self.what_happened[:50] + "..." if len(self.what_happened) > 50 else self.what_happened

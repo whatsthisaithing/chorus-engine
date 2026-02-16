@@ -14,6 +14,8 @@ from typing import Dict, Any, List, Optional
 from chorus_engine.services.heartbeat_service import (
     BackgroundTaskHandler, BackgroundTask, TaskResult, TaskPriority
 )
+from chorus_engine.ens.models import SignalEnvelope
+from chorus_engine.ens.runtime import ENSContext
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,15 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
             # Get required services from app_state
             analysis_service = app_state.get("analysis_service")
             characters = app_state.get("characters", {})
+            ens_runtime = app_state.get("ens_runtime")
+            ens_cfg = getattr(app_state.get("system_config"), "ens", None)
+            slice3_owned = bool(
+                ens_cfg
+                and getattr(ens_cfg, "enabled", False)
+                and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
+            )
             
-            if not analysis_service:
+            if not analysis_service and not slice3_owned:
                 return TaskResult(
                     success=False,
                     task_id=task.id,
@@ -86,7 +95,34 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                 f"for character {character.name} (kind={analysis_kind})"
             )
 
-            if analysis_kind == "summary":
+            if slice3_owned:
+                if not ens_runtime:
+                    return TaskResult(
+                        success=False,
+                        task_id=task.id,
+                        task_type=self.task_type,
+                        duration_seconds=0,
+                        error="ENS runtime not available",
+                    )
+                signal = SignalEnvelope(
+                    type="analysis.heartbeat_requested",
+                    scope="SESSION",
+                    source="external",
+                    assistant_id=character_id,
+                    payload={
+                        "conversation_id": conversation_id,
+                        "character_id": character_id,
+                        "analysis_kind": analysis_kind,
+                    },
+                )
+                outcome = await ens_runtime.ingest(
+                    signal,
+                    ENSContext(app_state=app_state, surface="web", source="web"),
+                )
+                output = dict(outcome.response_payload or {})
+                analysis = output if output.get("status") == "success" else None
+                save_success = bool(output.get("saved", output.get("status") == "success"))
+            elif analysis_kind == "summary":
                 analysis = await analysis_service.analyze_summary_only(
                     conversation_id=conversation_id,
                     character=character,
@@ -148,7 +184,8 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
 
                 logger.info(
                     f"[ANALYSIS TASK] Completed analysis of {conversation_id[:8]}... "
-                    f"in {duration:.1f}s - extracted {len(analysis.memories)} memories"
+                    f"in {duration:.1f}s - extracted "
+                    f"{len(analysis.memories) if hasattr(analysis, 'memories') else int((analysis or {}).get('memories_extracted', 0))} memories"
                 )
                 return TaskResult(
                     success=True,
@@ -157,9 +194,18 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                     duration_seconds=duration,
                     data={
                         "conversation_id": conversation_id,
-                        "memories_extracted": len(analysis.memories),
-                        "summary_length": len(analysis.summary),
-                        "open_questions_count": len(analysis.open_questions)
+                        "memories_extracted": (
+                            len(analysis.memories) if hasattr(analysis, "memories")
+                            else int((analysis or {}).get("memories_extracted", 0))
+                        ),
+                        "summary_length": (
+                            len(analysis.summary) if hasattr(analysis, "summary")
+                            else int((analysis or {}).get("summary_length", 0))
+                        ),
+                        "open_questions_count": (
+                            len(analysis.open_questions) if hasattr(analysis, "open_questions")
+                            else len((analysis or {}).get("open_questions") or [])
+                        )
                     }
                 )
             else:
@@ -167,27 +213,28 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                     f"[ANALYSIS TASK] Analysis returned None for {conversation_id[:8]}..."
                 )
                 # Mark analysis attempted to prevent repeated retries for known failures
-                if analysis_kind == "summary":
-                    analysis_service.mark_analysis_attempted(
-                        conversation_id=conversation_id,
-                        summary=True,
-                        memories=False,
-                        reason="analysis_failed"
-                    )
-                elif analysis_kind == "memories":
-                    analysis_service.mark_analysis_attempted(
-                        conversation_id=conversation_id,
-                        summary=False,
-                        memories=True,
-                        reason="analysis_failed"
-                    )
-                else:
-                    analysis_service.mark_analysis_attempted(
-                        conversation_id=conversation_id,
-                        summary=True,
-                        memories=True,
-                        reason="analysis_failed"
-                    )
+                if analysis_service:
+                    if analysis_kind == "summary":
+                        analysis_service.mark_analysis_attempted(
+                            conversation_id=conversation_id,
+                            summary=True,
+                            memories=False,
+                            reason="analysis_failed"
+                        )
+                    elif analysis_kind == "memories":
+                        analysis_service.mark_analysis_attempted(
+                            conversation_id=conversation_id,
+                            summary=False,
+                            memories=True,
+                            reason="analysis_failed"
+                        )
+                    else:
+                        analysis_service.mark_analysis_attempted(
+                            conversation_id=conversation_id,
+                            summary=True,
+                            memories=True,
+                            reason="analysis_failed"
+                        )
                 return TaskResult(
                     success=False,
                     task_id=task.id,

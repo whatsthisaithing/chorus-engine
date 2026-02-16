@@ -7,6 +7,7 @@ from datetime import datetime
 import hashlib
 import logging
 import uuid
+import json
 from typing import Any, Dict, List, Optional
 
 from chorus_engine.db.database import SessionLocal
@@ -49,20 +50,39 @@ class ENSRuntime:
             actions = self._propose_actions(resolved_signal, ctx)
             action_results: List[Dict[str, Any]] = []
             for action in actions:
-                if action.kind in ("media.gating.evaluate", "llm.invoke.chat", "tool_payload.adjudicate", "message.write_assistant"):
+                if action.kind in (
+                    "attachments.link_to_message",
+                    "attachments.process_vision",
+                    "media.gating.evaluate",
+                    "llm.invoke.chat",
+                    "tool_payload.adjudicate",
+                    "message.write_assistant",
+                ):
                     user_write = next(
                         (
                             r
                             for r in action_results
-                            if r.get("kind") == "message.write_user" and r.get("status") in ("success", "skipped")
+                            if r.get("kind") in ("message.write_user", "message.write_history")
+                            and r.get("status") in ("success", "skipped")
                         ),
                         None,
                     )
                     user_message_id = (user_write or {}).get("output", {}).get("message_id")
+                    attachment_ids = action.params.get("image_attachment_ids") or []
+                    attachment_digest = hashlib.sha256(
+                        "|".join(sorted([str(aid) for aid in attachment_ids])).encode("utf-8")
+                    ).hexdigest()[:20] if attachment_ids else "none"
+                    if action.kind == "attachments.link_to_message" and user_message_id:
+                        action.idempotency_key = f"attach:link:{resolved_signal.session_id}:{user_message_id}:{attachment_digest}"
+                        action.params["message_id"] = user_message_id
+                    if action.kind == "attachments.process_vision" and user_message_id:
+                        action.idempotency_key = f"attach:vision:{resolved_signal.session_id}:{user_message_id}:{attachment_digest}"
+                        action.params["message_id"] = user_message_id
                     if action.kind == "media.gating.evaluate" and user_message_id:
                         action.idempotency_key = f"gate:media:{resolved_signal.session_id}:{user_message_id}"
                     if action.kind == "llm.invoke.chat" and user_message_id:
                         action.idempotency_key = f"llm:chat:{resolved_signal.session_id}:{user_message_id}"
+                        action.params["user_message_id"] = user_message_id
                         media_gate = next(
                             (
                                 r
@@ -347,6 +367,25 @@ class ENSRuntime:
                         "is_private": is_private,
                     },
                 ),
+                ENSAction(
+                    kind="attachments.link_to_message",
+                    params={
+                        "thread_id": thread_id,
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "character_id": signal.assistant_id,
+                        "image_attachment_ids": signal.payload.get("image_attachment_ids") or [],
+                    },
+                ),
+                ENSAction(
+                    kind="attachments.process_vision",
+                    params={
+                        "thread_id": thread_id,
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "character_id": signal.assistant_id,
+                        "content": content,
+                        "image_attachment_ids": signal.payload.get("image_attachment_ids") or [],
+                    },
+                ),
             ]
             if slice2_tool_parsing_ownership and slice25_media_gating_ownership:
                 actions.append(
@@ -429,7 +468,27 @@ class ENSRuntime:
                         "metadata": signal.payload.get("metadata"),
                         "is_private": bool(signal.payload.get("is_private", False)),
                     },
-                )
+                ),
+                ENSAction(
+                    kind="attachments.link_to_message",
+                    params={
+                        "thread_id": signal.payload["thread_id"],
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "character_id": signal.assistant_id,
+                        "image_attachment_ids": signal.payload.get("image_attachment_ids") or [],
+                    },
+                ),
+                ENSAction(
+                    kind="attachments.process_vision",
+                    params={
+                        "thread_id": signal.payload["thread_id"],
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "character_id": signal.assistant_id,
+                        "content": signal.payload.get("content", ""),
+                        "role": role,
+                        "image_attachment_ids": signal.payload.get("image_attachment_ids") or [],
+                    },
+                ),
             ]
 
         if signal.type == "chat.simple":
@@ -475,6 +534,103 @@ class ENSRuntime:
                     idempotency_key=preview_idempotency,
                     params={},
                 ),
+            ]
+
+        if signal.type in ("analysis.manual_requested", "analysis.heartbeat_requested"):
+            conversation_id = signal.payload["conversation_id"]
+            analysis_kind = signal.payload.get("analysis_kind", "both")
+            character_id = signal.assistant_id or signal.payload.get("character_id")
+            return [
+                ENSAction(
+                    kind="analysis.execute",
+                    idempotency_key=(
+                        f"analysis:{conversation_id}:{analysis_kind}:{signal.payload.get('range_start_message_id')}:"
+                        f"{signal.payload.get('range_end_message_id')}:ens.slice3.v1"
+                    ),
+                    params={
+                        "conversation_id": conversation_id,
+                        "character_id": character_id,
+                        "analysis_kind": analysis_kind,
+                        "manual": signal.type == "analysis.manual_requested",
+                    },
+                )
+            ]
+
+        if signal.type == "memory.explicit_user_create_requested":
+            conversation_id = signal.payload["conversation_id"]
+            client_memory_id = signal.payload.get("client_memory_id")
+            key = (
+                f"mem:explicit:user:{conversation_id}:{client_memory_id}"
+                if client_memory_id
+                else None
+            )
+            return [
+                ENSAction(
+                    kind="memory.write_explicit_user",
+                    idempotency_key=key,
+                    params=dict(signal.payload),
+                )
+            ]
+
+        if signal.type == "memory.explicit_vision_create_requested":
+            conversation_id = signal.payload["conversation_id"]
+            thread_id = signal.payload.get("thread_id")
+            message_id = signal.payload.get("message_id")
+            vision_model = signal.payload.get("vision_model") or "unknown"
+            observation_text = signal.payload.get("observation_text") or signal.payload.get("content") or ""
+            normalized_observation = " ".join(observation_text.lower().strip().split())
+            source_fingerprint = hashlib.sha256(
+                f"{normalized_observation}|{vision_model}|{message_id}".encode("utf-8")
+            ).hexdigest()
+            return [
+                ENSAction(
+                    kind="memory.write_explicit_vision",
+                    idempotency_key=f"mem:explicit:vision:{conversation_id}:{thread_id}:{message_id}:{source_fingerprint}",
+                    params={**dict(signal.payload), "source_fingerprint": source_fingerprint},
+                )
+            ]
+
+        if signal.type == "pin.create_requested":
+            selected_message_ids = signal.payload.get("selected_message_ids") or []
+            selection_fingerprint = hashlib.sha256("|".join(selected_message_ids).encode("utf-8")).hexdigest()
+            return [
+                ENSAction(
+                    kind="pin.create",
+                    idempotency_key=f"pin:create:{signal.payload.get('conversation_id')}:{selection_fingerprint}:moment_pin.v1",
+                    params={**dict(signal.payload), "selection_fingerprint": selection_fingerprint},
+                )
+            ]
+
+        if signal.type == "pin.update_requested":
+            update_digest = hashlib.sha256(json.dumps(signal.payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+            return [
+                ENSAction(
+                    kind="pin.update",
+                    idempotency_key=f"pin:update:{signal.payload.get('pin_id')}:{update_digest}",
+                    params=dict(signal.payload),
+                )
+            ]
+
+        if signal.type == "pin.delete_requested":
+            return [
+                ENSAction(
+                    kind="pin.delete",
+                    idempotency_key=f"pin:delete:{signal.payload.get('pin_id')}",
+                    params=dict(signal.payload),
+                )
+            ]
+
+        if signal.type == "continuity.bootstrap_requested":
+            return [
+                ENSAction(
+                    kind="continuity.bootstrap",
+                    idempotency_key=f"continuity:bootstrap:{signal.assistant_id}:{signal.payload.get('force', False)}",
+                    params={
+                        "character_id": signal.assistant_id,
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "force": bool(signal.payload.get("force", False)),
+                    },
+                )
             ]
 
         return []
@@ -528,6 +684,27 @@ class ENSRuntime:
                 if pending:
                     preview_output["tool_call_id"] = pending[0].get("id")
             response_payload = preview_output
+        elif signal.type in ("analysis.manual_requested", "analysis.heartbeat_requested"):
+            analysis_exec = next((r for r in action_results if r.get("kind") == "analysis.execute"), None)
+            response_payload = dict((analysis_exec or {}).get("output") or {})
+        elif signal.type in ("memory.explicit_user_create_requested", "memory.explicit_vision_create_requested"):
+            mem_write = next(
+                (r for r in action_results if r.get("kind") in ("memory.write_explicit_user", "memory.write_explicit_vision")),
+                None,
+            )
+            response_payload = dict((mem_write or {}).get("output") or {})
+        elif signal.type == "pin.create_requested":
+            pin_create = next((r for r in action_results if r.get("kind") == "pin.create"), None)
+            response_payload = dict((pin_create or {}).get("output") or {})
+        elif signal.type == "pin.update_requested":
+            pin_update = next((r for r in action_results if r.get("kind") == "pin.update"), None)
+            response_payload = dict((pin_update or {}).get("output") or {})
+        elif signal.type == "pin.delete_requested":
+            pin_delete = next((r for r in action_results if r.get("kind") == "pin.delete"), None)
+            response_payload = dict((pin_delete or {}).get("output") or {})
+        elif signal.type == "continuity.bootstrap_requested":
+            cont = next((r for r in action_results if r.get("kind") == "continuity.bootstrap"), None)
+            response_payload = dict((cont or {}).get("output") or {})
 
         return ENSOutcome(
             decision_id=decision_id,

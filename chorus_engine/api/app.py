@@ -653,6 +653,12 @@ async def lifespan(app: FastAPI):
                     )
                 else:
                     logger.debug("✓ Conversation summary vectors in sync")
+                logger.info(
+                    "[ENS_AUDIT] startup.summary_vector_sync repaired=%s deleted_orphans=%s errors=%s",
+                    int(sync_stats.get("synced", 0)),
+                    int(sync_stats.get("deleted_orphans", 0)),
+                    int(sync_stats.get("errors", 0)),
+                )
                     
                 if sync_stats["errors"] > 0:
                     logger.warning(f"⚠ {sync_stats['errors']} errors during summary vector sync")
@@ -677,6 +683,12 @@ async def lifespan(app: FastAPI):
                     )
                 else:
                     logger.debug("✓ Memory vectors in sync")
+                logger.info(
+                    "[ENS_AUDIT] startup.memory_vector_sync repaired=%s deleted_orphans=%s errors=%s",
+                    int(memory_sync_stats.get("synced", 0)),
+                    int(memory_sync_stats.get("deleted_orphans", 0)),
+                    int(memory_sync_stats.get("errors", 0)),
+                )
                     
                 if memory_sync_stats["errors"] > 0:
                     logger.warning(f"⚠ {memory_sync_stats['errors']} errors during memory vector sync")
@@ -701,6 +713,12 @@ async def lifespan(app: FastAPI):
                     )
                 else:
                     logger.debug("Moment pin vectors in sync")
+                logger.info(
+                    "[ENS_AUDIT] startup.moment_pin_vector_sync repaired=%s deleted_orphans=%s errors=%s",
+                    int(pin_sync_stats.get("synced", 0)),
+                    int(pin_sync_stats.get("deleted_orphans", 0)),
+                    int(pin_sync_stats.get("errors", 0)),
+                )
             except Exception as e:
                 logger.warning(f"Failed to sync moment pin vectors: {e}")
         else:
@@ -720,6 +738,12 @@ async def lifespan(app: FastAPI):
                     )
                 else:
                     logger.debug("âœ“ Document vectors in sync")
+                logger.info(
+                    "[ENS_AUDIT] startup.document_vector_sync repaired=%s deleted_orphans=%s errors=%s",
+                    int(doc_sync_stats.get("synced", 0)),
+                    int(doc_sync_stats.get("deleted_orphans", 0)),
+                    int(doc_sync_stats.get("errors", 0)),
+                )
 
                 if doc_sync_stats["errors"] > 0:
                     logger.warning(f"âš  {doc_sync_stats['errors']} errors during document vector sync")
@@ -1462,6 +1486,7 @@ class MemoryCreate(BaseModel):
     thread_id: Optional[str] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = None
+    client_memory_id: Optional[str] = None
 
 
 class MemoryUpdate(BaseModel):
@@ -3236,7 +3261,15 @@ def _ens_flags():
         "slice2_scene_capture_legacy_confirm_without_tool_call": bool(
             ens_cfg and getattr(ens_cfg, "slice2_scene_capture_legacy_confirm_without_tool_call", False)
         ),
+        "slice3_continuity_writes_ownership": bool(
+            ens_cfg and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
+        ),
     }
+
+
+def _ens_slice3_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice3_continuity_writes_ownership"))
 
 
 async def _ens_simple_chat(request: ChatRequest) -> ChatResponse:
@@ -3283,6 +3316,7 @@ async def _ens_thread_chat(
             "is_private": conversation.is_private == "true",
             "client_message_id": (request.metadata or {}).get("client_message_id"),
             "conversation_source": request.conversation_source or conversation.source or "web",
+            "image_attachment_ids": request.image_attachment_ids or [],
         },
         tags=["latency_sensitive"] if (request.conversation_source or conversation.source) == "voice" else [],
     )
@@ -3312,6 +3346,56 @@ async def _ens_thread_chat(
         pending_tool_calls=outcome.response_payload.get("pending_tool_calls", []),
         conversation_title_updated=outcome.response_payload.get("conversation_title_updated"),
     )
+
+
+async def _ens_write_explicit_vision_memory(
+    *,
+    conversation: Conversation,
+    thread_id: str,
+    character_id: str,
+    message_id: str,
+    content: str,
+    vision_model: Optional[str],
+    observation_text: Optional[str],
+    confidence: Optional[float],
+    category: str,
+    priority: Optional[int],
+    metadata: Optional[dict] = None,
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="memory.explicit_vision_create_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=character_id,
+        payload={
+            "conversation_id": conversation.id,
+            "thread_id": thread_id,
+            "character_id": character_id,
+            "message_id": message_id,
+            "content": content,
+            "vision_model": vision_model,
+            "observation_text": observation_text or content,
+            "confidence": confidence,
+            "category": category,
+            "priority": priority,
+            "status": "auto_approved",
+            "metadata": metadata or {},
+            "source": conversation.source or "web",
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=conversation.source or "web",
+            source=conversation.source or "web",
+        ),
+    )
+    return dict(outcome.response_payload or {})
 
 
 async def _ens_nonstream_intake_only(
@@ -3378,6 +3462,7 @@ async def _ens_history_message_add(
             "client_message_id": (message.get("metadata") or {}).get("client_message_id"),
             "speaker_external_id": (message.get("metadata") or {}).get("discord_user_id"),
             "speaker_role": "assistant" if message.get("role") == "assistant" else "user",
+            "image_attachment_ids": message.get("image_attachment_ids") or [],
         },
     )
     outcome = await runtime.ingest(
@@ -4076,6 +4161,31 @@ async def refresh_continuity(
     db: Session = Depends(get_db)
 ):
     """Regenerate continuity cache immediately."""
+    if _ens_slice3_enabled():
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="continuity.bootstrap_requested",
+            scope="ASSISTANT",
+            source="external",
+            assistant_id=request.character_id,
+            payload={
+                "character_id": request.character_id,
+                "conversation_id": None,
+                "force": bool(request.force),
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(app_state=app_state, surface="web", source="web"),
+        )
+        output = dict(outcome.response_payload or {})
+        return {
+            "success": True,
+            "skipped": bool(output.get("skipped")),
+        }
+
     config_loader = ConfigLoader()
     character = config_loader.load_character(request.character_id)
     continuity_service: ContinuityBootstrapService = app_state.get("continuity_service")
@@ -4351,6 +4461,52 @@ async def analyze_conversation_now(
     
     # Run analysis synchronously
     try:
+        if _ens_slice3_enabled():
+            runtime = app_state.get("ens_runtime")
+            if not runtime:
+                raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+            signal = SignalEnvelope(
+                type="analysis.manual_requested",
+                scope="SESSION",
+                source="external",
+                assistant_id=conversation.character_id,
+                payload={
+                    "conversation_id": conversation_id,
+                    "character_id": conversation.character_id,
+                    "analysis_kind": "both",
+                },
+            )
+            outcome = await runtime.ingest(
+                signal,
+                ENSContext(
+                    app_state=app_state,
+                    surface=conversation.source or "web",
+                    source=conversation.source or "web",
+                ),
+            )
+            output = dict(outcome.response_payload or {})
+            if output.get("status") != "success":
+                return {
+                    "status": "warning",
+                    "analysis_type": "manual",
+                    "message": "Analysis produced no persisted updates",
+                    "details": output,
+                }
+            return {
+                "status": "success",
+                "analysis_type": "manual",
+                "memories_extracted": int(output.get("memories_extracted") or 0),
+                "memory_counts": output.get("memory_counts") or {},
+                "memories": output.get("memories") or [],
+                "summary": output.get("summary"),
+                "key_topics": output.get("key_topics") or [],
+                "tone": output.get("tone"),
+                "emotional_arc": output.get("emotional_arc"),
+                "participants": output.get("participants") or [],
+                "open_questions": output.get("open_questions") or [],
+                "current_summary_id": output.get("current_summary_id"),
+            }
+
         analysis = await analysis_service.analyze_conversation(
             conversation_id=conversation_id,
             character=character,
@@ -4644,11 +4800,45 @@ async def create_moment_pin(
     if not request.selected_message_ids:
         raise HTTPException(status_code=400, detail="selected_message_ids is required")
 
+    model = app_state["system_config"].llm.archivist_model or character.preferred_llm.model or app_state["system_config"].llm.model
+    user_id = conversation.primary_user or "User"
+    if _ens_slice3_enabled():
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="pin.create_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=conversation.character_id,
+            payload={
+                "conversation_id": conversation_id,
+                "character_id": conversation.character_id,
+                "selected_message_ids": request.selected_message_ids,
+                "model": model,
+                "user_id": user_id,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        pin_id = (outcome.response_payload or {}).get("pin_id")
+        if not pin_id:
+            raise HTTPException(status_code=500, detail="ENS moment pin create failed")
+        pin_repo = MomentPinRepository(db)
+        pin = pin_repo.get_by_id(pin_id)
+        if not pin:
+            raise HTTPException(status_code=500, detail="Moment pin missing after ENS create")
+        return MomentPinResponse.from_orm(pin)
+
     llm_client = app_state.get("llm_client")
     if llm_client is None:
         raise HTTPException(status_code=503, detail="LLM client not initialized")
-
-    model = app_state["system_config"].llm.archivist_model or character.preferred_llm.model or app_state["system_config"].llm.model
     extraction = MomentPinExtractionService(db=db, llm_client=llm_client, model=model)
 
     try:
@@ -4722,7 +4912,6 @@ async def create_moment_pin(
     )
 
     # Pin ownership scope defaults to conversation primary user if available.
-    user_id = conversation.primary_user or "User"
     pin_repo = MomentPinRepository(db)
     pin = pin_repo.create(
         user_id=user_id,
@@ -4812,6 +5001,36 @@ async def update_moment_pin(
     request: MomentPinUpdateRequest,
     db: Session = Depends(get_db),
 ):
+    if _ens_slice3_enabled():
+        repo = MomentPinRepository(db)
+        pin = repo.get_by_id(pin_id)
+        if not pin:
+            raise HTTPException(status_code=404, detail="Moment pin not found")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="pin.update_requested",
+            scope="ASSISTANT",
+            source="external",
+            assistant_id=pin.character_id,
+            payload={
+                "pin_id": pin_id,
+                "why_user": request.why_user,
+                "tags": request.tags,
+                "archived": request.archived,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(app_state=app_state, surface="web", source="web"),
+        )
+        updated_pin_id = (outcome.response_payload or {}).get("pin_id")
+        pin = repo.get_by_id(updated_pin_id or pin_id)
+        if not pin:
+            raise HTTPException(status_code=404, detail="Moment pin not found")
+        return MomentPinResponse.from_orm(pin)
+
     repo = MomentPinRepository(db)
     pin = repo.update_fields(
         pin_id=pin_id,
@@ -4852,6 +5071,27 @@ async def delete_moment_pin(
     pin_id: str,
     db: Session = Depends(get_db),
 ):
+    if _ens_slice3_enabled():
+        repo = MomentPinRepository(db)
+        pin = repo.get_by_id(pin_id)
+        if not pin:
+            raise HTTPException(status_code=404, detail="Moment pin not found")
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="pin.delete_requested",
+            scope="ASSISTANT",
+            source="external",
+            assistant_id=pin.character_id,
+            payload={"pin_id": pin_id},
+        )
+        await runtime.ingest(
+            signal,
+            ENSContext(app_state=app_state, surface="web", source="web"),
+        )
+        return {"status": "deleted", "id": pin_id}
+
     repo = MomentPinRepository(db)
     pin = repo.get_by_id(pin_id)
     if not pin:
@@ -5250,9 +5490,6 @@ async def send_message(
                                 min_confidence = memory_config.get("min_confidence", 0.6)
                                 if result.confidence >= min_confidence:
                                     try:
-                                        from chorus_engine.repositories.memory_repository import MemoryRepository
-                                        memory_repo = MemoryRepository(db)
-                                        
                                         # Parse vision data for memory content
                                         vision_data = None
                                         if result.observation:
@@ -5291,25 +5528,50 @@ async def send_message(
                                                 content += f". The image with {', '.join(details)}"
                                             content += "."
                                         
-                                        # Create memory
-                                        memory = memory_repo.create(
-                                            character_id=character_id,
-                                            conversation_id=conversation.id,
-                                            content=content,
-                                            memory_type=MemoryType.EXPLICIT,
-                                            category="visual",
-                                            priority=memory_config.get("default_priority", 70),
-                                            confidence=result.confidence,
-                                            status="auto_approved",
-                                            metadata={
-                                                "source_messages": [user_message.id],
-                                                "image_attachment_id": attachment.id,
-                                                "vision_model": result.model,
-                                                "vision_backend": result.backend
-                                            }
-                                        )
-                                        db.flush()
-                                        logger.info(f"[VISION] Created visual memory: {memory.id}")
+                                        if _ens_slice3_enabled():
+                                            ens_output = await _ens_write_explicit_vision_memory(
+                                                conversation=conversation,
+                                                thread_id=thread_id,
+                                                character_id=character_id,
+                                                message_id=user_message.id,
+                                                content=content,
+                                                vision_model=result.model,
+                                                observation_text=result.observation,
+                                                confidence=result.confidence,
+                                                category="visual",
+                                                priority=memory_config.get("default_priority", 70),
+                                                metadata={
+                                                    "source_messages": [user_message.id],
+                                                    "image_attachment_id": attachment.id,
+                                                    "vision_model": result.model,
+                                                    "vision_backend": result.backend,
+                                                },
+                                            )
+                                            logger.info(
+                                                "[VISION] ENS visual memory write: %s (replayed=%s)",
+                                                ens_output.get("memory_id"),
+                                                ens_output.get("replayed"),
+                                            )
+                                        else:
+                                            memory_repo = MemoryRepository(db)
+                                            memory = memory_repo.create(
+                                                character_id=character_id,
+                                                conversation_id=conversation.id,
+                                                content=content,
+                                                memory_type=MemoryType.EXPLICIT,
+                                                category="visual",
+                                                priority=memory_config.get("default_priority", 70),
+                                                confidence=result.confidence,
+                                                status="auto_approved",
+                                                metadata={
+                                                    "source_messages": [user_message.id],
+                                                    "image_attachment_id": attachment.id,
+                                                    "vision_model": result.model,
+                                                    "vision_backend": result.backend
+                                                }
+                                            )
+                                            db.flush()
+                                            logger.info(f"[VISION] Created visual memory: {memory.id}")
                                     except Exception as e:
                                         logger.error(f"[VISION] Failed to create visual memory: {e}", exc_info=True)
                             
@@ -6333,28 +6595,50 @@ async def add_message_without_response(
                                                 memory_content += f". The image with {', '.join(details)}"
                                             memory_content += "."
                                         
-                                        # Create memory
-                                        from chorus_engine.models.conversation import MemoryType
-                                        from chorus_engine.repositories.memory_repository import MemoryRepository
-                                        memory_repo = MemoryRepository(db)
-                                        memory = memory_repo.create(
-                                            character_id=character_id,
-                                            conversation_id=conversation.id,
-                                            content=memory_content,
-                                            memory_type=MemoryType.EXPLICIT,
-                                            category="visual",
-                                            priority=memory_config.get("default_priority", 70),
-                                            confidence=result.confidence,
-                                            status="auto_approved",
-                                            metadata={
-                                                "source_messages": [new_message.id],
-                                                "image_attachment_id": attachment.id,
-                                                "vision_model": result.model,
-                                                "vision_backend": result.backend
-                                            }
-                                        )
-                                        db.flush()
-                                        logger.info(f"[VISION] Created visual memory: {memory.id}")
+                                        if _ens_slice3_enabled():
+                                            ens_output = await _ens_write_explicit_vision_memory(
+                                                conversation=conversation,
+                                                thread_id=thread_id,
+                                                character_id=character_id,
+                                                message_id=new_message.id,
+                                                content=memory_content,
+                                                vision_model=result.model,
+                                                observation_text=result.observation,
+                                                confidence=result.confidence,
+                                                category="visual",
+                                                priority=memory_config.get("default_priority", 70),
+                                                metadata={
+                                                    "source_messages": [new_message.id],
+                                                    "image_attachment_id": attachment.id,
+                                                    "vision_model": result.model,
+                                                    "vision_backend": result.backend,
+                                                },
+                                            )
+                                            logger.info(
+                                                "[VISION] ENS visual memory write: %s (replayed=%s)",
+                                                ens_output.get("memory_id"),
+                                                ens_output.get("replayed"),
+                                            )
+                                        else:
+                                            memory_repo = MemoryRepository(db)
+                                            memory = memory_repo.create(
+                                                character_id=character_id,
+                                                conversation_id=conversation.id,
+                                                content=memory_content,
+                                                memory_type=MemoryType.EXPLICIT,
+                                                category="visual",
+                                                priority=memory_config.get("default_priority", 70),
+                                                confidence=result.confidence,
+                                                status="auto_approved",
+                                                metadata={
+                                                    "source_messages": [new_message.id],
+                                                    "image_attachment_id": attachment.id,
+                                                    "vision_model": result.model,
+                                                    "vision_backend": result.backend
+                                                }
+                                            )
+                                            db.flush()
+                                            logger.info(f"[VISION] Created visual memory: {memory.id}")
                                     except Exception as e:
                                         logger.error(f"[VISION] Failed to create visual memory: {e}", exc_info=True)
                             
@@ -6605,25 +6889,47 @@ async def send_message_stream(
                             min_confidence = app_state["system_config"].vision.memory.get("min_confidence", 0.6)
                             if result.confidence >= min_confidence:
                                 try:
-                                    memory_repo = MemoryRepository(db)
                                     memory_category = app_state["system_config"].vision.memory.get("category", "visual")
                                     memory_priority = app_state["system_config"].vision.memory.get("default_priority", 70)
-                                    
-                                    # Create EXPLICIT memory with visual observation
                                     memory_content = f"User showed me an image: {result.observation}"
-                                    
-                                    memory = memory_repo.create(
-                                        conversation_id=conversation.id,
-                                        character_id=character_id,
-                                        content=memory_content,
-                                        memory_type="explicit",
-                                        category=memory_category,
-                                        priority=memory_priority,
-                                        confidence=result.confidence,
-                                        source_messages=[user_message.id],
-                                        metadata={"attachment_id": attachment.id}
-                                    )
-                                    logger.info(f"[VISION] Created visual memory: {memory.id}")
+
+                                    if _ens_slice3_enabled():
+                                        ens_output = await _ens_write_explicit_vision_memory(
+                                            conversation=conversation,
+                                            thread_id=thread_id,
+                                            character_id=character_id,
+                                            message_id=user_message.id,
+                                            content=memory_content,
+                                            vision_model=vision_service.model_name,
+                                            observation_text=result.observation,
+                                            confidence=result.confidence,
+                                            category=memory_category,
+                                            priority=memory_priority,
+                                            metadata={
+                                                "source_messages": [user_message.id],
+                                                "attachment_id": attachment.id,
+                                                "vision_backend": vision_service.backend,
+                                            },
+                                        )
+                                        logger.info(
+                                            "[VISION] ENS visual memory write: %s (replayed=%s)",
+                                            ens_output.get("memory_id"),
+                                            ens_output.get("replayed"),
+                                        )
+                                    else:
+                                        memory_repo = MemoryRepository(db)
+                                        memory = memory_repo.create(
+                                            conversation_id=conversation.id,
+                                            character_id=character_id,
+                                            content=memory_content,
+                                            memory_type="explicit",
+                                            category=memory_category,
+                                            priority=memory_priority,
+                                            confidence=result.confidence,
+                                            source_messages=[user_message.id],
+                                            metadata={"attachment_id": attachment.id}
+                                        )
+                                        logger.info(f"[VISION] Created visual memory: {memory.id}")
                                 except Exception as mem_error:
                                     logger.error(f"[VISION] Failed to create visual memory: {mem_error}")
                             
@@ -8083,12 +8389,50 @@ async def create_memory(
     """Create an explicit memory for a conversation."""
     # Verify conversation exists
     conv_repo = ConversationRepository(db)
-    if not conv_repo.get_by_id(conversation_id):
+    conversation = conv_repo.get_by_id(conversation_id)
+    if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
+
+    if _ens_slice3_enabled():
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = SignalEnvelope(
+            type="memory.explicit_user_create_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=conversation.character_id,
+            payload={
+                "conversation_id": conversation_id,
+                "thread_id": request.thread_id,
+                "character_id": conversation.character_id,
+                "content": request.content,
+                "tags": request.tags,
+                "priority": request.priority,
+                "client_memory_id": request.client_memory_id,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        memory_id = (outcome.response_payload or {}).get("memory_id")
+        if not memory_id:
+            raise HTTPException(status_code=500, detail="ENS explicit memory write failed")
+        repo = MemoryRepository(db)
+        memory = repo.get_by_id(memory_id)
+        if not memory:
+            raise HTTPException(status_code=500, detail="Memory not found after ENS write")
+        return memory
+
     repo = MemoryRepository(db)
     memory = repo.create(
         content=request.content,
+        character_id=conversation.character_id,
         memory_type=MemoryType.EXPLICIT,
         conversation_id=conversation_id,
         thread_id=request.thread_id,
@@ -8299,6 +8643,20 @@ async def create_core_memory(
     """Create a core memory for a character. Only allowed for user-created characters."""
     if character_id not in app_state["characters"]:
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+
+    if not bool(getattr(app_state["system_config"], "debug_ui", False)):
+        logger.warning(
+            "[CORE MEMORY] DB-first core memory create blocked; YAML-first is authoritative",
+            extra={"character_id": character_id},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Core memory DB-first create is dev-only. Edit character YAML core_memories instead.",
+        )
+    logger.warning(
+        "[CORE MEMORY] Using dev-gated DB-first core memory create endpoint",
+        extra={"character_id": character_id},
+    )
     
     # Check if character is immutable
     if character_id in IMMUTABLE_CHARACTERS:

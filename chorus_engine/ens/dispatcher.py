@@ -15,8 +15,13 @@ from sqlalchemy.orm import Session
 from chorus_engine.models.conversation import MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
 from chorus_engine.repositories import ConversationRepository, MessageRepository, ThreadRepository
+from chorus_engine.repositories.memory_repository import MemoryRepository
 from chorus_engine.repositories.moment_pin_repository import MomentPinRepository
+from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.ens.models import ENSAction
+from chorus_engine.models.conversation import MemoryType
+from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
+from chorus_engine.services.moment_pin_extraction_service import MomentPinExtractionService
 from chorus_engine.services.prompt_assembly import PromptAssemblyService
 from chorus_engine.services.media_turn_classifier import classify_media_turn
 from chorus_engine.services.media_offer_policy import (
@@ -131,6 +136,10 @@ class ENSDispatcher:
                 output = self._write_message(db, action.params, role=MessageRole.USER)
             elif action.kind == "message.write_assistant":
                 output = self._write_message(db, action.params, role=MessageRole.ASSISTANT)
+            elif action.kind == "attachments.link_to_message":
+                output = self._link_attachments_to_message(db, action.params)
+            elif action.kind == "attachments.process_vision":
+                output = await self._process_vision_attachments(db, action.params)
             elif action.kind == "media.gating.evaluate":
                 output = self._evaluate_media_gating(db, action.params)
             elif action.kind == "llm.invoke.chat":
@@ -153,6 +162,20 @@ class ENSDispatcher:
                     action.params,
                     role=MessageRole(action.params["role"]),
                 )
+            elif action.kind == "analysis.execute":
+                output = await self._execute_analysis(db, action.params)
+            elif action.kind == "memory.write_explicit_user":
+                output = self._write_explicit_user_memory(db, action.params)
+            elif action.kind == "memory.write_explicit_vision":
+                output = self._write_explicit_vision_memory(db, action.params)
+            elif action.kind == "pin.create":
+                output = await self._create_moment_pin(db, action.params)
+            elif action.kind == "pin.update":
+                output = self._update_moment_pin(db, action.params)
+            elif action.kind == "pin.delete":
+                output = self._delete_moment_pin(db, action.params)
+            elif action.kind == "continuity.bootstrap":
+                output = await self._run_continuity_bootstrap(db, action.params)
             else:
                 raise ValueError(f"Unsupported action kind: {action.kind}")
 
@@ -219,6 +242,148 @@ class ENSDispatcher:
             is_private=params.get("is_private", False),
         )
         return {"message_id": message.id, "thread_id": message.thread_id}
+
+    def _link_attachments_to_message(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.models.conversation import ImageAttachment
+
+        message_id = params.get("message_id")
+        attachment_ids = params.get("image_attachment_ids") or []
+        if not message_id or not attachment_ids:
+            return {"linked_count": 0, "linked_attachment_ids": [], "missing_attachment_ids": []}
+
+        linked_attachment_ids: List[str] = []
+        missing_attachment_ids: List[str] = []
+        conversation_id = params.get("conversation_id")
+        character_id = params.get("character_id")
+        for attachment_id in attachment_ids:
+            attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
+            if not attachment:
+                missing_attachment_ids.append(str(attachment_id))
+                continue
+            attachment.message_id = message_id
+            if conversation_id:
+                attachment.conversation_id = conversation_id
+            if character_id:
+                attachment.character_id = character_id
+            linked_attachment_ids.append(str(attachment_id))
+        db.commit()
+        return {
+            "message_id": message_id,
+            "linked_count": len(linked_attachment_ids),
+            "linked_attachment_ids": linked_attachment_ids,
+            "missing_attachment_ids": missing_attachment_ids,
+        }
+
+    async def _process_vision_attachments(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.models.conversation import ImageAttachment
+
+        message_id = params.get("message_id")
+        attachment_ids = params.get("image_attachment_ids") or []
+        role = params.get("role", "user")
+        if not message_id or not attachment_ids:
+            return {"processed_count": 0, "already_processed_count": 0, "memory_ids": [], "current_turn_visual_context_count": 0}
+        if role != "user":
+            return {"processed_count": 0, "already_processed_count": 0, "memory_ids": [], "current_turn_visual_context_count": 0, "reason": "non_user_role"}
+
+        vision_service = self.app_state.get("vision_service")
+        if not vision_service:
+            return {"processed_count": 0, "already_processed_count": 0, "memory_ids": [], "current_turn_visual_context_count": 0, "reason": "vision_service_unavailable"}
+
+        processed_count = 0
+        already_processed_count = 0
+        memory_ids: List[str] = []
+        memory_config = vision_service.config.get("memory", {}) if hasattr(vision_service, "config") else {}
+        min_confidence = float(memory_config.get("min_confidence", 0.6))
+        default_priority = memory_config.get("default_priority", 70)
+        context = params.get("content", "")
+        character_id = params.get("character_id")
+        conversation_id = params.get("conversation_id")
+
+        for attachment_id in attachment_ids:
+            attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
+            if not attachment:
+                continue
+            if attachment.vision_processed == "true":
+                already_processed_count += 1
+                continue
+            try:
+                result = await vision_service.analyze_image(
+                    image_path=Path(attachment.original_path),
+                    context=context,
+                    character_id=character_id,
+                )
+                attachment.vision_processed = "true"
+                attachment.vision_model = result.model
+                attachment.vision_backend = result.backend
+                attachment.vision_processed_at = datetime.utcnow()
+                attachment.vision_processing_time_ms = result.processing_time_ms
+                attachment.vision_observation = result.observation
+                attachment.vision_confidence = result.confidence
+                attachment.vision_tags = json.dumps(result.tags) if result.tags else None
+                processed_count += 1
+
+                if memory_config.get("auto_create", True) and result.confidence >= min_confidence:
+                    vision_data = None
+                    if result.observation:
+                        try:
+                            vision_data = json.loads(result.observation) if isinstance(result.observation, str) else result.observation
+                        except Exception:
+                            vision_data = {"description": result.observation}
+                    if not vision_data:
+                        vision_data = {"description": "Image analyzed but no details available"}
+                    description_text = vision_data.get("description") if isinstance(vision_data, dict) else None
+                    if not description_text and result.observation:
+                        description_text = result.observation
+                    if description_text:
+                        content = f"User showed me an image: {str(description_text).strip()}"
+                    else:
+                        content = "User showed me an image."
+
+                    memory_out = self._write_explicit_vision_memory(
+                        db,
+                        {
+                            "conversation_id": conversation_id,
+                            "thread_id": params.get("thread_id"),
+                            "character_id": character_id,
+                            "content": content,
+                            "message_id": message_id,
+                            "vision_model": result.model,
+                            "observation_text": result.observation,
+                            "confidence": result.confidence,
+                            "category": "visual",
+                            "priority": default_priority,
+                            "status": "auto_approved",
+                            "metadata": {
+                                "source_messages": [message_id],
+                                "image_attachment_id": attachment.id,
+                                "vision_model": result.model,
+                                "vision_backend": result.backend,
+                            },
+                            "source": "web",
+                        },
+                    )
+                    memory_id = memory_out.get("memory_id")
+                    if memory_id:
+                        memory_ids.append(str(memory_id))
+            except Exception as e:
+                attachment.vision_skipped = "true"
+                attachment.vision_skip_reason = f"analysis_failed: {str(e)[:80]}"
+
+        db.commit()
+        current_turn_visual_context_count = (
+            db.query(ImageAttachment)
+            .filter(
+                ImageAttachment.message_id == message_id,
+                ImageAttachment.vision_processed == "true",
+            )
+            .count()
+        )
+        return {
+            "processed_count": processed_count,
+            "already_processed_count": already_processed_count,
+            "memory_ids": memory_ids,
+            "current_turn_visual_context_count": current_turn_visual_context_count,
+        }
 
     def _evaluate_media_gating(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         thread_id = params["thread_id"]
@@ -334,6 +499,8 @@ class ENSDispatcher:
         }
 
     async def _invoke_llm_chat(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.models.conversation import ImageAttachment
+
         llm_client = self.app_state.get("llm_client")
         if not llm_client:
             raise RuntimeError("LLM client not initialized")
@@ -356,6 +523,7 @@ class ENSDispatcher:
             raise RuntimeError("Character not found")
 
         user_content = params.get("user_content")
+        user_message_id = params.get("user_message_id")
         if not isinstance(user_content, str) or not user_content.strip():
             history_probe = msg_repo.get_thread_history(thread_id)
             for item in reversed(history_probe):
@@ -492,6 +660,16 @@ class ENSDispatcher:
             "assistant_metadata": assistant_metadata,
             "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
             "malformed_payload_type": malformed_payload_type,
+            "current_turn_visual_context_count": (
+                db.query(ImageAttachment)
+                .filter(
+                    ImageAttachment.message_id == user_message_id,
+                    ImageAttachment.vision_processed == "true",
+                )
+                .count()
+                if user_message_id
+                else 0
+            ),
         }
         self._append_conversation_ens_debug_log(
             conversation.id,
@@ -756,6 +934,356 @@ class ENSDispatcher:
         if not executor:
             raise RuntimeError("ENS tool executor not initialized")
         return await executor(db, params)
+
+    async def _execute_analysis(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        analysis_service: ConversationAnalysisService = self.app_state.get("analysis_service")
+        if not analysis_service:
+            raise RuntimeError("Analysis service not initialized")
+
+        conversation_id = params["conversation_id"]
+        character_id = params["character_id"]
+        manual = bool(params.get("manual", False))
+        analysis_kind = params.get("analysis_kind", "both")
+        character = self.app_state["characters"].get(character_id)
+        if not character:
+            raise RuntimeError(f"Character not found: {character_id}")
+
+        if analysis_kind == "summary":
+            analysis = await analysis_service.analyze_summary_only(
+                conversation_id=conversation_id,
+                character=character,
+                manual=manual,
+            )
+            saved = await analysis_service.save_summary_only(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                analysis=analysis,
+                manual=manual,
+            ) if analysis else False
+        elif analysis_kind == "memories":
+            analysis = await analysis_service.analyze_memories_only(
+                conversation_id=conversation_id,
+                character=character,
+                manual=manual,
+            )
+            saved = await analysis_service.save_memories_only(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                analysis=analysis,
+            ) if analysis else False
+        else:
+            analysis = await analysis_service.analyze_conversation(
+                conversation_id=conversation_id,
+                character=character,
+                manual=manual,
+            )
+            saved = await analysis_service.save_analysis(
+                conversation_id=conversation_id,
+                character_id=character_id,
+                analysis=analysis,
+                manual=manual,
+            ) if analysis else False
+
+        if not analysis or not saved:
+            return {
+                "status": "no_result",
+                "conversation_id": conversation_id,
+                "character_id": character_id,
+                "analysis_kind": analysis_kind,
+                "manual": manual,
+                "saved": bool(saved),
+                "memories_extracted": 0,
+                "summary_length": 0,
+            }
+
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(conversation_id)
+        memory_counts: Dict[str, int] = {}
+        memory_payload: List[Dict[str, Any]] = []
+        for memory in analysis.memories or []:
+            mem_type = memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type)
+            memory_counts[mem_type] = memory_counts.get(mem_type, 0) + 1
+            memory_payload.append(
+                {
+                    "type": mem_type,
+                    "content": memory.content,
+                    "confidence": memory.confidence,
+                    "emotional_weight": memory.emotional_weight,
+                    "reasoning": memory.reasoning,
+                    "durability": getattr(memory, "durability", None),
+                    "pattern_eligible": getattr(memory, "pattern_eligible", None),
+                }
+            )
+        return {
+            "status": "success",
+            "conversation_id": conversation_id,
+            "character_id": character_id,
+            "analysis_kind": analysis_kind,
+            "manual": manual,
+            "saved": True,
+            "memories_extracted": len(analysis.memories or []),
+            "memory_counts": memory_counts,
+            "memories": memory_payload,
+            "summary_length": len(analysis.summary or ""),
+            "summary": analysis.summary,
+            "key_topics": analysis.key_topics,
+            "tone": analysis.tone,
+            "emotional_arc": analysis.emotional_arc,
+            "participants": analysis.participants,
+            "open_questions": analysis.open_questions,
+            "current_summary_id": getattr(conversation, "current_summary_id", None) if conversation else None,
+        }
+
+    def _write_explicit_user_memory(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        conversation_id = params["conversation_id"]
+        character_id = params["character_id"]
+        content = params["content"]
+        thread_id = params.get("thread_id")
+        tags = params.get("tags")
+        priority = params.get("priority")
+        client_memory_id = params.get("client_memory_id")
+
+        memory_repo = MemoryRepository(db)
+        # Avoid importing model at file top just for this check.
+        from chorus_engine.models.conversation import Memory
+
+        if client_memory_id:
+            existing = (
+                db.query(Memory)
+                .filter(
+                    Memory.conversation_id == conversation_id,
+                    Memory.client_memory_id == client_memory_id,
+                )
+                .first()
+            )
+            if existing:
+                return {"memory_id": existing.id, "replayed": True, "client_memory_id": client_memory_id}
+
+        memory = memory_repo.create(
+            content=content,
+            character_id=character_id,
+            memory_type=MemoryType.EXPLICIT,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            tags=tags,
+            priority=priority,
+            client_memory_id=client_memory_id,
+            source_kind="explicit_user",
+            source="web",
+        )
+        return {"memory_id": memory.id, "replayed": False, "client_memory_id": client_memory_id}
+
+    @staticmethod
+    def _normalize_observation(text: str) -> str:
+        return " ".join((text or "").lower().strip().split())
+
+    def _write_explicit_vision_memory(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.models.conversation import Memory
+
+        conversation_id = params["conversation_id"]
+        thread_id = params.get("thread_id")
+        character_id = params["character_id"]
+        content = params["content"]
+        message_id = params["message_id"]
+        vision_model = params.get("vision_model") or "unknown"
+        observation_text = params.get("observation_text") or content
+
+        normalized_observation = self._normalize_observation(observation_text)
+        source_fingerprint = hashlib.sha256(
+            f"{normalized_observation}|{vision_model}|{message_id}".encode("utf-8")
+        ).hexdigest()
+        source_kind = "explicit_vision"
+        existing = (
+            db.query(Memory)
+            .filter(
+                Memory.conversation_id == conversation_id,
+                Memory.thread_id == thread_id,
+                Memory.source_kind == source_kind,
+                Memory.source_fingerprint == source_fingerprint,
+            )
+            .first()
+        )
+        if existing:
+            return {"memory_id": existing.id, "replayed": True, "source_fingerprint": source_fingerprint}
+
+        memory_repo = MemoryRepository(db)
+        memory = memory_repo.create(
+            content=content,
+            character_id=character_id,
+            memory_type=MemoryType.EXPLICIT,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            category=params.get("category", "visual"),
+            priority=params.get("priority"),
+            confidence=params.get("confidence"),
+            status=params.get("status", "auto_approved"),
+            source_messages=[message_id] if message_id else None,
+            metadata=params.get("metadata") or {},
+            source_kind=source_kind,
+            source_fingerprint=source_fingerprint,
+            source=params.get("source", "web"),
+        )
+        return {"memory_id": memory.id, "replayed": False, "source_fingerprint": source_fingerprint}
+
+    async def _create_moment_pin(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        conversation_id = params["conversation_id"]
+        selected_message_ids = params["selected_message_ids"]
+        character_id = params["character_id"]
+        model = params["model"]
+        user_id = params.get("user_id") or "User"
+        llm_client = self.app_state.get("llm_client")
+        if not llm_client:
+            raise RuntimeError("LLM client not initialized")
+
+        selection_fingerprint = hashlib.sha256(
+            "|".join(selected_message_ids).encode("utf-8")
+        ).hexdigest()
+        from chorus_engine.models.conversation import MomentPin
+
+        existing = (
+            db.query(MomentPin)
+            .filter(
+                MomentPin.conversation_id == conversation_id,
+                MomentPin.selection_fingerprint == selection_fingerprint,
+            )
+            .order_by(MomentPin.created_at.desc())
+            .first()
+        )
+        if existing:
+            return {"pin_id": existing.id, "replayed": True}
+
+        extraction = MomentPinExtractionService(db=db, llm_client=llm_client, model=model)
+        snapshot_json, selected_with_margin = extraction.build_snapshot(
+            conversation_id=conversation_id,
+            selected_message_ids=selected_message_ids,
+        )
+        extraction_result = await extraction.extract_moment(snapshot_json)
+        extracted = extraction_result.parsed if extraction_result else None
+        if not extracted:
+            raise RuntimeError("Failed to extract moment pin fields")
+        what_happened = str(extracted.get("what_happened", "")).strip()
+        why_model = str(extracted.get("why_it_mattered", "")).strip()
+        if not what_happened or not why_model:
+            raise RuntimeError("Moment extraction returned incomplete fields")
+        quote_snippet = extracted.get("quote_snippet")
+        if quote_snippet is not None:
+            quote_snippet = str(quote_snippet).strip() or None
+        tags = extracted.get("tags") if isinstance(extracted.get("tags"), list) else []
+        tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+        telemetry_flags = extracted.get("telemetry_flags") if isinstance(extracted.get("telemetry_flags"), dict) else {
+            "contains_roleplay": False,
+            "contains_directives": False,
+            "contains_sensitive_content": False,
+        }
+
+        pin_repo = MomentPinRepository(db)
+        pin = pin_repo.create(
+            user_id=user_id,
+            character_id=character_id,
+            conversation_id=conversation_id,
+            selected_message_ids=selected_with_margin,
+            transcript_snapshot=snapshot_json,
+            what_happened=what_happened,
+            why_model=why_model,
+            why_user=None,
+            quote_snippet=quote_snippet,
+            tags=tags,
+            telemetry_flags=telemetry_flags,
+        )
+        pin.selection_fingerprint = selection_fingerprint
+        pin.extractor_version = "moment_pin.v1"
+        db.commit()
+        db.refresh(pin)
+
+        vector_store = self.app_state.get("moment_pin_vector_store")
+        embedding_service = self.app_state.get("embedding_service")
+        if vector_store and embedding_service:
+            hot_text = "\n".join(
+                [
+                    pin.what_happened,
+                    pin.why_user or pin.why_model,
+                    pin.quote_snippet or "",
+                    ", ".join(pin.tags or []),
+                ]
+            ).strip()
+            embedding = embedding_service.embed(hot_text)
+            if vector_store.upsert_pin(
+                character_id=pin.character_id,
+                pin_id=pin.id,
+                hot_text=hot_text,
+                embedding=embedding,
+                metadata={"user_id": pin.user_id, "conversation_id": pin.conversation_id or ""},
+            ):
+                pin_repo.set_vector_id(pin.id, pin.id)
+                pin = pin_repo.get_by_id(pin.id) or pin
+
+        return {"pin_id": pin.id, "replayed": False}
+
+    def _update_moment_pin(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        pin_repo = MomentPinRepository(db)
+        pin = pin_repo.update_fields(
+            pin_id=params["pin_id"],
+            why_user=params.get("why_user"),
+            tags=params.get("tags"),
+            archived=params.get("archived"),
+        )
+        if not pin:
+            raise RuntimeError("Moment pin not found")
+
+        if params.get("why_user") is not None or params.get("tags") is not None:
+            vector_store = self.app_state.get("moment_pin_vector_store")
+            embedding_service = self.app_state.get("embedding_service")
+            if vector_store and embedding_service:
+                hot_text = "\n".join(
+                    [
+                        pin.what_happened,
+                        pin.why_user or pin.why_model,
+                        pin.quote_snippet or "",
+                        ", ".join(pin.tags or []),
+                    ]
+                ).strip()
+                embedding = embedding_service.embed(hot_text)
+                vector_store.upsert_pin(
+                    character_id=pin.character_id,
+                    pin_id=pin.id,
+                    hot_text=hot_text,
+                    embedding=embedding,
+                    metadata={"user_id": pin.user_id, "conversation_id": pin.conversation_id or ""},
+                )
+
+        return {"pin_id": pin.id}
+
+    def _delete_moment_pin(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        pin_id = params["pin_id"]
+        pin_repo = MomentPinRepository(db)
+        pin = pin_repo.get_by_id(pin_id)
+        if not pin:
+            raise RuntimeError("Moment pin not found")
+        vector_store = self.app_state.get("moment_pin_vector_store")
+        if vector_store:
+            vector_store.delete_pin(character_id=pin.character_id, pin_id=pin.id)
+        pin_repo.delete(pin_id)
+        return {"pin_id": pin_id, "deleted": True}
+
+    async def _run_continuity_bootstrap(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        continuity_service = self.app_state.get("continuity_service")
+        if not continuity_service:
+            raise RuntimeError("Continuity service not initialized")
+        character_id = params["character_id"]
+        character = self.app_state["characters"].get(character_id)
+        if not character:
+            raise RuntimeError(f"Character not found: {character_id}")
+        force = bool(params.get("force", False))
+        result = await continuity_service.generate_and_save(
+            character=character,
+            conversation_id=params.get("conversation_id"),
+            force=force,
+        )
+        return {
+            "character_id": character_id,
+            "skipped": bool((result or {}).get("skipped")),
+            "has_cache": bool((result or {}).get("cache")),
+        }
 
     async def _maybe_update_conversation_title(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         """

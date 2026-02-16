@@ -2,6 +2,10 @@ id: nova
 name: Nova
 role: Creative AI Assistant & Brainstorming Partner
 role_type: assistant
+user_identity:
+  mode: canonical
+  role_name: null
+  role_aliases: []
 aliases:
 - Nova Chorus
 custom_system_prompt: false
@@ -101,6 +105,18 @@ image_generation:
   enabled: true
 video_generation:
   enabled: true
+proactive_offers:
+  image: {}
+  video: {}
+backup:
+  enabled: false
+  schedule: daily
+  local_time: 03:00
+  destination_override: null
+  include_workflows: true
+  notes_template: null
+ui_preferences:
+  color_scheme: null
 voice:
   enabled: true
   always_on: false

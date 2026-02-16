@@ -33,7 +33,10 @@ class MemoryRepository:
         emotional_weight: Optional[float] = None,  # Phase 8: Emotional significance
         participants: Optional[List[str]] = None,  # Phase 8: People involved
         key_moments: Optional[List[str]] = None,  # Phase 8: Significant moments
-        source: str = 'web'  # Phase 3: Platform source (web, discord, slack, etc.)
+        source: str = 'web',  # Phase 3: Platform source (web, discord, slack, etc.)
+        client_memory_id: Optional[str] = None,
+        source_fingerprint: Optional[str] = None,
+        source_kind: Optional[str] = None,
     ) -> Memory:
         """
         Create a new memory.
@@ -90,7 +93,10 @@ class MemoryRepository:
             emotional_weight=emotional_weight,
             participants=participants,
             key_moments=key_moments,
-            source=source
+            source=source,
+            client_memory_id=client_memory_id,
+            source_fingerprint=source_fingerprint,
+            source_kind=source_kind,
         )
         self.db.add(memory)
         self.db.commit()

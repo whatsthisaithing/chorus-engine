@@ -75,6 +75,7 @@ class AppHelper:
         slice2_scene_capture_ownership: bool = False,
         slice2_scene_capture_legacy_confirm_without_tool_call: bool = False,
         slice25_media_gating_ownership: bool = False,
+        slice3_continuity_writes_ownership: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -87,6 +88,7 @@ class AppHelper:
             slice2_scene_capture_ownership=slice2_scene_capture_ownership,
             slice2_scene_capture_legacy_confirm_without_tool_call=slice2_scene_capture_legacy_confirm_without_tool_call,
             slice25_media_gating_ownership=slice25_media_gating_ownership,
+            slice3_continuity_writes_ownership=slice3_continuity_writes_ownership,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:
