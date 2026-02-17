@@ -390,7 +390,16 @@ class SystemSettingsManager {
             // Preserve debug_ui as a dev-only flag managed outside the normal UI.
             debug_ui: !!(this.loadedConfig && this.loadedConfig.debug_ui)
         };
-        
+
+        // Preserve top-level config sections not managed by this modal.
+        // /system/config currently performs full-replace writes.
+        const loaded = (this.loadedConfig && typeof this.loadedConfig === 'object') ? this.loadedConfig : {};
+        Object.keys(loaded).forEach((key) => {
+            if (!(key in data)) {
+                data[key] = loaded[key];
+            }
+        });
+
         return data;
     }
 
@@ -431,6 +440,10 @@ class SystemSettingsManager {
             if (!response.ok) {
                 const error = await response.json();
                 throw new Error(error.detail || 'Failed to save configuration');
+            }
+            const result = await response.json().catch(() => ({}));
+            if (window.App && typeof window.App.onPotentialConfigMutation === 'function') {
+                window.App.onPotentialConfigMutation('/system/config', 'POST', result);
             }
 
             UI.showToast('Configuration saved. Server is restarting... (this may take 15-20 seconds)', 'success');

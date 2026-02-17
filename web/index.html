@@ -208,6 +208,22 @@
                         </button>
                     </div>
                 </div>
+                <div id="configDriftBanner" class="alert alert-info m-3 mb-0" role="alert" style="display: none;">
+                    <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-exclamation-diamond-fill me-2"></i>
+                            <div>
+                                <strong>Config Drift Detected</strong>
+                                <p id="configDriftBannerText" class="mb-0 small">Out-of-band YAML edits were detected. Runtime may be out of sync.</p>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center gap-2">
+                            <button id="configDriftReloadSystemBtn" class="btn btn-sm btn-outline-light">Reload system</button>
+                            <button id="configDriftReloadCharactersBtn" class="btn btn-sm btn-outline-light">Reload characters</button>
+                            <button id="configDriftDismissBtn" class="btn btn-sm btn-secondary">Dismiss</button>
+                        </div>
+                    </div>
+                </div>
                 <!-- Header -->
                 <div class="chat-header p-3 pb-0">
                     <div class="d-flex justify-content-between align-items-center">

@@ -283,6 +283,70 @@ class ENSRuntime:
                     action.params.setdefault("thread_id", resolved_signal.payload.get("thread_id"))
                     action.params.setdefault("character_id", resolved_signal.assistant_id)
 
+                if action.kind in (
+                    "config.system.apply",
+                    "config.system.post_apply",
+                    "config.character.apply_yaml",
+                    "config.character.apply_profile_asset",
+                    "config.character.reload_runtime",
+                    "config.conversation.apply",
+                    "config.workflow.apply_file",
+                    "config.workflow.apply_db",
+                    "config.workflow.rollback_file_or_db",
+                    "config.core_memory.apply_db",
+                    "config.core_memory.apply_vectors",
+                ):
+                    validators = {
+                        "config.system.apply": "config.system.validate",
+                        "config.system.post_apply": "config.system.validate",
+                        "config.character.apply_yaml": "config.character.validate",
+                        "config.character.apply_profile_asset": "config.character.validate",
+                        "config.character.reload_runtime": "config.character.validate",
+                        "config.conversation.apply": "config.conversation.validate",
+                        "config.workflow.apply_file": "config.workflow.validate",
+                        "config.workflow.apply_db": "config.workflow.validate",
+                        "config.workflow.rollback_file_or_db": "config.workflow.validate",
+                        "config.core_memory.apply_db": "config.core_memory.diff",
+                        "config.core_memory.apply_vectors": "config.core_memory.diff",
+                    }
+                    gate_kind = validators.get(action.kind)
+                    gate_result = next((r for r in action_results if r.get("kind") == gate_kind), None)
+                    if gate_result and gate_result.get("status") in ("success", "skipped"):
+                        gate_output = (gate_result or {}).get("output") or {}
+                        if gate_output.get("ok") is False:
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="validation_failed",
+                                    output={"reason": "validation_failed", "errors": gate_output.get("errors", [])},
+                                )
+                            )
+                            continue
+                        if gate_output.get("no_change") and action.kind != "config.workflow.rollback_file_or_db":
+                            action_results.append(
+                                self._skipped_action_result(
+                                    action=action,
+                                    decision_id=decision_id,
+                                    reason="no_change",
+                                    output={"reason": "no_change"},
+                                )
+                            )
+                            continue
+                    if action.kind == "config.workflow.apply_db":
+                        file_step = next((r for r in action_results if r.get("kind") == "config.workflow.apply_file"), None)
+                        action.params["file_result"] = dict((file_step or {}).get("output") or {})
+                    if action.kind == "config.workflow.rollback_file_or_db":
+                        db_step = next((r for r in action_results if r.get("kind") == "config.workflow.apply_db"), None)
+                        rollback_ctx = ((db_step or {}).get("output") or {}).get("rollback")
+                        if not rollback_ctx:
+                            file_step = next((r for r in action_results if r.get("kind") == "config.workflow.apply_file"), None)
+                            rollback_ctx = ((file_step or {}).get("output") or {}).get("rollback_context")
+                        action.params["rollback_context"] = rollback_ctx or {}
+                    if action.kind in ("config.core_memory.apply_db", "config.core_memory.apply_vectors"):
+                        diff_step = next((r for r in action_results if r.get("kind") == "config.core_memory.diff"), None)
+                        action.params["diff_result"] = dict((diff_step or {}).get("output") or {})
+
                 result = await self.dispatcher.execute(db, action, decision_id=decision_id)
                 action_results.append(result)
                 if result["status"] == "failure":
@@ -633,6 +697,147 @@ class ENSRuntime:
                 )
             ]
 
+        if signal.type == "config.system.change_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            return [
+                ENSAction(
+                    kind="config.system.validate",
+                    idempotency_key=f"config:system:global:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.system.apply",
+                    idempotency_key=f"config:system:global:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.system.post_apply",
+                    idempotency_key=f"config:system:global:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "config.character.change_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            character_id = signal.payload.get("character_id") or "global"
+            operation = signal.payload.get("operation")
+            actions = [
+                ENSAction(
+                    kind="config.character.validate",
+                    idempotency_key=f"config:character:{character_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+            ]
+            if operation == "reload_runtime_only":
+                actions.append(
+                    ENSAction(
+                        kind="config.character.reload_runtime",
+                        idempotency_key=f"config:character:{character_id}:{payload_hash}",
+                        params=dict(signal.payload),
+                    )
+                )
+                return actions
+            if operation in ("set_profile_image", "upload_profile_image"):
+                actions.append(
+                    ENSAction(
+                        kind="config.character.apply_profile_asset",
+                        idempotency_key=f"config:character:{character_id}:{payload_hash}",
+                        params=dict(signal.payload),
+                    )
+                )
+            else:
+                actions.append(
+                    ENSAction(
+                        kind="config.character.apply_yaml",
+                        idempotency_key=f"config:character:{character_id}:{payload_hash}",
+                        params=dict(signal.payload),
+                    )
+                )
+            actions.append(
+                ENSAction(
+                    kind="config.character.reload_runtime",
+                    idempotency_key=f"config:character:{character_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                )
+            )
+            return actions
+
+        if signal.type == "config.conversation.change_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            conversation_id = signal.payload.get("conversation_id") or "global"
+            return [
+                ENSAction(
+                    kind="config.conversation.validate",
+                    idempotency_key=f"config:conversation:{conversation_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.conversation.apply",
+                    idempotency_key=f"config:conversation:{conversation_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "config.workflow.change_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            workflow_scope_key = (
+                f"{signal.payload.get('character_id')}:{signal.payload.get('operation')}:"
+                f"{signal.payload.get('workflow_name') or signal.payload.get('workflow_id') or signal.payload.get('old_name') or 'na'}"
+            )
+            return [
+                ENSAction(
+                    kind="config.workflow.validate",
+                    idempotency_key=f"config:workflow:{workflow_scope_key}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.workflow.apply_file",
+                    idempotency_key=f"config:workflow:{workflow_scope_key}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.workflow.apply_db",
+                    idempotency_key=f"config:workflow:{workflow_scope_key}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.workflow.rollback_file_or_db",
+                    idempotency_key=f"config:workflow:{workflow_scope_key}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "config.core_memory.sync_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            character_id = signal.payload.get("character_id") or "global"
+            return [
+                ENSAction(
+                    kind="config.core_memory.diff",
+                    idempotency_key=f"config:core_memory_sync:{character_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.core_memory.apply_db",
+                    idempotency_key=f"config:core_memory_sync:{character_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.core_memory.apply_vectors",
+                    idempotency_key=f"config:core_memory_sync:{character_id}:{payload_hash}",
+                    params=dict(signal.payload),
+                ),
+            ]
+
         return []
 
     def _build_outcome(
@@ -705,6 +910,33 @@ class ENSRuntime:
         elif signal.type == "continuity.bootstrap_requested":
             cont = next((r for r in action_results if r.get("kind") == "continuity.bootstrap"), None)
             response_payload = dict((cont or {}).get("output") or {})
+        elif signal.type == "config.system.change_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "config.system.apply"), None)
+            post_result = next((r for r in action_results if r.get("kind") == "config.system.post_apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+            response_payload.update(dict((post_result or {}).get("output") or {}))
+        elif signal.type == "config.character.change_requested":
+            apply_yaml = next((r for r in action_results if r.get("kind") == "config.character.apply_yaml"), None)
+            apply_asset = next((r for r in action_results if r.get("kind") == "config.character.apply_profile_asset"), None)
+            reload_result = next((r for r in action_results if r.get("kind") == "config.character.reload_runtime"), None)
+            response_payload = dict((apply_yaml or apply_asset or {}).get("output") or {})
+            if reload_result:
+                response_payload["runtime_reloaded"] = bool(((reload_result or {}).get("output") or {}).get("reloaded"))
+        elif signal.type == "config.conversation.change_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "config.conversation.apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+        elif signal.type == "config.workflow.change_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "config.workflow.apply_db"), None)
+            rollback_result = next((r for r in action_results if r.get("kind") == "config.workflow.rollback_file_or_db"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+            if rollback_result:
+                response_payload["rollback"] = dict((rollback_result or {}).get("output") or {})
+        elif signal.type == "config.core_memory.sync_requested":
+            db_result = next((r for r in action_results if r.get("kind") == "config.core_memory.apply_db"), None)
+            vector_result = next((r for r in action_results if r.get("kind") == "config.core_memory.apply_vectors"), None)
+            response_payload = dict((db_result or {}).get("output") or {})
+            if vector_result:
+                response_payload["vectors"] = dict((vector_result or {}).get("output") or {})
 
         return ENSOutcome(
             decision_id=decision_id,

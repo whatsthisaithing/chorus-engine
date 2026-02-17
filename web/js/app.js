@@ -29,7 +29,10 @@ window.App = {
         galleryImages: [], // Phase 9: Image gallery
         galleryVideos: [], // Video gallery
         debugMode: false,
-        lastSendAttempt: null
+        lastSendAttempt: null,
+        configDrift: null,
+        configDriftDismissedFingerprint: null,
+        configDriftPollTimer: null,
     },
     
     /**
@@ -58,6 +61,7 @@ window.App = {
             
             // Setup event listeners
             this.setupEventListeners();
+            this.initializeConfigDriftMonitor();
             
             // Start server status polling (Phase D)
             this.startServerStatusPolling();
@@ -920,6 +924,108 @@ window.App = {
             console.error('Failed to select thread:', error);
             UI.showToast('Failed to load thread', 'error');
         }
+    },
+
+    getConfigDriftFingerprint(drift) {
+        const payload = {
+            system_drifted: !!(drift && drift.system_drifted),
+            character_changes: (drift && drift.character_changes) || {},
+        };
+        return JSON.stringify(payload);
+    },
+
+    renderConfigDriftBanner() {
+        const banner = document.getElementById('configDriftBanner');
+        const text = document.getElementById('configDriftBannerText');
+        if (!banner || !text) return;
+        if (!this.state.debugMode) {
+            banner.style.display = 'none';
+            return;
+        }
+        const drift = this.state.configDrift;
+        if (!drift || !drift.drifted) {
+            banner.style.display = 'none';
+            return;
+        }
+        const fingerprint = this.getConfigDriftFingerprint(drift);
+        if (this.state.configDriftDismissedFingerprint === fingerprint) {
+            banner.style.display = 'none';
+            return;
+        }
+        const changes = drift.character_changes || {};
+        const parts = [];
+        if (drift.system_drifted) parts.push('system.yaml changed');
+        if ((changes.added || []).length) parts.push(`${changes.added.length} character file(s) added`);
+        if ((changes.removed || []).length) parts.push(`${changes.removed.length} character file(s) removed`);
+        if ((changes.changed || []).length) parts.push(`${changes.changed.length} character file(s) changed`);
+        text.textContent = parts.length
+            ? `Out-of-band YAML edits detected: ${parts.join(', ')}.`
+            : 'Out-of-band YAML edits were detected. Runtime may be out of sync.';
+        banner.style.display = 'block';
+    },
+
+    async checkConfigDrift() {
+        if (!this.state.debugMode) return;
+        try {
+            const drift = await API.getConfigDrift();
+            this.state.configDrift = drift;
+            this.renderConfigDriftBanner();
+        } catch (error) {
+            console.warn('Failed to poll config drift status:', error);
+        }
+    },
+
+    initializeConfigDriftMonitor() {
+        if (!this.state.debugMode) {
+            this.state.configDrift = null;
+            this.renderConfigDriftBanner();
+            return;
+        }
+        const reloadSystemBtn = document.getElementById('configDriftReloadSystemBtn');
+        if (reloadSystemBtn) {
+            reloadSystemBtn.addEventListener('click', async () => {
+                try {
+                    const result = await API.reloadSystemConfig();
+                    await this.checkConfigDrift();
+                    UI.showToast(result.drift_cleared ? 'System config reloaded and drift cleared.' : 'System config reloaded.', 'info');
+                } catch (error) {
+                    UI.showToast(`Failed to reload system config: ${error.message}`, 'danger');
+                }
+            });
+        }
+        const reloadCharactersBtn = document.getElementById('configDriftReloadCharactersBtn');
+        if (reloadCharactersBtn) {
+            reloadCharactersBtn.addEventListener('click', async () => {
+                try {
+                    const result = await API.reloadCharacters();
+                    await this.loadCharacters();
+                    await this.checkConfigDrift();
+                    UI.showToast(result.drift_cleared ? 'Characters reloaded and drift cleared.' : 'Characters reloaded.', 'info');
+                } catch (error) {
+                    UI.showToast(`Failed to reload characters: ${error.message}`, 'danger');
+                }
+            });
+        }
+        const dismissBtn = document.getElementById('configDriftDismissBtn');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                const drift = this.state.configDrift;
+                this.state.configDriftDismissedFingerprint = this.getConfigDriftFingerprint(drift || {});
+                this.renderConfigDriftBanner();
+            });
+        }
+        this.checkConfigDrift();
+        if (this.state.configDriftPollTimer) {
+            clearInterval(this.state.configDriftPollTimer);
+        }
+        this.state.configDriftPollTimer = setInterval(() => {
+            this.checkConfigDrift();
+        }, 60000);
+    },
+
+    onPotentialConfigMutation(_endpoint, _method, _response) {
+        if (!this.state.debugMode) return;
+        setTimeout(() => this.checkConfigDrift(), 150);
     },
 
     setLastSendAttempt(requestSnapshot) {

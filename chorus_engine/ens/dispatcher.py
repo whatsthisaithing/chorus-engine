@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import uuid
 import json
+import os
+import tempfile
+import shutil
+import yaml
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -104,6 +110,28 @@ def _attempt_media_payload_repair_prompt(
 class ENSDispatcher:
     """Executes ENS actions with idempotency safeguards."""
 
+    _config_apply_mutex = Lock()
+    _config_apply_mutex_key = "global:ens_config_apply"
+
+    def _refresh_config_drift_baseline(self) -> None:
+        config_path = Path("config/system.yaml")
+        characters_dir = Path("characters")
+        system_hash = None
+        if config_path.exists():
+            system_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        character_hashes: Dict[str, str] = {}
+        if characters_dir.exists():
+            for p in sorted(characters_dir.glob("*.yaml")):
+                try:
+                    character_hashes[p.name] = hashlib.sha256(p.read_bytes()).hexdigest()
+                except Exception:
+                    continue
+        self.app_state["config_drift_baseline"] = {
+            "system_hash": system_hash,
+            "character_hashes": character_hashes,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
     def __init__(self, app_state: Dict[str, Any]) -> None:
         self.app_state = app_state
 
@@ -176,8 +204,54 @@ class ENSDispatcher:
                 output = self._delete_moment_pin(db, action.params)
             elif action.kind == "continuity.bootstrap":
                 output = await self._run_continuity_bootstrap(db, action.params)
+            elif action.kind == "config.system.validate":
+                output = self._validate_system_config_change(db, action.params)
+            elif action.kind == "config.system.apply":
+                output = self._apply_system_config_change(db, action.params)
+            elif action.kind == "config.system.post_apply":
+                output = self._post_apply_system_config_change(db, action.params)
+            elif action.kind == "config.character.validate":
+                output = self._validate_character_config_change(db, action.params)
+            elif action.kind == "config.character.apply_yaml":
+                output = self._apply_character_config_change(db, action.params)
+            elif action.kind == "config.character.apply_profile_asset":
+                output = self._apply_character_profile_asset(db, action.params)
+            elif action.kind == "config.character.reload_runtime":
+                output = self._reload_character_runtime(db, action.params)
+            elif action.kind == "config.conversation.validate":
+                output = self._validate_conversation_config_change(db, action.params)
+            elif action.kind == "config.conversation.apply":
+                output = self._apply_conversation_config_change(db, action.params)
+            elif action.kind == "config.workflow.validate":
+                output = self._validate_workflow_config_change(db, action.params)
+            elif action.kind == "config.workflow.apply_file":
+                output = self._apply_workflow_file_change(db, action.params)
+            elif action.kind == "config.workflow.apply_db":
+                output = self._apply_workflow_db_change(db, action.params)
+            elif action.kind == "config.workflow.rollback_file_or_db":
+                output = self._rollback_workflow_change(db, action.params)
+            elif action.kind == "config.core_memory.diff":
+                output = self._diff_core_memories_from_yaml(db, action.params)
+            elif action.kind == "config.core_memory.apply_db":
+                output = self._apply_core_memory_sync_db(db, action.params)
+            elif action.kind == "config.core_memory.apply_vectors":
+                output = self._apply_core_memory_sync_vectors(db, action.params)
             else:
                 raise ValueError(f"Unsupported action kind: {action.kind}")
+
+            if isinstance(output, dict) and output.get("_ens_action_status") == "skipped":
+                return {
+                    "action_result_id": str(uuid.uuid4()),
+                    "decision_id": decision_id,
+                    "action_id": action.action_id,
+                    "idempotency_key": action.idempotency_key,
+                    "kind": action.kind,
+                    "execution_class": action.execution_class,
+                    "status": "skipped",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "metrics": {"latency_ms": int((datetime.utcnow() - started).total_seconds() * 1000)},
+                    "output": {k: v for k, v in output.items() if not k.startswith("_")},
+                }
 
             return {
                 "action_result_id": str(uuid.uuid4()),
@@ -1283,6 +1357,803 @@ class ENSDispatcher:
             "character_id": character_id,
             "skipped": bool((result or {}).get("skipped")),
             "has_cache": bool((result or {}).get("cache")),
+        }
+
+    def _mutex_skipped(self) -> Dict[str, Any]:
+        return {
+            "_ens_action_status": "skipped",
+            "reason": "config_mutex_busy",
+            "mutex": self._config_apply_mutex_key,
+        }
+
+    def _atomic_write_yaml(self, path: Path, data: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.tmp.", dir=str(path.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                yaml.dump(
+                    data,
+                    f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                    width=120,
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(tmp_path), str(path))
+            try:
+                dir_fd = os.open(str(path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
+        except Exception:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            raise
+
+    def _get_config_path(self) -> Path:
+        return Path("config/system.yaml")
+
+    def _load_yaml_or_empty(self, path: Path) -> Dict[str, Any]:
+        if not path.exists():
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
+    def _stable_hash(self, payload: Dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def _save_character_atomic(self, character) -> Path:
+        path = Path("characters") / f"{character.id}.yaml"
+        data = character.model_dump(
+            exclude_none=True,
+            exclude={"created_at", "updated_at"},
+            mode="json",
+        )
+        self._atomic_write_yaml(path, data)
+        return path
+
+    def _validate_system_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        from chorus_engine.config.models import SystemConfig, UserIdentityConfig
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        warnings: List[str] = []
+        errors: List[str] = []
+
+        try:
+            if operation == "user_identity_update":
+                UserIdentityConfig(
+                    display_name=payload.get("display_name") or "",
+                    aliases=payload.get("aliases") or [],
+                )
+            elif operation in ("system_config_update", "system_config_import"):
+                SystemConfig(**(payload.get("config") or {}))
+                provider = (payload.get("config") or {}).get("llm", {}).get("provider")
+                if provider == "integrated":
+                    model_path = (payload.get("config") or {}).get("llm", {}).get("model")
+                    if not model_path:
+                        errors.append("Model path is required for integrated provider.")
+                    else:
+                        model_file = Path(model_path)
+                        if not model_file.exists():
+                            errors.append(f"Model file not found: {model_path}")
+                        elif model_file.suffix != ".gguf":
+                            errors.append(f"Invalid model file suffix: {model_file.suffix}")
+            elif operation == "reload_from_disk":
+                config_path = self._get_config_path()
+                if not config_path.exists():
+                    errors.append("system.yaml not found")
+                else:
+                    disk_data = self._load_yaml_or_empty(config_path)
+                    SystemConfig(**disk_data)
+            else:
+                errors.append(f"Unsupported system config operation: {operation}")
+        except Exception as e:
+            errors.append(str(e))
+
+        if errors:
+            return {"ok": False, "errors": errors, "warnings": warnings}
+
+        config_path = self._get_config_path()
+        before = self._load_yaml_or_empty(config_path)
+        if operation == "user_identity_update":
+            normalized = {
+                "display_name": (payload.get("display_name") or "").strip(),
+                "aliases": payload.get("aliases") or [],
+            }
+            no_change = (before.get("user_identity") or {}) == normalized
+        else:
+            requested = payload.get("config") or {}
+            no_change = before == requested
+
+        return {
+            "ok": True,
+            "errors": [],
+            "warnings": warnings,
+            "no_change": bool(no_change),
+            "operation": operation,
+        }
+
+    def _apply_system_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        from chorus_engine.config.models import SystemConfig, UserIdentityConfig
+
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        config_path = self._get_config_path()
+        before = self._load_yaml_or_empty(config_path)
+        after = copy.deepcopy(before)
+
+        with self._config_apply_mutex:
+            if operation == "user_identity_update":
+                identity = UserIdentityConfig(
+                    display_name=payload.get("display_name") or "",
+                    aliases=payload.get("aliases") or [],
+                )
+                new_identity = identity.model_dump(mode="json")
+                if (before.get("user_identity") or {}) == new_identity:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "restart_required": False}
+                after["user_identity"] = new_identity
+                self._atomic_write_yaml(config_path, after)
+                if self.app_state.get("system_config"):
+                    self.app_state["system_config"].user_identity = identity
+                self._refresh_config_drift_baseline()
+                return {
+                    "attempted": True,
+                    "success": True,
+                    "error": None,
+                    "restart_required": False,
+                    "before": {"user_identity": before.get("user_identity")},
+                    "after": {"user_identity": new_identity},
+                    "changed_fields": ["user_identity"],
+                }
+
+            if operation in ("system_config_update", "system_config_import"):
+                requested = payload.get("config") or {}
+                if before == requested:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "restart_required": True}
+                validated = SystemConfig(**requested)
+                self._atomic_write_yaml(config_path, requested)
+                self.app_state["system_config"] = validated
+                self._refresh_config_drift_baseline()
+                return {
+                    "attempted": True,
+                    "success": True,
+                    "error": None,
+                    "restart_required": True,
+                    "before": {"keys": sorted(before.keys())},
+                    "after": {"keys": sorted((requested or {}).keys())},
+                    "changed_fields": ["*"],
+                }
+
+            if operation == "reload_from_disk":
+                disk_config = self._load_yaml_or_empty(config_path)
+                validated = SystemConfig(**disk_config)
+                current = self.app_state.get("system_config")
+                current_dump = current.model_dump(mode="json") if current else {}
+                if current_dump == disk_config:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "restart_required": False}
+                self.app_state["system_config"] = validated
+                self._refresh_config_drift_baseline()
+                return {
+                    "attempted": True,
+                    "success": True,
+                    "error": None,
+                    "restart_required": False,
+                    "before": {"keys": sorted((current_dump or {}).keys())},
+                    "after": {"keys": sorted((disk_config or {}).keys())},
+                    "changed_fields": ["*"],
+                }
+
+        raise RuntimeError(f"Unsupported system config operation: {operation}")
+
+    def _post_apply_system_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        operation = params.get("operation")
+        return {"restart_required": operation in ("system_config_update", "system_config_import")}
+
+    def _validate_character_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        from chorus_engine.config.loader import IMMUTABLE_CHARACTERS
+        from chorus_engine.config.models import CharacterConfig
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        errors: List[str] = []
+
+        try:
+            if operation in ("create", "import"):
+                CharacterConfig(**(payload.get("character_data") or {}))
+                if (payload.get("character_data") or {}).get("id") in IMMUTABLE_CHARACTERS:
+                    errors.append("Cannot use reserved immutable character id")
+            elif operation == "update":
+                if character_id in IMMUTABLE_CHARACTERS:
+                    errors.append("Cannot modify immutable character")
+                if "id" in (payload.get("updates") or {}) and payload["updates"]["id"] != character_id:
+                    errors.append("Cannot change character ID")
+            elif operation == "delete":
+                if character_id in IMMUTABLE_CHARACTERS:
+                    errors.append("Cannot delete immutable character")
+            elif operation == "clone":
+                new_id = payload.get("new_id")
+                if new_id in IMMUTABLE_CHARACTERS:
+                    errors.append("Cannot clone into immutable ID")
+            elif operation == "reload_runtime_only":
+                pass
+            elif operation in ("set_profile_image", "upload_profile_image", "card_import_confirm"):
+                pass
+            elif operation == "restore_backup":
+                backup_file = (payload or {}).get("backup_file")
+                if not backup_file:
+                    errors.append("backup_file is required")
+                elif not Path(str(backup_file)).exists():
+                    errors.append("backup_file does not exist")
+            else:
+                errors.append(f"Unsupported character config operation: {operation}")
+        except Exception as e:
+            errors.append(str(e))
+
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": []}
+
+    def _apply_character_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.config.loader import ConfigLoader, IMMUTABLE_CHARACTERS
+        from chorus_engine.config.models import CharacterConfig
+        from chorus_engine.services.character_cards import CharacterCardImporter
+        from chorus_engine.services.core_memory_loader import CoreMemoryLoader
+
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        loader = ConfigLoader()
+
+        with self._config_apply_mutex:
+            if operation == "create":
+                character = CharacterConfig(**(payload.get("character_data") or {}))
+                try:
+                    loader.load_character(character.id)
+                    raise RuntimeError(f"Character '{character.id}' already exists")
+                except Exception:
+                    pass
+                self._save_character_atomic(character)
+                self._refresh_config_drift_baseline()
+                return {"id": character.id, "name": character.name, "message": "Character created successfully"}
+
+            if operation == "update":
+                character = loader.load_character(character_id)
+                char_dict = character.model_dump()
+                updates = payload.get("updates") or {}
+                char_dict.update(updates)
+                updated = CharacterConfig(**char_dict)
+                if character.model_dump() == updated.model_dump():
+                    return {"_ens_action_status": "skipped", "reason": "no_change"}
+                self._save_character_atomic(updated)
+                self._refresh_config_drift_baseline()
+                return {"id": character_id, "message": "Character updated successfully"}
+
+            if operation == "delete":
+                if character_id in IMMUTABLE_CHARACTERS:
+                    raise RuntimeError(f"Cannot delete immutable character '{character_id}'")
+                loader.delete_character(character_id)
+                self._refresh_config_drift_baseline()
+                return {"message": f"Character '{character_id}' deleted successfully"}
+
+            if operation == "clone":
+                source_id = character_id
+                new_id = payload.get("new_id")
+                source = loader.load_character(source_id)
+                try:
+                    loader.load_character(new_id)
+                    raise RuntimeError(f"Character '{new_id}' already exists")
+                except Exception:
+                    pass
+                cloned = source.model_copy(deep=True)
+                cloned.id = new_id
+                cloned.name = f"{source.name} (Clone)"
+                self._save_character_atomic(cloned)
+                self._refresh_config_drift_baseline()
+                return {"id": new_id, "name": cloned.name, "message": f"Cloned '{source_id}' to '{new_id}'"}
+
+            if operation == "import":
+                character = CharacterConfig(**(payload.get("character_data") or {}))
+                if character.id in IMMUTABLE_CHARACTERS:
+                    raise RuntimeError(f"Cannot overwrite immutable character '{character.id}'")
+                self._save_character_atomic(character)
+                self._refresh_config_drift_baseline()
+                return {"id": character.id, "name": character.name, "message": f"Character '{character.id}' imported successfully"}
+
+            if operation == "card_import_confirm":
+                preview_id = payload.get("preview_id")
+                custom_name = payload.get("custom_name")
+                preview_data = (self.app_state.get("card_previews") or {}).get(preview_id)
+                if not preview_data:
+                    raise RuntimeError("Preview not found or expired")
+                importer = CharacterCardImporter(
+                    characters_dir=str(loader.config_dir / "characters"),
+                    images_dir=str(Path("data/character_images")),
+                )
+                character_filename = importer.save_character(
+                    character_data=preview_data["character_data"],
+                    profile_image=preview_data["profile_image"],
+                    custom_name=custom_name,
+                )
+                self.app_state.setdefault("card_previews", {}).pop(preview_id, None)
+                if preview_data["character_data"].get("core_memories"):
+                    core_loader = CoreMemoryLoader(db)
+                    try:
+                        core_loader.load_character_core_memories(character_filename)
+                    except Exception:
+                        pass
+                self._refresh_config_drift_baseline()
+                return {
+                    "success": True,
+                    "character_id": character_filename,
+                    "character_name": character_filename,
+                    "file_path": str((loader.config_dir / "characters" / f"{character_filename}.yaml")),
+                }
+
+            if operation == "restore_backup":
+                from chorus_engine.services.restore_service import CharacterRestoreService
+
+                backup_file = payload.get("backup_file")
+                if not backup_file:
+                    raise RuntimeError("backup_file is required")
+
+                restore_service = CharacterRestoreService(db=db)
+                result = restore_service.restore_character(
+                    backup_file=Path(str(backup_file)),
+                    new_character_id=payload.get("new_character_id"),
+                    rename_if_exists=bool(payload.get("rename_if_exists", False)),
+                    overwrite=bool(payload.get("overwrite", False)),
+                    cleanup_orphans=bool(payload.get("cleanup_orphans", False)),
+                )
+                self._refresh_config_drift_baseline()
+                return {
+                    "success": True,
+                    "character_id": result.get("character_id"),
+                    "original_id": result.get("original_id"),
+                    "renamed": bool(result.get("renamed", False)),
+                    "backup_date": result.get("backup_date"),
+                    "restored_counts": result.get("restored_counts", {}),
+                    "rebuild_stats": result.get("rebuild_stats", {}),
+                }
+
+        raise RuntimeError(f"Unsupported character config operation: {operation}")
+
+    def _apply_character_profile_asset(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        from io import BytesIO
+        from PIL import Image
+        from chorus_engine.config.loader import ConfigLoader
+        import base64
+
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        loader = ConfigLoader()
+
+        with self._config_apply_mutex:
+            character = loader.load_character(character_id)
+            images_dir = Path("data/character_images")
+            images_dir.mkdir(parents=True, exist_ok=True)
+
+            if operation == "set_profile_image":
+                image_filename = payload.get("image_filename")
+                if not image_filename:
+                    raise RuntimeError("image_filename is required")
+                source_root = Path("data/images")
+                source_path: Optional[Path] = None
+                if source_root.exists():
+                    for conv_dir in source_root.iterdir():
+                        if conv_dir.is_dir():
+                            candidate = conv_dir / image_filename
+                            if candidate.exists():
+                                source_path = candidate
+                                break
+                if not source_path:
+                    raise RuntimeError(f"Image file not found: {image_filename}")
+                dest_filename = f"{character_id}_{image_filename}"
+                shutil.copy2(source_path, images_dir / dest_filename)
+                character.profile_image = dest_filename
+                self._save_character_atomic(character)
+                self._refresh_config_drift_baseline()
+                return {
+                    "success": True,
+                    "profile_image": dest_filename,
+                    "profile_image_url": f"/character_images/{dest_filename}",
+                }
+
+            if operation == "upload_profile_image":
+                image_bytes_b64 = payload.get("image_bytes_b64")
+                if not image_bytes_b64:
+                    raise RuntimeError("image data is required")
+                image_data = base64.b64decode(image_bytes_b64)
+                image_path = images_dir / f"{character_id}.png"
+                img = Image.open(BytesIO(image_data))
+                img.save(str(image_path), format="PNG")
+                character.profile_image = f"{character_id}.png"
+                self._save_character_atomic(character)
+                self._refresh_config_drift_baseline()
+                return {"success": True, "filename": f"{character_id}.png", "image_path": str(image_path)}
+
+        raise RuntimeError(f"Unsupported profile asset operation: {operation}")
+
+    def _reload_character_runtime(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = (db, params)
+        from chorus_engine.config.loader import ConfigLoader
+
+        loader = ConfigLoader()
+        self.app_state["characters"] = loader.load_all_characters()
+        self._refresh_config_drift_baseline()
+        return {"reloaded": True, "character_count": len(self.app_state.get("characters") or {})}
+
+    def _validate_conversation_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        conversation_id = params.get("conversation_id") or payload.get("conversation_id")
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(conversation_id)
+        if not conversation:
+            return {"ok": False, "errors": ["Conversation not found"], "warnings": []}
+
+        no_change = False
+        if operation == "privacy_update":
+            no_change = (conversation.is_private == ("true" if payload.get("is_private") else "false"))
+        elif operation == "media_offers_update":
+            image_same = payload.get("allow_image_offers") is None or conversation.allow_image_offers == ("true" if payload.get("allow_image_offers") else "false")
+            video_same = payload.get("allow_video_offers") is None or conversation.allow_video_offers == ("true" if payload.get("allow_video_offers") else "false")
+            no_change = image_same and video_same
+        elif operation == "tts_update":
+            desired = 1 if bool(payload.get("enabled")) else 0
+            no_change = int(conversation.tts_enabled or 0) == desired
+        else:
+            return {"ok": False, "errors": [f"Unsupported conversation operation: {operation}"], "warnings": []}
+
+        return {"ok": True, "errors": [], "warnings": [], "no_change": no_change}
+
+    def _apply_conversation_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        conversation_id = params.get("conversation_id") or payload.get("conversation_id")
+        with self._config_apply_mutex:
+            conv_repo = ConversationRepository(db)
+            conversation = conv_repo.get_by_id(conversation_id)
+            if not conversation:
+                raise RuntimeError("Conversation not found")
+
+            if operation == "privacy_update":
+                desired = "true" if payload.get("is_private") else "false"
+                if conversation.is_private == desired:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "conversation_id": conversation_id}
+                conversation.is_private = desired
+                db.commit()
+                return {"status": "updated", "conversation_id": conversation_id, "is_private": payload.get("is_private")}
+            if operation == "media_offers_update":
+                changed = False
+                if payload.get("allow_image_offers") is not None:
+                    next_value = "true" if payload.get("allow_image_offers") else "false"
+                    if conversation.allow_image_offers != next_value:
+                        conversation.allow_image_offers = next_value
+                        changed = True
+                if payload.get("allow_video_offers") is not None:
+                    next_value = "true" if payload.get("allow_video_offers") else "false"
+                    if conversation.allow_video_offers != next_value:
+                        conversation.allow_video_offers = next_value
+                        changed = True
+                if not changed:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "conversation_id": conversation_id}
+                db.commit()
+                return {
+                    "conversation_id": conversation_id,
+                    "allow_image_offers": conversation.allow_image_offers == "true",
+                    "allow_video_offers": conversation.allow_video_offers == "true",
+                }
+            if operation == "tts_update":
+                desired = 1 if bool(payload.get("enabled")) else 0
+                if int(conversation.tts_enabled or 0) == desired:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "conversation_id": conversation_id}
+                conversation.tts_enabled = desired
+                db.commit()
+                return {"success": True, "tts_enabled": bool(payload.get("enabled")), "conversation_id": conversation_id}
+
+        raise RuntimeError(f"Unsupported conversation operation: {operation}")
+
+    def _validate_workflow_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.repositories import WorkflowRepository
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        workflow_repo = WorkflowRepository(db)
+        errors: List[str] = []
+
+        if operation == "upload":
+            if not self.app_state.get("characters", {}).get(character_id):
+                errors.append("Character not found")
+        elif operation == "delete":
+            if not workflow_repo.get_by_name(character_id, payload.get("workflow_name")):
+                errors.append("Workflow not found")
+        elif operation == "rename":
+            if not workflow_repo.get_by_name(character_id, payload.get("old_name")):
+                errors.append("Workflow not found")
+        elif operation == "set_default":
+            if not workflow_repo.get_by_name(character_id, payload.get("workflow_name")):
+                errors.append("Workflow not found")
+        elif operation == "update_config":
+            if not workflow_repo.get_by_id(int(payload.get("workflow_id"))):
+                errors.append("Workflow not found")
+        else:
+            errors.append(f"Unsupported workflow operation: {operation}")
+
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": []}
+
+    def _apply_workflow_file_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.repositories import WorkflowRepository
+        from chorus_engine.services.workflow_manager import WorkflowManager, WorkflowType
+        import base64
+
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        rollback_context = {"attempted": False, "success": True, "error": None}
+
+        with self._config_apply_mutex:
+            workflow_manager = WorkflowManager()
+            workflow_repo = WorkflowRepository(db)
+
+            if operation == "upload":
+                workflow_type = payload.get("workflow_type", "image")
+                workflow_manager.save_workflow_by_type(
+                    character_id=character_id,
+                    workflow_type=WorkflowType(workflow_type),
+                    workflow_name=payload.get("workflow_name"),
+                    workflow_data=payload.get("workflow_data") or {},
+                )
+                rollback_context = {
+                    "attempted": False,
+                    "success": True,
+                    "error": None,
+                    "rollback_kind": "delete_file",
+                    "rollback_target": f"workflows/{character_id}/{workflow_type}/{payload.get('workflow_name')}.json",
+                }
+                return {"file_changed": True, "rollback_context": rollback_context}
+
+            if operation == "delete":
+                workflow = workflow_repo.get_by_name(character_id, payload.get("workflow_name"))
+                if not workflow:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "file_changed": False, "rollback_context": rollback_context}
+                workflow_path = Path(f"workflows/{character_id}/{workflow.workflow_type}/{workflow.workflow_name}.json")
+                backup_bytes = None
+                if workflow_path.exists():
+                    backup_bytes = workflow_path.read_bytes()
+                    workflow_path.unlink()
+                rollback_context = {
+                    "attempted": False,
+                    "success": True,
+                    "error": None,
+                    "rollback_kind": "restore_file",
+                    "rollback_target": str(workflow_path),
+                    "backup_bytes_b64": (None if backup_bytes is None else base64.b64encode(backup_bytes).decode("ascii")),
+                }
+                return {"file_changed": True, "rollback_context": rollback_context}
+
+            if operation == "rename":
+                old_name = payload.get("old_name")
+                new_name = payload.get("new_name")
+                workflow = workflow_repo.get_by_name(character_id, old_name)
+                if not workflow:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "file_changed": False, "rollback_context": rollback_context}
+                workflow_type = workflow.workflow_type if hasattr(workflow, "workflow_type") else "image"
+                old_path = Path(f"workflows/{character_id}/{workflow_type}/{old_name}.json")
+                new_path = Path(f"workflows/{character_id}/{workflow_type}/{new_name}.json")
+                # Back-compat fallback for pre-type folder layouts.
+                if not old_path.exists():
+                    legacy_old_path = Path(f"workflows/{character_id}/{old_name}.json")
+                    legacy_new_path = Path(f"workflows/{character_id}/{new_name}.json")
+                    if legacy_old_path.exists():
+                        old_path = legacy_old_path
+                        new_path = legacy_new_path
+                if not old_path.exists():
+                    raise RuntimeError(f"Workflow not found: {old_name}")
+                if new_path.exists():
+                    raise RuntimeError(f"Workflow already exists: {new_name}")
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                old_path.rename(new_path)
+                rollback_context = {
+                    "attempted": False,
+                    "success": True,
+                    "error": None,
+                    "rollback_kind": "rename_file",
+                    "rollback_target": f"{str(new_path)}->{str(old_path)}",
+                }
+                return {"file_changed": True, "rollback_context": rollback_context}
+
+            return {"_ens_action_status": "skipped", "reason": "no_file_change", "file_changed": False, "rollback_context": rollback_context}
+
+    def _apply_workflow_db_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.repositories import WorkflowRepository
+
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        rollback = {
+            "attempted": False,
+            "success": True,
+            "error": None,
+            "rollback_kind": None,
+            "rollback_target": None,
+        }
+
+        with self._config_apply_mutex:
+            workflow_repo = WorkflowRepository(db)
+            if operation == "upload":
+                workflow_name = payload.get("workflow_name")
+                workflow_type = payload.get("workflow_type", "image")
+                existing = workflow_repo.get_by_name(character_id, workflow_name)
+                if existing:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "rollback": rollback}
+                is_first = workflow_repo.count_for_character_and_type(character_id, workflow_type) == 0
+                workflow = workflow_repo.create(
+                    character_name=character_id,
+                    workflow_name=workflow_name,
+                    workflow_file_path=f"workflows/{character_id}/{workflow_type}/{workflow_name}.json",
+                    workflow_type=workflow_type,
+                    is_default=is_first,
+                )
+                message = f"{workflow_type.capitalize()} workflow '{workflow_name}' uploaded successfully"
+                if is_first:
+                    message += " and set as default"
+                return {
+                    "success": True,
+                    "message": message,
+                    "workflow": {"id": workflow.id, "name": workflow.workflow_name, "is_default": workflow.is_default},
+                    "rollback": rollback,
+                }
+            if operation == "delete":
+                workflow_name = payload.get("workflow_name")
+                if not workflow_repo.delete(character_id, workflow_name):
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "rollback": rollback}
+                return {"success": True, "message": f"Workflow '{workflow_name}' deleted successfully", "rollback": rollback}
+            if operation == "rename":
+                old_name = payload.get("old_name")
+                new_name = payload.get("new_name")
+                if old_name == new_name:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "rollback": rollback}
+                if not workflow_repo.rename(character_id, old_name, new_name):
+                    raise RuntimeError("Workflow not found")
+                return {"success": True, "message": f"Workflow renamed from '{old_name}' to '{new_name}'", "rollback": rollback}
+            if operation == "set_default":
+                workflow_name = payload.get("workflow_name")
+                workflow = workflow_repo.get_by_name(character_id, workflow_name)
+                if workflow and workflow.is_default:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "rollback": rollback}
+                if not workflow_repo.set_default(character_id, workflow_name):
+                    raise RuntimeError("Workflow not found")
+                return {"success": True, "message": f"Default workflow set to '{workflow_name}'", "rollback": rollback}
+            if operation == "update_config":
+                workflow_id = int(payload.get("workflow_id"))
+                workflow = workflow_repo.get_by_id(workflow_id)
+                if not workflow:
+                    raise RuntimeError("Workflow not found")
+                if (
+                    workflow.trigger_word == payload.get("trigger_word")
+                    and workflow.default_style == payload.get("default_style")
+                    and workflow.negative_prompt == payload.get("negative_prompt")
+                    and workflow.self_description == payload.get("self_description")
+                ):
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "rollback": rollback}
+                updated = workflow_repo.update_config(
+                    workflow_id=workflow_id,
+                    trigger_word=payload.get("trigger_word"),
+                    default_style=payload.get("default_style"),
+                    negative_prompt=payload.get("negative_prompt"),
+                    self_description=payload.get("self_description"),
+                )
+                return {
+                    "success": True,
+                    "message": "Workflow configuration updated",
+                    "workflow": {
+                        "id": updated.id,
+                        "name": updated.workflow_name,
+                        "trigger_word": updated.trigger_word,
+                        "default_style": updated.default_style,
+                        "negative_prompt": updated.negative_prompt,
+                        "self_description": updated.self_description,
+                    },
+                    "rollback": rollback,
+                }
+
+        raise RuntimeError(f"Unsupported workflow operation: {operation}")
+
+    def _rollback_workflow_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        rollback = params.get("rollback_context") or {}
+        return {
+            "attempted": bool(rollback.get("attempted", False)),
+            "success": bool(rollback.get("success", True)),
+            "error": rollback.get("error"),
+            "rollback_kind": rollback.get("rollback_kind"),
+            "rollback_target": rollback.get("rollback_target"),
+        }
+
+    def _diff_core_memories_from_yaml(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.config.loader import ConfigLoader
+        from chorus_engine.models.conversation import Memory, MemoryType
+
+        character_id = params.get("character_id")
+        loader = ConfigLoader()
+        character = loader.load_character(character_id)
+        yaml_items = character.core_memories or []
+        yaml_contents = {(item.content or "").strip() for item in yaml_items if (item.content or "").strip()}
+
+        existing_rows = (
+            db.query(Memory)
+            .filter(Memory.character_id == character_id, Memory.memory_type == MemoryType.CORE)
+            .all()
+        )
+        existing_contents = {(row.content or "").strip() for row in existing_rows if (row.content or "").strip()}
+        to_add = sorted(list(yaml_contents - existing_contents))
+        to_remove = sorted(list(existing_contents - yaml_contents))
+        no_change = len(to_add) == 0 and len(to_remove) == 0
+
+        return {
+            "character_id": character_id,
+            "no_change": no_change,
+            "to_add_count": len(to_add),
+            "to_remove_count": len(to_remove),
+            "fingerprint": self._stable_hash({"add": to_add, "remove": to_remove}),
+        }
+
+    def _apply_core_memory_sync_db(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        from chorus_engine.services.core_memory_loader import CoreMemoryLoader
+
+        character_id = params.get("character_id")
+        diff = params.get("diff_result") or {}
+        if diff.get("no_change"):
+            return {"_ens_action_status": "skipped", "reason": "no_change", "character_id": character_id}
+        loader = CoreMemoryLoader(db)
+        deleted = loader.delete_core_memories(character_id)
+        loaded = loader.load_character_core_memories(character_id)
+        return {"character_id": character_id, "deleted": deleted, "loaded": loaded}
+
+    def _apply_core_memory_sync_vectors(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        diff = params.get("diff_result") or {}
+        if diff.get("no_change"):
+            return {"_ens_action_status": "skipped", "reason": "no_change"}
+        return {
+            "vector_deletions_explicit": True,
+            "idempotent": True,
+            "removed_count": int(diff.get("to_remove_count") or 0),
+            "upsert_count": int(diff.get("to_add_count") or 0),
         }
 
     async def _maybe_update_conversation_title(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:

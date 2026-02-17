@@ -6,6 +6,21 @@
 const API_BASE_URL = window.location.origin;
 
 class API {
+    static _isConfigMutation(endpoint, method) {
+        const m = (method || 'GET').toUpperCase();
+        if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(m)) return false;
+        return (
+            endpoint.startsWith('/system/config') ||
+            endpoint.startsWith('/system/user-identity') ||
+            endpoint.startsWith('/config/system/import') ||
+            endpoint.startsWith('/characters') ||
+            endpoint.includes('/privacy') ||
+            endpoint.includes('/media-offers') ||
+            endpoint.includes('/tts') ||
+            endpoint.includes('/workflows')
+        );
+    }
+
     /**
      * Make a fetch request with error handling
      */
@@ -26,7 +41,13 @@ class API {
                 throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
             }
             
-            return await response.json();
+            const data = await response.json();
+            if (this._isConfigMutation(endpoint, options.method) && window.App && typeof window.App.onPotentialConfigMutation === 'function') {
+                try {
+                    window.App.onPotentialConfigMutation(endpoint, options.method || 'GET', data);
+                } catch (_) {}
+            }
+            return data;
         } catch (error) {
             console.error(`API request failed: ${endpoint}`, error);
             throw error;
@@ -621,7 +642,7 @@ class API {
     }
     
     static async renameWorkflow(characterId, oldName, newName) {
-        return this.request(`/characters/${characterId}/workflows/${oldName}/rename?new_name=${encodeURIComponent(newName)}`, {
+        return this.request(`/characters/${characterId}/workflows/${encodeURIComponent(oldName)}/rename?new_name=${encodeURIComponent(newName)}`, {
             method: 'PUT',
         });
     }
@@ -780,7 +801,13 @@ class API {
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
         
-        return response.json();
+        const data = await response.json();
+        if (window.App && typeof window.App.onPotentialConfigMutation === 'function') {
+            try {
+                window.App.onPotentialConfigMutation('/characters/import', 'POST', data);
+            } catch (_) {}
+        }
+        return data;
     }
     
     static async exportSystemConfig() {
@@ -806,7 +833,13 @@ class API {
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
         
-        return response.json();
+        const data = await response.json();
+        if (window.App && typeof window.App.onPotentialConfigMutation === 'function') {
+            try {
+                window.App.onPotentialConfigMutation('/config/system/import', 'POST', data);
+            } catch (_) {}
+        }
+        return data;
     }
 
     // === User Identity ===
@@ -820,6 +853,18 @@ class API {
             method: 'PUT',
             body: JSON.stringify(identity),
         });
+    }
+
+    static async getConfigDrift() {
+        return this.request('/config/drift');
+    }
+
+    static async reloadSystemConfig() {
+        return this.request('/system/config/reload', { method: 'POST' });
+    }
+
+    static async reloadCharacters() {
+        return this.request('/characters/reload', { method: 'POST' });
     }
     
     // === Logs ===

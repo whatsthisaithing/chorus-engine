@@ -38,8 +38,8 @@ if /i "%~1"=="all" goto :full
 goto :custom
 
 :smoke
-echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py
-%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py
+echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py testing\test_ens_slice4_config_integration.py
+%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py testing\test_ens_slice4_config_integration.py
 goto :done
 
 :full

@@ -7,6 +7,7 @@ import subprocess
 import json
 import hashlib
 import yaml
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -340,6 +341,94 @@ app_state = {
 }
 
 
+def _file_sha256(path: Path) -> Optional[str]:
+    try:
+        if not path.exists():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return None
+
+
+def _config_drift_snapshot() -> Dict[str, Any]:
+    system_path = Path("config/system.yaml")
+    characters_dir = Path("characters")
+    character_hashes: Dict[str, str] = {}
+    if characters_dir.exists():
+        for yaml_file in sorted(characters_dir.glob("*.yaml")):
+            digest = _file_sha256(yaml_file)
+            if digest:
+                character_hashes[yaml_file.name] = digest
+    return {
+        "system_hash": _file_sha256(system_path),
+        "character_hashes": character_hashes,
+        "captured_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _refresh_config_drift_baseline() -> Dict[str, Any]:
+    snapshot = _config_drift_snapshot()
+    app_state["config_drift_baseline"] = snapshot
+    return snapshot
+
+
+def _compute_config_drift() -> Dict[str, Any]:
+    baseline = app_state.get("config_drift_baseline") or _refresh_config_drift_baseline()
+    current = _config_drift_snapshot()
+    baseline_chars = baseline.get("character_hashes") or {}
+    current_chars = current.get("character_hashes") or {}
+
+    system_drifted = baseline.get("system_hash") != current.get("system_hash")
+    added = sorted([name for name in current_chars.keys() if name not in baseline_chars])
+    removed = sorted([name for name in baseline_chars.keys() if name not in current_chars])
+    changed = sorted(
+        [name for name in current_chars.keys() if name in baseline_chars and current_chars[name] != baseline_chars[name]]
+    )
+    drifted = system_drifted or bool(added or removed or changed)
+    return {
+        "drifted": drifted,
+        "system_drifted": system_drifted,
+        "character_changes": {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+        },
+        "baseline": baseline,
+        "current": current,
+    }
+
+
+def _check_and_log_config_drift() -> None:
+    now = time.monotonic()
+    next_check = float(app_state.get("config_drift_next_check", 0.0))
+    if now < next_check:
+        return
+    app_state["config_drift_next_check"] = now + 30.0
+    drift = _compute_config_drift()
+    if not drift.get("drifted"):
+        return
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "system_drifted": drift.get("system_drifted"),
+                "character_changes": drift.get("character_changes"),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    if app_state.get("config_drift_last_warning") == fingerprint:
+        return
+    app_state["config_drift_last_warning"] = fingerprint
+    logger.warning(
+        "[CONFIG_DRIFT] Out-of-band config edits detected. system_drifted=%s added=%s removed=%s changed=%s. "
+        "Use ENS reload endpoints to reconcile runtime state.",
+        drift.get("system_drifted"),
+        len((drift.get("character_changes") or {}).get("added", [])),
+        len((drift.get("character_changes") or {}).get("removed", [])),
+        len((drift.get("character_changes") or {}).get("changed", [])),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
@@ -590,6 +679,7 @@ async def lifespan(app: FastAPI):
         app_state["ens_runtime"] = ENSRuntime(app_state)
         app_state["ens_tool_executor"] = _ens_execute_tool_call
         app_state["ens_scene_preview_executor"] = _ens_scene_preview
+        _refresh_config_drift_baseline()
         
         # Initialize document management service (Phase 1)
         document_manager = DocumentManagementService()
@@ -1206,6 +1296,7 @@ async def activity_tracking_middleware(request, call_next):
     if idle_detector:
         # Record activity with request path for filtering
         idle_detector.record_activity(path=request.url.path)
+    _check_and_log_config_drift()
     
     response = await call_next(request)
     return response
@@ -1894,6 +1985,17 @@ async def set_character_profile_image(character_id: str, request: dict):
     
     if not image_filename:
         raise HTTPException(status_code=400, detail="image_filename is required")
+
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={
+                "operation": "set_profile_image",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "image_filename": image_filename},
+            },
+            assistant_id=character_id,
+        )
     
     # Get source and destination paths
     images_dir = Path(__file__).parent.parent.parent / "data" / "images"
@@ -2025,6 +2127,13 @@ async def create_character(character_data: dict):
     
     Validates that ID doesn't conflict with immutable characters.
     """
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={"operation": "create", "character_id": character_data.get("id"), "payload": {"character_data": character_data}},
+            assistant_id=character_data.get("id"),
+        )
+
     loader = ConfigLoader()
     
     # Validate character data
@@ -2073,6 +2182,13 @@ async def update_character(character_id: str, updates: dict):
     
     Cannot update immutable default characters.
     """
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={"operation": "update", "character_id": character_id, "payload": {"character_id": character_id, "updates": updates}},
+            assistant_id=character_id,
+        )
+
     if character_id in IMMUTABLE_CHARACTERS:
         raise HTTPException(
             status_code=403,
@@ -2121,6 +2237,13 @@ async def delete_character(character_id: str):
     
     Cannot delete immutable default characters.
     """
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={"operation": "delete", "character_id": character_id, "payload": {"character_id": character_id}},
+            assistant_id=character_id,
+        )
+
     if character_id in IMMUTABLE_CHARACTERS:
         raise HTTPException(
             status_code=403,
@@ -2306,25 +2429,49 @@ async def restore_character(
             temp_file_path = Path(temp_file.name)
         
         logger.info(f"Restoring character from uploaded file: {file.filename}")
-        
-        # Initialize restore service
-        restore_service = CharacterRestoreService(db=db)
-        
-        # Restore character
-        result = restore_service.restore_character(
-            backup_file=temp_file_path,
-            new_character_id=new_character_id,
-            rename_if_exists=rename_if_exists,
-            overwrite=overwrite,
-            cleanup_orphans=cleanup_orphans
-        )
-        
-        logger.info(f"Character restored successfully: {result['character_id']}")
-        
-        # Reload characters in app state so it appears immediately
-        from chorus_engine.config.loader import ConfigLoader
-        loader = ConfigLoader()
-        app_state["characters"] = loader.load_all_characters()
+
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.character.change_requested",
+                payload={
+                    "operation": "restore_backup",
+                    "character_id": "restore",
+                    "payload": {
+                        "backup_file": str(temp_file_path),
+                        "new_character_id": new_character_id,
+                        "rename_if_exists": bool(rename_if_exists),
+                        "overwrite": bool(overwrite),
+                        "cleanup_orphans": bool(cleanup_orphans),
+                    },
+                },
+            )
+            result = {
+                "character_id": outcome.get("character_id"),
+                "original_id": outcome.get("original_id"),
+                "renamed": outcome.get("renamed"),
+                "backup_date": outcome.get("backup_date"),
+                "restored_counts": outcome.get("restored_counts", {}),
+                "rebuild_stats": outcome.get("rebuild_stats", {}),
+            }
+        else:
+            # Initialize restore service
+            restore_service = CharacterRestoreService(db=db)
+            
+            # Restore character
+            result = restore_service.restore_character(
+                backup_file=temp_file_path,
+                new_character_id=new_character_id,
+                rename_if_exists=rename_if_exists,
+                overwrite=overwrite,
+                cleanup_orphans=cleanup_orphans
+            )
+            
+            logger.info(f"Character restored successfully: {result['character_id']}")
+            
+            # Reload characters in app state so it appears immediately
+            from chorus_engine.config.loader import ConfigLoader
+            loader = ConfigLoader()
+            app_state["characters"] = loader.load_all_characters()
         
         return {
             "success": True,
@@ -2421,6 +2568,13 @@ async def clone_character(character_id: str, new_id: str):
     
     Creates a new character with the same configuration but a new ID.
     """
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={"operation": "clone", "character_id": character_id, "payload": {"character_id": character_id, "new_id": new_id}},
+            assistant_id=character_id,
+        )
+
     loader = ConfigLoader()
     
     try:
@@ -2532,6 +2686,13 @@ async def import_character(file: UploadFile = File(...)):
         
         if not data:
             raise HTTPException(status_code=400, detail="Empty YAML file")
+
+        if _ens_slice4_enabled():
+            return await _ens_config_change(
+                signal_type="config.character.change_requested",
+                payload={"operation": "import", "character_id": (data or {}).get("id"), "payload": {"character_data": data}},
+                assistant_id=(data or {}).get("id"),
+            )
         
         # Validate character data
         try:
@@ -2698,6 +2859,16 @@ async def confirm_character_card_import(request: dict, db: Session = Depends(get
     
     if not preview_id:
         raise HTTPException(status_code=400, detail="preview_id is required")
+
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.character.change_requested",
+            payload={
+                "operation": "card_import_confirm",
+                "character_id": None,
+                "payload": {"preview_id": preview_id, "custom_name": custom_name},
+            },
+        )
     
     try:
         from chorus_engine.services.character_cards import CharacterCardImporter
@@ -2775,6 +2946,22 @@ async def upload_character_profile_image(
     try:
         # Read image data
         image_data = await file.read()
+
+        if _ens_slice4_enabled():
+            import base64
+
+            return await _ens_config_change(
+                signal_type="config.character.change_requested",
+                payload={
+                    "operation": "upload_profile_image",
+                    "character_id": character_id,
+                    "payload": {
+                        "character_id": character_id,
+                        "image_bytes_b64": base64.b64encode(image_data).decode("ascii"),
+                    },
+                },
+                assistant_id=character_id,
+            )
         
         # Save image
         images_dir = Path("data/character_images")
@@ -2891,6 +3078,19 @@ async def import_system_config(file: UploadFile = File(...)):
         
         if not data:
             raise HTTPException(status_code=400, detail="Empty YAML file")
+
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.system.change_requested",
+                payload={
+                    "operation": "system_config_import",
+                    "payload": {"config": data},
+                },
+            )
+            return {
+                "message": "System configuration imported successfully. Please restart the server for all changes to take effect.",
+                "restart_recommended": bool(outcome.get("restart_required", True)),
+            }
         
         # Validate system config data
         try:
@@ -3264,12 +3464,49 @@ def _ens_flags():
         "slice3_continuity_writes_ownership": bool(
             ens_cfg and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
         ),
+        "slice4_config_ownership": bool(
+            ens_cfg and getattr(ens_cfg, "slice4_config_ownership", False)
+        ),
     }
 
 
 def _ens_slice3_enabled() -> bool:
     flags = _ens_flags()
     return bool(flags.get("enabled") and flags.get("slice3_continuity_writes_ownership"))
+
+
+def _ens_slice4_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice4_config_ownership"))
+
+
+async def _ens_config_change(
+    *,
+    signal_type: str,
+    payload: Dict[str, Any],
+    assistant_id: Optional[str] = None,
+    surface: str = "web",
+    source: str = "web",
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    signal = SignalEnvelope(
+        type=signal_type,
+        scope="SESSION",
+        source="external",
+        assistant_id=assistant_id,
+        payload=payload,
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface,
+            source=source,
+        ),
+    )
+    return dict(outcome.response_payload or {})
 
 
 async def _ens_simple_chat(request: ChatRequest) -> ChatResponse:
@@ -4143,14 +4380,31 @@ async def set_continuity_choice(
     db.commit()
 
     if request.remember_choice:
-        config_loader = ConfigLoader()
-        character = config_loader.load_character(conversation.character_id)
-        character.continuity_preferences.default_mode = request.mode
-        config_loader.save_character(character)
-        try:
-            app_state.get("characters", {})[character.id] = character
-        except Exception:
-            pass
+        if _ens_slice4_enabled():
+            await _ens_config_change(
+                signal_type="config.character.change_requested",
+                payload={
+                    "operation": "update",
+                    "character_id": conversation.character_id,
+                    "payload": {
+                        "updates": {
+                            "continuity_preferences": {
+                                "default_mode": request.mode,
+                            }
+                        }
+                    },
+                },
+                assistant_id=conversation.character_id,
+            )
+        else:
+            config_loader = ConfigLoader()
+            character = config_loader.load_character(conversation.character_id)
+            character.continuity_preferences.default_mode = request.mode
+            config_loader.save_character(character)
+            try:
+                app_state.get("characters", {})[character.id] = character
+            except Exception:
+                pass
 
     return {"success": True, "mode": request.mode}
 
@@ -8780,6 +9034,22 @@ async def reload_character_core_memories(
     """Reload core memories from character YAML configuration."""
     if character_id not in app_state["characters"]:
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.core_memory.sync_requested",
+            payload={"character_id": character_id, "operation": "reload_core_memories"},
+            assistant_id=character_id,
+        )
+        loaded_count = int(outcome.get("loaded") or 0)
+        if outcome.get("reason") == "no_change":
+            loaded_count = 0
+        return {
+            "status": "reloaded",
+            "character_id": character_id,
+            "count": loaded_count,
+            "vectors": outcome.get("vectors", {}),
+        }
     
     # Create a fresh core memory loader
     core_loader = CoreMemoryLoader(db)
@@ -8915,6 +9185,16 @@ async def update_conversation_privacy(
     db: Session = Depends(get_db)
 ):
     """Toggle conversation privacy flag (prevents memory extraction when private)."""
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.conversation.change_requested",
+            payload={
+                "operation": "privacy_update",
+                "conversation_id": conversation_id,
+                "payload": {"conversation_id": conversation_id, "is_private": request.is_private},
+            },
+        )
+
     conv_repo = ConversationRepository(db)
     conversation = conv_repo.set_private(conversation_id, request.is_private)
     
@@ -8968,6 +9248,20 @@ async def update_conversation_media_offers(
     db: Session = Depends(get_db)
 ):
     """Update conversation-level proactive media offer settings."""
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.conversation.change_requested",
+            payload={
+                "operation": "media_offers_update",
+                "conversation_id": conversation_id,
+                "payload": {
+                    "conversation_id": conversation_id,
+                    "allow_image_offers": request.allow_image_offers,
+                    "allow_video_offers": request.allow_video_offers,
+                },
+            },
+        )
+
     conv_repo = ConversationRepository(db)
     conversation = conv_repo.get_by_id(conversation_id)
     if not conversation:
@@ -10922,6 +11216,16 @@ async def update_conversation_tts(
     from chorus_engine.repositories import ConversationRepository
     
     try:
+        if _ens_slice4_enabled():
+            return await _ens_config_change(
+                signal_type="config.conversation.change_requested",
+                payload={
+                    "operation": "tts_update",
+                    "conversation_id": conversation_id,
+                    "payload": {"conversation_id": conversation_id, "enabled": request.enabled},
+                },
+            )
+
         conv_repo = ConversationRepository(db)
         conversation = conv_repo.get_by_id(conversation_id)
         
@@ -11053,6 +11357,22 @@ async def upload_workflow(
     character = app_state["characters"].get(character_id)
     if not character:
         raise HTTPException(status_code=404, detail="Character not found")
+
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.workflow.change_requested",
+            payload={
+                "operation": "upload",
+                "character_id": character_id,
+                "payload": {
+                    "character_id": character_id,
+                    "workflow_name": workflow_name,
+                    "workflow_type": workflow_type,
+                    "workflow_data": workflow_data,
+                },
+            },
+            assistant_id=character_id,
+        )
     
     try:
         # Map string to WorkflowType enum
@@ -11104,6 +11424,17 @@ async def upload_workflow(
 @app.delete("/characters/{character_id}/workflows/{workflow_name}")
 async def delete_workflow(character_id: str, workflow_name: str, db: Session = Depends(get_db)):
     """Delete a workflow file (Phase 6.5: supports type-based folders)."""
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.workflow.change_requested",
+            payload={
+                "operation": "delete",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "workflow_name": workflow_name},
+            },
+            assistant_id=character_id,
+        )
+
     from chorus_engine.repositories import WorkflowRepository
     
     try:
@@ -11148,17 +11479,45 @@ async def rename_workflow(
     db: Session = Depends(get_db)
 ):
     """Rename a workflow file."""
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.workflow.change_requested",
+            payload={
+                "operation": "rename",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "old_name": old_name, "new_name": new_name},
+            },
+            assistant_id=character_id,
+        )
+
     from chorus_engine.repositories import WorkflowRepository
     
     try:
         # Update database
         workflow_repo = WorkflowRepository(db)
+        workflow = workflow_repo.get_by_name(character_id, old_name)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
         if not workflow_repo.rename(character_id, old_name, new_name):
             raise HTTPException(status_code=404, detail="Workflow not found")
-        
-        # Rename file
-        workflow_manager = WorkflowManager()
-        workflow_manager.rename_workflow(character_id, old_name, new_name)
+
+        # Rename file using typed folder layout (with legacy fallback).
+        workflow_type = workflow.workflow_type if hasattr(workflow, "workflow_type") else "image"
+        old_path = Path(f"workflows/{character_id}/{workflow_type}/{old_name}.json")
+        new_path = Path(f"workflows/{character_id}/{workflow_type}/{new_name}.json")
+        if not old_path.exists():
+            legacy_old_path = Path(f"workflows/{character_id}/{old_name}.json")
+            legacy_new_path = Path(f"workflows/{character_id}/{new_name}.json")
+            if legacy_old_path.exists():
+                old_path = legacy_old_path
+                new_path = legacy_new_path
+        if not old_path.exists():
+            raise HTTPException(status_code=404, detail=f"Workflow file not found: {old_name}")
+        if new_path.exists():
+            raise HTTPException(status_code=400, detail=f"Workflow already exists: {new_name}")
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path.rename(new_path)
         
         return {
             "success": True,
@@ -11188,6 +11547,17 @@ async def set_default_workflow(
     character = app_state["characters"].get(character_id)
     if not character:
         raise HTTPException(status_code=404, detail="Character not found")
+
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.workflow.change_requested",
+            payload={
+                "operation": "set_default",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "workflow_name": workflow_name},
+            },
+            assistant_id=character_id,
+        )
     
     try:
         workflow_repo = WorkflowRepository(db)
@@ -11228,6 +11598,22 @@ async def update_workflow_config(
         workflow_id: Workflow ID
         config: Configuration update data
     """
+    if _ens_slice4_enabled():
+        return await _ens_config_change(
+            signal_type="config.workflow.change_requested",
+            payload={
+                "operation": "update_config",
+                "character_id": None,
+                "payload": {
+                    "workflow_id": workflow_id,
+                    "trigger_word": config.trigger_word,
+                    "default_style": config.default_style,
+                    "negative_prompt": config.negative_prompt,
+                    "self_description": config.self_description,
+                },
+            },
+        )
+
     from chorus_engine.repositories import WorkflowRepository
     
     try:
@@ -11788,6 +12174,23 @@ async def update_user_identity(request: UserIdentityUpdateRequest):
     Update user identity in system.yaml without restarting the server.
     """
     try:
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.system.change_requested",
+                payload={
+                    "operation": "user_identity_update",
+                    "payload": {
+                        "display_name": request.display_name or "",
+                        "aliases": request.aliases or [],
+                    },
+                },
+            )
+            identity = ((outcome.get("after") or {}).get("user_identity") if isinstance(outcome.get("after"), dict) else None) or {
+                "display_name": request.display_name or "",
+                "aliases": request.aliases or [],
+            }
+            return {"success": True, "user_identity": identity}
+
         config_path = Path(__file__).parent.parent.parent / "config" / "system.yaml"
         config_data = {}
         
@@ -11839,6 +12242,93 @@ async def get_system_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/config/drift")
+async def get_config_drift_status():
+    """Report out-of-band config drift against the last ENS-applied baseline."""
+    try:
+        drift = _compute_config_drift()
+        return {
+            "drifted": bool(drift.get("drifted")),
+            "system_drifted": bool(drift.get("system_drifted")),
+            "character_changes": drift.get("character_changes", {}),
+            "baseline_captured_at": (drift.get("baseline") or {}).get("captured_at"),
+            "current_captured_at": (drift.get("current") or {}).get("captured_at"),
+        }
+    except Exception as e:
+        logger.error(f"Failed to compute config drift: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/system/config/reload")
+async def reload_system_config_from_disk():
+    """Reload system.yaml into runtime state."""
+    try:
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.system.change_requested",
+                payload={"operation": "reload_from_disk", "payload": {}},
+            )
+            _refresh_config_drift_baseline()
+            app_state["config_drift_last_warning"] = None
+            drift_after = _compute_config_drift()
+            return {
+                "success": True,
+                "reloaded": outcome.get("reason") != "no_change",
+                "restart_required": bool(outcome.get("restart_required", False)),
+                "drift_cleared": not bool(drift_after.get("drifted")),
+            }
+
+        loader = ConfigLoader()
+        app_state["system_config"] = loader.load_system_config()
+        _refresh_config_drift_baseline()
+        app_state["config_drift_last_warning"] = None
+        drift_after = _compute_config_drift()
+        return {
+            "success": True,
+            "reloaded": True,
+            "restart_required": False,
+            "drift_cleared": not bool(drift_after.get("drifted")),
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload system config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/characters/reload")
+async def reload_characters_from_disk():
+    """Reload all character YAML files into runtime state."""
+    try:
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.character.change_requested",
+                payload={"operation": "reload_runtime_only", "character_id": "all", "payload": {}},
+            )
+            _refresh_config_drift_baseline()
+            app_state["config_drift_last_warning"] = None
+            drift_after = _compute_config_drift()
+            return {
+                "success": True,
+                "reloaded": bool(outcome.get("runtime_reloaded", True)),
+                "character_count": len(app_state.get("characters") or {}),
+                "drift_cleared": not bool(drift_after.get("drifted")),
+            }
+
+        loader = ConfigLoader()
+        app_state["characters"] = loader.load_all_characters()
+        _refresh_config_drift_baseline()
+        app_state["config_drift_last_warning"] = None
+        drift_after = _compute_config_drift()
+        return {
+            "success": True,
+            "reloaded": True,
+            "character_count": len(app_state.get("characters") or {}),
+            "drift_cleared": not bool(drift_after.get("drifted")),
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload characters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/system/config")
 async def update_system_config(config: dict):
     """
@@ -11848,6 +12338,16 @@ async def update_system_config(config: dict):
     All active connections will be closed.
     """
     try:
+        if _ens_slice4_enabled():
+            outcome = await _ens_config_change(
+                signal_type="config.system.change_requested",
+                payload={"operation": "system_config_update", "payload": {"config": config}},
+            )
+            if outcome.get("restart_required"):
+                asyncio.create_task(restart_server())
+                return {"success": True, "message": "Configuration saved, server restarting..."}
+            return {"success": True, "message": "Configuration saved"}
+
         # Validate model path for integrated provider (Phase 10)
         if config.get('llm', {}).get('provider') == 'integrated':
             model_path = config.get('llm', {}).get('model')

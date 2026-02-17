@@ -543,6 +543,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns continuity-affecting writes (summaries, memories, pins, continuity state)",
     )
+    slice4_config_ownership: bool = Field(
+        default=False,
+        description="ENS owns config/control-plane writes (system, character, conversation toggles, workflows, core-memory sync)",
+    )
 
 
 class SystemConfig(BaseModel):
