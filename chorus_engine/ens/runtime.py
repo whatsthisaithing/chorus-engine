@@ -965,6 +965,17 @@ class ENSRuntime:
                 ),
             ]
 
+        if signal.type == "surface.send_message_requested":
+            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+            if not bool(ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice65_egress_outbox_ownership", False)):
+                return []
+            return [
+                ENSAction(
+                    kind="surface.egress.persist_intent",
+                    params=dict(signal.payload),
+                )
+            ]
+
         return []
 
     def _build_outcome(
@@ -1073,6 +1084,9 @@ class ENSRuntime:
             response_payload = dict((db_result or {}).get("output") or {})
             if vector_result:
                 response_payload["vectors"] = dict((vector_result or {}).get("output") or {})
+        elif signal.type == "surface.send_message_requested":
+            intent_result = next((r for r in action_results if r.get("kind") == "surface.egress.persist_intent"), None)
+            response_payload = dict((intent_result or {}).get("output") or {})
 
         return ENSOutcome(
             decision_id=decision_id,

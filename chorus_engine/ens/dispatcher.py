@@ -20,7 +20,12 @@ from sqlalchemy.orm import Session
 
 from chorus_engine.models.conversation import MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
-from chorus_engine.repositories import ConversationRepository, MessageRepository, ThreadRepository
+from chorus_engine.repositories import (
+    ConversationRepository,
+    MessageRepository,
+    SurfaceEgressIntentRepository,
+    ThreadRepository,
+)
 from chorus_engine.repositories.memory_repository import MemoryRepository
 from chorus_engine.repositories.moment_pin_repository import MomentPinRepository
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
@@ -51,6 +56,7 @@ from chorus_engine.services.structured_response import (
     template_rules,
 )
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
+from chorus_engine.ens.surface_identity import canonicalize_surface_id
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +256,8 @@ class ENSDispatcher:
                 output = self._apply_core_memory_sync_db(db, action.params)
             elif action.kind == "config.core_memory.apply_vectors":
                 output = self._apply_core_memory_sync_vectors(db, action.params)
+            elif action.kind == "surface.egress.persist_intent":
+                output = self._persist_surface_egress_intent(db, action.params)
             else:
                 raise ValueError(f"Unsupported action kind: {action.kind}")
 
@@ -951,6 +959,64 @@ class ENSDispatcher:
             return f"msg:user:{session_id}:{client_message_id}"
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:20]
         return f"msg:user:{session_id}:{digest}"
+
+    @staticmethod
+    def surface_egress_idempotency_key(
+        *,
+        surface_id: str,
+        surface_instance_id: Optional[str],
+        external_thread_id: str,
+        in_reply_to_message_id: Optional[str],
+        payload_json: Optional[Dict[str, Any]],
+    ) -> str:
+        normalized_instance = SurfaceEgressIntentRepository.normalize_surface_instance_id(surface_instance_id)
+        payload = payload_json or {}
+        text = str(payload.get("text") or "")
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        reply_key = str(in_reply_to_message_id or "na")
+        return (
+            f"egress:{surface_id}:{normalized_instance}:{external_thread_id}:{reply_key}:{content_hash}"
+        )
+
+    def _persist_surface_egress_intent(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        repo = SurfaceEgressIntentRepository(db)
+        surface_id = canonicalize_surface_id(params.get("surface_id") or "unknown")
+        surface_instance_id = params.get("surface_instance_id")
+        external_thread_id = str(params.get("external_thread_id") or "")
+        if not external_thread_id:
+            raise RuntimeError("external_thread_id is required")
+        payload_json = dict(params.get("payload_json") or {})
+        if payload_json.get("content_type") != "text":
+            raise RuntimeError("Only content_type=text is supported in slice 6.5")
+        idempotency_key = str(params.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            idempotency_key = self.surface_egress_idempotency_key(
+                surface_id=surface_id,
+                surface_instance_id=surface_instance_id,
+                external_thread_id=external_thread_id,
+                in_reply_to_message_id=params.get("in_reply_to_message_id"),
+                payload_json=payload_json,
+            )
+        trace_json = dict(params.get("trace_json") or {})
+        intent, created = repo.create_or_replay(
+            surface_id=surface_id,
+            surface_instance_id=surface_instance_id,
+            external_thread_id=external_thread_id,
+            relationship_id=params.get("relationship_id"),
+            conversation_id=params.get("conversation_id"),
+            thread_id=params.get("thread_id"),
+            in_reply_to_message_id=params.get("in_reply_to_message_id"),
+            payload_json=payload_json,
+            idempotency_key=idempotency_key,
+            trace_json=trace_json,
+        )
+        return {
+            "intent_id": intent.id,
+            "status": intent.status,
+            "idempotency_key": intent.idempotency_key,
+            "created": bool(created),
+            "replayed": not bool(created),
+        }
 
     def _persist_pending_tool_calls(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         explicit_tool = params.get("tool_call")

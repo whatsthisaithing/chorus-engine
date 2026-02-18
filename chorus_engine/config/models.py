@@ -551,6 +551,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns normalized surface routing via canonical binding resolution",
     )
+    slice65_egress_outbox_ownership: bool = Field(
+        default=False,
+        description="ENS owns normalized surface egress outbox intent persistence",
+    )
 
 
 class SystemConfig(BaseModel):

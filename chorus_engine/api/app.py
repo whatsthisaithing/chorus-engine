@@ -33,6 +33,7 @@ from chorus_engine.repositories import (
     MessageRepository,
     MemoryRepository,
     MomentPinRepository,
+    SurfaceEgressIntentRepository,
 )
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.services.core_memory_loader import CoreMemoryLoader
@@ -3472,6 +3473,9 @@ def _ens_flags():
         "slice6_surface_routing_ownership": bool(
             ens_cfg and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
         ),
+        "slice65_egress_outbox_ownership": bool(
+            ens_cfg and getattr(ens_cfg, "slice65_egress_outbox_ownership", False)
+        ),
     }
 
 
@@ -3488,6 +3492,11 @@ def _ens_slice4_enabled() -> bool:
 def _ens_slice6_enabled() -> bool:
     flags = _ens_flags()
     return bool(flags.get("enabled") and flags.get("slice6_surface_routing_ownership"))
+
+
+def _ens_slice65_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice65_egress_outbox_ownership"))
 
 
 def _build_surface_envelope_fields(
@@ -3634,6 +3643,34 @@ async def _ens_admin_change(
             surface=surface,
             source=source,
             data={"domain": "admin"},
+        ),
+    )
+    return dict(outcome.response_payload or {})
+
+
+async def _ens_surface_send_request(
+    *,
+    payload: Dict[str, Any],
+    surface: str = "web",
+    source: str = "web",
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    signal = SignalEnvelope(
+        type="surface.send_message_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=payload.get("assistant_id"),
+        payload=payload,
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface,
+            source=source,
+            data={"domain": "egress"},
         ),
     )
     return dict(outcome.response_payload or {})
@@ -12012,6 +12049,138 @@ async def update_workflow_config(
     except Exception as e:
         logger.error(f"Failed to update workflow config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class EgressIntentCreateRequest(BaseModel):
+    surface_id: str
+    external_thread_id: str
+    payload_json: Dict[str, Any]
+    surface_instance_id: Optional[str] = None
+    relationship_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    in_reply_to_message_id: Optional[str] = None
+    assistant_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    trace_json: Optional[Dict[str, Any]] = None
+
+
+class EgressIntentAckRequest(BaseModel):
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class EgressIntentFailRequest(BaseModel):
+    error: str
+
+
+def _ensure_slice65_enabled_or_404() -> None:
+    if not _ens_slice65_enabled():
+        raise HTTPException(status_code=404, detail="Egress outbox is not enabled")
+
+
+@app.get("/egress/intents")
+async def list_egress_intents(
+    surface_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    _ensure_slice65_enabled_or_404()
+    repo = SurfaceEgressIntentRepository(db)
+    normalized_surface = canonicalize_surface_id(surface_id) if surface_id else None
+    intents = repo.list_intents(surface_id=normalized_surface, status=status, limit=limit)
+    rows = []
+    for row in intents:
+        rows.append(
+            {
+                "id": row.id,
+                "surface_id": row.surface_id,
+                "surface_instance_id": row.surface_instance_id,
+                "external_thread_id": row.external_thread_id,
+                "relationship_id": row.relationship_id,
+                "conversation_id": row.conversation_id,
+                "thread_id": row.thread_id,
+                "in_reply_to_message_id": row.in_reply_to_message_id,
+                "payload_json": row.payload_json,
+                "status": row.status,
+                "attempt_count": row.attempt_count,
+                "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
+                "last_error": row.last_error,
+                "idempotency_key": row.idempotency_key,
+                "trace_json": row.trace_json,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+        )
+    return {"intents": rows, "count": len(rows)}
+
+
+@app.post("/egress/intents/{intent_id}/ack")
+async def ack_egress_intent(
+    intent_id: str,
+    request: EgressIntentAckRequest,
+    db: Session = Depends(get_db),
+):
+    _ensure_slice65_enabled_or_404()
+    repo = SurfaceEgressIntentRepository(db)
+    row = repo.ack_delivered(intent_id, metadata=request.metadata)
+    if not row:
+        raise HTTPException(status_code=404, detail="Intent not found")
+    return {
+        "intent_id": row.id,
+        "status": row.status,
+        "attempt_count": row.attempt_count,
+        "last_error": row.last_error,
+    }
+
+
+@app.post("/egress/intents/{intent_id}/fail")
+async def fail_egress_intent(
+    intent_id: str,
+    request: EgressIntentFailRequest,
+    db: Session = Depends(get_db),
+):
+    _ensure_slice65_enabled_or_404()
+    repo = SurfaceEgressIntentRepository(db)
+    row = repo.mark_failed(intent_id, error=request.error)
+    if not row:
+        raise HTTPException(status_code=404, detail="Intent not found")
+    return {
+        "intent_id": row.id,
+        "status": row.status,
+        "attempt_count": row.attempt_count,
+        "last_error": row.last_error,
+    }
+
+
+@app.post("/debug/egress/send-intent")
+async def debug_create_egress_intent(
+    request: EgressIntentCreateRequest,
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+):
+    _ensure_admin_access(x_admin_token)
+    _ensure_slice65_enabled_or_404()
+    payload = {
+        "surface_id": canonicalize_surface_id(request.surface_id),
+        "surface_instance_id": request.surface_instance_id,
+        "external_thread_id": str(request.external_thread_id),
+        "relationship_id": request.relationship_id,
+        "conversation_id": request.conversation_id,
+        "thread_id": request.thread_id,
+        "in_reply_to_message_id": request.in_reply_to_message_id,
+        "payload_json": request.payload_json,
+        "assistant_id": request.assistant_id,
+        "idempotency_key": request.idempotency_key,
+        "trace_json": request.trace_json or {},
+    }
+    if not isinstance(request.payload_json, dict):
+        raise HTTPException(status_code=400, detail="payload_json must be an object")
+    result = await _ens_surface_send_request(
+        payload=payload,
+        surface=payload["surface_id"],
+        source=payload["surface_id"],
+    )
+    return result
 
 
 @app.post("/reset")

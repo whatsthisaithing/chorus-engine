@@ -246,6 +246,7 @@ ens:
   slice3_continuity_writes_ownership: false
   slice4_config_ownership: false
   slice6_surface_routing_ownership: false  # DEV-ONLY rollout flag (surface binding resolver ownership)
+  slice65_egress_outbox_ownership: false  # DEV-ONLY rollout flag (surface egress outbox ownership)
 
 # Startup synchronization
 startup:

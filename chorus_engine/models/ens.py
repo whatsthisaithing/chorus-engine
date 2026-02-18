@@ -123,3 +123,32 @@ class SurfaceBinding(Base):
             unique=True,
         ),
     )
+
+
+class SurfaceEgressIntent(Base):
+    """Durable outbound surface delivery intent (ENS outbox)."""
+
+    __tablename__ = "surface_egress_intents"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    surface_id = Column(String(20), nullable=False, index=True)
+    surface_instance_id = Column(String(100), nullable=False, default="", index=True)
+    external_thread_id = Column(String(255), nullable=False, index=True)
+    relationship_id = Column(String(36), nullable=True, index=True)
+    conversation_id = Column(String(36), nullable=True, index=True)
+    thread_id = Column(String(36), nullable=True, index=True)
+    in_reply_to_message_id = Column(String(36), nullable=True, index=True)
+    payload_json = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    idempotency_key = Column(String(255), nullable=False, index=True)
+    trace_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_surface_egress_intents_idempotency_key", "idempotency_key", unique=True),
+        Index("ix_surface_egress_intents_status_surface", "status", "surface_id"),
+    )
