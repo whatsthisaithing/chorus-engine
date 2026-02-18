@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-CANONICAL_SURFACE_IDS = {"web", "discord", "telegram", "voice", "unknown"}
+from chorus_engine.ens.surface_identity import canonicalize_surface_id
 
 SYSTEM_METADATA_KEYS = {
     # Moderation (note: `system.hidden` is currently reserved metadata only;
@@ -37,13 +37,6 @@ PROVENANCE_WRITE_ONCE_KEYS = {
     "system.external_message_id",
     "system.client_message_id",
 }
-
-
-def canonicalize_surface_id(surface_id: Any) -> str:
-    value = str(surface_id or "").strip().lower()
-    if value in CANONICAL_SURFACE_IDS:
-        return value
-    return "unknown"
 
 
 def sanitize_metadata_patch(

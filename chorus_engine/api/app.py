@@ -121,6 +121,7 @@ from chorus_engine.services.intent_detection_service import IntentDetectionServi
 # Phase 10 imports (Integrated LLM)
 from chorus_engine.api.model_routes import router as model_router
 from chorus_engine.ens import ENSRuntime, ENSContext, SignalEnvelope
+from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.media_generation import ENSMediaGenerator
 
 logger = logging.getLogger(__name__)
@@ -3468,6 +3469,9 @@ def _ens_flags():
         "slice4_config_ownership": bool(
             ens_cfg and getattr(ens_cfg, "slice4_config_ownership", False)
         ),
+        "slice6_surface_routing_ownership": bool(
+            ens_cfg and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
+        ),
     }
 
 
@@ -3479,6 +3483,33 @@ def _ens_slice3_enabled() -> bool:
 def _ens_slice4_enabled() -> bool:
     flags = _ens_flags()
     return bool(flags.get("enabled") and flags.get("slice4_config_ownership"))
+
+
+def _ens_slice6_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice6_surface_routing_ownership"))
+
+
+def _build_surface_envelope_fields(
+    *,
+    thread_id: str,
+    conversation_source: Optional[str],
+    metadata: Optional[dict],
+    speaker_role: str,
+    target_hint_default: str = "general_chat",
+) -> Dict[str, Any]:
+    meta = metadata or {}
+    surface_id = canonicalize_surface_id(conversation_source or "web")
+    return {
+        "surface_id": surface_id,
+        "surface_instance_id": meta.get("surface_instance_id"),
+        "external_thread_id": str(meta.get("external_thread_id") or thread_id),
+        "speaker_external_id": meta.get("speaker_external_id") or meta.get("discord_user_id"),
+        "speaker_role": speaker_role,
+        "relationship_hint": meta.get("relationship_hint"),
+        "target_hint": meta.get("target_hint") or target_hint_default,
+        "message_external_id": meta.get("external_message_id"),
+    }
 
 
 async def _ens_config_change(
@@ -3652,11 +3683,26 @@ async def _ens_thread_chat(
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
+    conversation_source = request.conversation_source or conversation.source or "web"
+    surface_fields = _build_surface_envelope_fields(
+        thread_id=thread_id,
+        conversation_source=conversation_source,
+        metadata=request.metadata,
+        speaker_role="user",
+    )
     signal = SignalEnvelope(
         type="user.message",
         scope="SESSION",
         source="external",
         assistant_id=character_id,
+        surface_id=surface_fields["surface_id"],
+        surface_instance_id=surface_fields["surface_instance_id"],
+        external_thread_id=surface_fields["external_thread_id"],
+        speaker_external_id=surface_fields["speaker_external_id"],
+        speaker_role=surface_fields["speaker_role"],
+        relationship_hint=surface_fields["relationship_hint"],
+        target_hint=surface_fields["target_hint"],
+        message_external_id=surface_fields["message_external_id"],
         payload={
             "thread_id": thread_id,
             "conversation_id": conversation.id,
@@ -3664,17 +3710,25 @@ async def _ens_thread_chat(
             "metadata": request.metadata,
             "is_private": conversation.is_private == "true",
             "client_message_id": (request.metadata or {}).get("client_message_id"),
-            "conversation_source": request.conversation_source or conversation.source or "web",
+            "conversation_source": conversation_source,
             "image_attachment_ids": request.image_attachment_ids or [],
+            "surface_id": surface_fields["surface_id"],
+            "surface_instance_id": surface_fields["surface_instance_id"],
+            "external_thread_id": surface_fields["external_thread_id"],
+            "speaker_external_id": surface_fields["speaker_external_id"],
+            "speaker_role": surface_fields["speaker_role"],
+            "relationship_hint": surface_fields["relationship_hint"],
+            "target_hint": surface_fields["target_hint"],
+            "message_external_id": surface_fields["message_external_id"],
         },
-        tags=["latency_sensitive"] if (request.conversation_source or conversation.source) == "voice" else [],
+        tags=["latency_sensitive"] if conversation_source == "voice" else [],
     )
     outcome = await runtime.ingest(
         signal,
         ENSContext(
             app_state=app_state,
-            surface=request.conversation_source or conversation.source or "web",
-            source=request.conversation_source or conversation.source or "web",
+            surface=conversation_source,
+            source=conversation_source,
         ),
     )
 
@@ -3758,11 +3812,26 @@ async def _ens_nonstream_intake_only(
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
+    conversation_source = request.conversation_source or conversation.source or "web"
+    surface_fields = _build_surface_envelope_fields(
+        thread_id=thread_id,
+        conversation_source=conversation_source,
+        metadata=request.metadata,
+        speaker_role="user",
+    )
     signal = SignalEnvelope(
         type="user.message.nonstream_intake",
         scope="SESSION",
         source="external",
         assistant_id=character_id,
+        surface_id=surface_fields["surface_id"],
+        surface_instance_id=surface_fields["surface_instance_id"],
+        external_thread_id=surface_fields["external_thread_id"],
+        speaker_external_id=surface_fields["speaker_external_id"],
+        speaker_role=surface_fields["speaker_role"],
+        relationship_hint=surface_fields["relationship_hint"],
+        target_hint=surface_fields["target_hint"],
+        message_external_id=surface_fields["message_external_id"],
         payload={
             "thread_id": thread_id,
             "conversation_id": conversation.id,
@@ -3770,8 +3839,14 @@ async def _ens_nonstream_intake_only(
             "metadata": request.metadata,
             "is_private": conversation.is_private == "true",
             "client_message_id": (request.metadata or {}).get("client_message_id"),
-            "speaker_external_id": (request.metadata or {}).get("discord_user_id"),
-            "speaker_role": "user",
+            "speaker_external_id": surface_fields["speaker_external_id"],
+            "speaker_role": surface_fields["speaker_role"],
+            "surface_id": surface_fields["surface_id"],
+            "surface_instance_id": surface_fields["surface_instance_id"],
+            "external_thread_id": surface_fields["external_thread_id"],
+            "relationship_hint": surface_fields["relationship_hint"],
+            "target_hint": surface_fields["target_hint"],
+            "message_external_id": surface_fields["message_external_id"],
             "latency_sensitive": False,
         },
     )
@@ -3779,8 +3854,8 @@ async def _ens_nonstream_intake_only(
         signal,
         ENSContext(
             app_state=app_state,
-            surface=request.conversation_source or conversation.source or "web",
-            source=request.conversation_source or conversation.source or "web",
+            surface=conversation_source,
+            source=conversation_source,
         ),
     )
 
@@ -3796,21 +3871,43 @@ async def _ens_history_message_add(
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
+    message_metadata = message.get("metadata") or {}
+    conversation_source = conversation.source or "web"
+    surface_fields = _build_surface_envelope_fields(
+        thread_id=thread_id,
+        conversation_source=conversation_source,
+        metadata=message_metadata,
+        speaker_role="assistant" if message.get("role") == "assistant" else "user",
+    )
     signal = SignalEnvelope(
         type="external.history.message",
         scope="SESSION",
         source="external",
         assistant_id=conversation.character_id,
+        surface_id=surface_fields["surface_id"],
+        surface_instance_id=surface_fields["surface_instance_id"],
+        external_thread_id=surface_fields["external_thread_id"],
+        speaker_external_id=surface_fields["speaker_external_id"],
+        speaker_role=surface_fields["speaker_role"],
+        relationship_hint=surface_fields["relationship_hint"],
+        target_hint=surface_fields["target_hint"],
+        message_external_id=surface_fields["message_external_id"],
         payload={
             "thread_id": thread_id,
             "conversation_id": conversation.id,
             "content": message.get("content"),
             "role": message.get("role", "user"),
-            "metadata": message.get("metadata", {}),
+            "metadata": message_metadata,
             "is_private": conversation.is_private == "true",
-            "client_message_id": (message.get("metadata") or {}).get("client_message_id"),
-            "speaker_external_id": (message.get("metadata") or {}).get("discord_user_id"),
-            "speaker_role": "assistant" if message.get("role") == "assistant" else "user",
+            "client_message_id": message_metadata.get("client_message_id"),
+            "speaker_external_id": surface_fields["speaker_external_id"],
+            "speaker_role": surface_fields["speaker_role"],
+            "surface_id": surface_fields["surface_id"],
+            "surface_instance_id": surface_fields["surface_instance_id"],
+            "external_thread_id": surface_fields["external_thread_id"],
+            "relationship_hint": surface_fields["relationship_hint"],
+            "target_hint": surface_fields["target_hint"],
+            "message_external_id": surface_fields["message_external_id"],
             "image_attachment_ids": message.get("image_attachment_ids") or [],
         },
     )
@@ -3818,8 +3915,8 @@ async def _ens_history_message_add(
         signal,
         ENSContext(
             app_state=app_state,
-            surface=conversation.source or "web",
-            source=conversation.source or "web",
+            surface=conversation_source,
+            source=conversation_source,
         ),
     )
 
@@ -7175,11 +7272,26 @@ async def send_message_stream(
     flags = _ens_flags()
     if flags["enabled"] and flags["streaming_intake_only"]:
         try:
+            conversation_source = request.conversation_source or conversation.source or "web"
+            surface_fields = _build_surface_envelope_fields(
+                thread_id=thread_id,
+                conversation_source=conversation_source,
+                metadata=request.metadata,
+                speaker_role="user",
+            )
             intake_signal = SignalEnvelope(
                 type="user.message.stream_intake",
                 scope="SESSION",
                 source="external",
                 assistant_id=character_id,
+                surface_id=surface_fields["surface_id"],
+                surface_instance_id=surface_fields["surface_instance_id"],
+                external_thread_id=surface_fields["external_thread_id"],
+                speaker_external_id=surface_fields["speaker_external_id"],
+                speaker_role=surface_fields["speaker_role"],
+                relationship_hint=surface_fields["relationship_hint"],
+                target_hint=surface_fields["target_hint"],
+                message_external_id=surface_fields["message_external_id"],
                 payload={
                     "thread_id": thread_id,
                     "conversation_id": conversation.id,
@@ -7187,8 +7299,14 @@ async def send_message_stream(
                     "metadata": request.metadata,
                     "is_private": conversation.is_private == "true",
                     "client_message_id": (request.metadata or {}).get("client_message_id"),
-                    "speaker_external_id": (request.metadata or {}).get("discord_user_id"),
-                    "speaker_role": "user",
+                    "speaker_external_id": surface_fields["speaker_external_id"],
+                    "speaker_role": surface_fields["speaker_role"],
+                    "surface_id": surface_fields["surface_id"],
+                    "surface_instance_id": surface_fields["surface_instance_id"],
+                    "external_thread_id": surface_fields["external_thread_id"],
+                    "relationship_hint": surface_fields["relationship_hint"],
+                    "target_hint": surface_fields["target_hint"],
+                    "message_external_id": surface_fields["message_external_id"],
                     "latency_sensitive": True,
                 },
             )
@@ -7196,8 +7314,8 @@ async def send_message_stream(
                 intake_signal,
                 ENSContext(
                     app_state=app_state,
-                    surface=request.conversation_source or conversation.source or "web",
-                    source=request.conversation_source or conversation.source or "web",
+                    surface=conversation_source,
+                    source=conversation_source,
                 ),
             )
         except Exception as e:

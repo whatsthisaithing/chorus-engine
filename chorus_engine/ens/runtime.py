@@ -17,6 +17,8 @@ from chorus_engine.ens.models import ENSAction, ENSOutcome, SignalEnvelope
 from chorus_engine.ens.dispatcher import ENSDispatcher
 from chorus_engine.ens.decision_store import ENSDecisionStore
 from chorus_engine.ens.session_registry import ENSSessionRegistry
+from chorus_engine.ens.surface_identity import canonicalize_surface_id
+from chorus_engine.ens.surface_router import SurfaceRouter
 from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MessageRole
 
 logger = logging.getLogger(__name__)
@@ -402,16 +404,46 @@ class ENSRuntime:
 
     def _resolve_signal_session(self, db, signal: SignalEnvelope, ctx: ENSContext) -> SignalEnvelope:
         if signal.scope == "SESSION" and not signal.session_id:
+            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+            slice6_enabled = bool(
+                ens_cfg
+                and getattr(ens_cfg, "enabled", False)
+                and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
+            )
             thread_id = signal.payload.get("thread_id")
             assistant_id = signal.assistant_id or signal.payload.get("assistant_id")
+            if slice6_enabled and assistant_id:
+                surface_id = signal.surface_id or signal.payload.get("surface_id") or ctx.surface or signal.source
+                source = canonicalize_surface_id(surface_id)
+                external_thread_id = signal.external_thread_id or signal.payload.get("external_thread_id") or thread_id
+                resolver = SurfaceRouter(db)
+                resolved = resolver.resolve(
+                    assistant_id=assistant_id,
+                    surface_id=source,
+                    surface_instance_id=signal.surface_instance_id or signal.payload.get("surface_instance_id"),
+                    external_thread_id=external_thread_id,
+                    relationship_hint=signal.relationship_hint or signal.payload.get("relationship_hint"),
+                    target_hint=signal.target_hint or signal.payload.get("target_hint"),
+                    conversation_id_hint=signal.payload.get("conversation_id"),
+                    thread_id_hint=thread_id,
+                )
+                signal.payload["conversation_id"] = resolved.conversation_id
+                signal.payload["thread_id"] = resolved.thread_id
+                signal.payload["surface_id"] = source
+                signal.payload["external_thread_id"] = external_thread_id
+                if resolved.ignored_target_hint:
+                    signal.payload["ignored_target_hint"] = resolved.ignored_target_hint
+                signal.surface_id = source
+                signal.external_thread_id = external_thread_id
+                thread_id = resolved.thread_id
             if thread_id and assistant_id:
                 session = self.session_registry.resolve_thread_session(
                     db,
                     assistant_id=assistant_id,
                     thread_id=thread_id,
                     conversation_id=signal.payload.get("conversation_id"),
-                    surface=ctx.surface,
-                    source=ctx.source,
+                    surface=canonicalize_surface_id(signal.surface_id or ctx.surface),
+                    source=canonicalize_surface_id(signal.surface_id or signal.source or ctx.source),
                     latency_sensitive=bool(signal.payload.get("latency_sensitive", False)),
                 )
                 signal.session_id = session.session_id
@@ -432,7 +464,9 @@ class ENSRuntime:
             metadata = signal.payload.get("metadata")
             is_private = bool(signal.payload.get("is_private", False))
             client_message_id = signal.payload.get("client_message_id")
-            user_key = self.dispatcher.user_message_key(signal.session_id or "na", content, client_message_id)
+            message_external_id = signal.payload.get("message_external_id")
+            id_key = message_external_id or client_message_id
+            user_key = self.dispatcher.user_message_key(signal.session_id or "na", content, id_key)
 
             actions = [
                 ENSAction(
@@ -537,7 +571,7 @@ class ENSRuntime:
                     idempotency_key=self.dispatcher.user_message_key(
                         signal.session_id or "na",
                         signal.payload["content"],
-                        signal.payload.get("client_message_id"),
+                        signal.payload.get("message_external_id") or signal.payload.get("client_message_id"),
                     ),
                     params={
                         "thread_id": signal.payload["thread_id"],

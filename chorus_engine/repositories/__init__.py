@@ -10,6 +10,7 @@ from .image_repository import ImageRepository
 from .voice_sample_repository import VoiceSampleRepository
 from .audio_repository import AudioRepository
 from .moment_pin_repository import MomentPinRepository
+from .surface_binding_repository import SurfaceBindingRepository
 
 __all__ = [
     "ConversationRepository",
@@ -22,4 +23,5 @@ __all__ = [
     "VoiceSampleRepository",
     "AudioRepository",
     "MomentPinRepository",
+    "SurfaceBindingRepository",
 ]

@@ -547,6 +547,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns config/control-plane writes (system, character, conversation toggles, workflows, core-memory sync)",
     )
+    slice6_surface_routing_ownership: bool = Field(
+        default=False,
+        description="ENS owns normalized surface routing via canonical binding resolution",
+    )
 
 
 class SystemConfig(BaseModel):

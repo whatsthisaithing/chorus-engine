@@ -21,6 +21,15 @@ class SignalEnvelope:
     assistant_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    surface_id: Optional[str] = None
+    surface_instance_id: Optional[str] = None
+    external_thread_id: Optional[str] = None
+    speaker_external_id: Optional[str] = None
+    speaker_role: Optional[str] = None
+    relationship_hint: Optional[str] = None
+    routing_mode: str = "auto"
+    target_hint: Optional[str] = None
+    message_external_id: Optional[str] = None
     priority_hint: Optional[int] = None
     blocking_hint: Optional[bool] = None
     tags: List[str] = field(default_factory=list)

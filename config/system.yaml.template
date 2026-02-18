@@ -245,6 +245,7 @@ ens:
   slice25_media_gating_ownership: false
   slice3_continuity_writes_ownership: false
   slice4_config_ownership: false
+  slice6_surface_routing_ownership: false  # DEV-ONLY rollout flag (surface binding resolver ownership)
 
 # Startup synchronization
 startup:

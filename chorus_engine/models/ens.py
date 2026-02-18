@@ -95,3 +95,31 @@ class ENSToolCallRequest(Base):
     __table_args__ = (
         Index("ix_ens_tool_call_requests_session_status", "session_id", "status"),
     )
+
+
+class SurfaceBinding(Base):
+    """Canonical surface mapping used by ENS routing resolution."""
+
+    __tablename__ = "surface_bindings"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    surface_id = Column(String(20), nullable=False, index=True)
+    surface_instance_id = Column(String(100), nullable=False, default="", index=True)
+    external_thread_id = Column(String(255), nullable=False, index=True)
+    relationship_id = Column(String(36), nullable=True, index=True)
+    conversation_id = Column(String(36), nullable=False, index=True)
+    thread_id = Column(String(36), nullable=False, index=True)
+    owner_user_id = Column(String(200), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "uq_surface_bindings_lookup",
+            "surface_id",
+            "surface_instance_id",
+            "external_thread_id",
+            unique=True,
+        ),
+    )

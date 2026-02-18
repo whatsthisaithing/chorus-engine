@@ -77,6 +77,7 @@ class AppHelper:
         slice25_media_gating_ownership: bool = False,
         slice3_continuity_writes_ownership: bool = False,
         slice4_config_ownership: bool = False,
+        slice6_surface_routing_ownership: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -91,6 +92,7 @@ class AppHelper:
             slice25_media_gating_ownership=slice25_media_gating_ownership,
             slice3_continuity_writes_ownership=slice3_continuity_writes_ownership,
             slice4_config_ownership=slice4_config_ownership,
+            slice6_surface_routing_ownership=slice6_surface_routing_ownership,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:
