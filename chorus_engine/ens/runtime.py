@@ -10,12 +10,14 @@ import uuid
 import json
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import func
+
 from chorus_engine.db.database import SessionLocal
 from chorus_engine.ens.models import ENSAction, ENSOutcome, SignalEnvelope
 from chorus_engine.ens.dispatcher import ENSDispatcher
 from chorus_engine.ens.decision_store import ENSDecisionStore
 from chorus_engine.ens.session_registry import ENSSessionRegistry
-from chorus_engine.models.conversation import MessageRole
+from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MessageRole
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +285,12 @@ class ENSRuntime:
                     action.params.setdefault("thread_id", resolved_signal.payload.get("thread_id"))
                     action.params.setdefault("character_id", resolved_signal.assistant_id)
 
+                if action.kind == "continuity.bootstrap":
+                    character_id = action.params.get("character_id") or resolved_signal.assistant_id or "unknown"
+                    force = bool(action.params.get("force", False))
+                    watermark = self._continuity_inputs_watermark(db, character_id)
+                    action.idempotency_key = f"continuity:bootstrap:{character_id}:{force}:{watermark}"
+
                 if action.kind in (
                     "config.system.apply",
                     "config.system.post_apply",
@@ -290,6 +298,9 @@ class ENSRuntime:
                     "config.character.apply_profile_asset",
                     "config.character.reload_runtime",
                     "config.conversation.apply",
+                    "message.mutation.apply",
+                    "memory.moderation.apply",
+                    "config.admin.apply",
                     "config.workflow.apply_file",
                     "config.workflow.apply_db",
                     "config.workflow.rollback_file_or_db",
@@ -303,6 +314,9 @@ class ENSRuntime:
                         "config.character.apply_profile_asset": "config.character.validate",
                         "config.character.reload_runtime": "config.character.validate",
                         "config.conversation.apply": "config.conversation.validate",
+                        "message.mutation.apply": "message.mutation.validate",
+                        "memory.moderation.apply": "memory.moderation.validate",
+                        "config.admin.apply": "config.admin.validate",
                         "config.workflow.apply_file": "config.workflow.validate",
                         "config.workflow.apply_db": "config.workflow.validate",
                         "config.workflow.rollback_file_or_db": "config.workflow.validate",
@@ -771,15 +785,94 @@ class ENSRuntime:
                 json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
             ).hexdigest()
             conversation_id = signal.payload.get("conversation_id") or "global"
+            operation = signal.payload.get("operation")
+            if operation == "delete_conversation":
+                payload = signal.payload.get("payload") or {}
+                mode = f"mem{1 if payload.get('delete_memories') else 0}-pins{1 if payload.get('delete_moment_pins') else 0}"
+                idempotency_key = f"conv:delete:{conversation_id}:{mode}"
+            else:
+                idempotency_key = f"conv:update:{conversation_id}:{payload_hash}"
             return [
                 ENSAction(
                     kind="config.conversation.validate",
-                    idempotency_key=f"config:conversation:{conversation_id}:{payload_hash}",
+                    idempotency_key=idempotency_key,
                     params=dict(signal.payload),
                 ),
                 ENSAction(
                     kind="config.conversation.apply",
-                    idempotency_key=f"config:conversation:{conversation_id}:{payload_hash}",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "message.mutation_requested":
+            operation = signal.payload.get("operation")
+            payload = signal.payload.get("payload") or {}
+            if operation == "soft_delete":
+                message_ids = sorted([str(mid) for mid in (payload.get("message_ids") or [])])
+                if len(message_ids) == 1:
+                    idempotency_key = f"msg:soft_delete:{message_ids[0]}"
+                else:
+                    list_hash = hashlib.sha256("|".join(message_ids).encode("utf-8")).hexdigest()[:20]
+                    idempotency_key = f"msg:soft_delete:{list_hash}"
+            else:
+                payload_hash = hashlib.sha256(
+                    json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                ).hexdigest()
+                message_id = payload.get("message_id") or "na"
+                idempotency_key = f"msg:metadata:{message_id}:{payload_hash}"
+            return [
+                ENSAction(
+                    kind="message.mutation.validate",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="message.mutation.apply",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "memory.moderation_requested":
+            operation = signal.payload.get("operation")
+            payload = signal.payload.get("payload") or {}
+            if operation in ("approve", "reject"):
+                memory_id = str(payload.get("memory_id") or "na")
+                idempotency_key = f"memory:{operation}:{memory_id}"
+            else:
+                memory_ids = sorted([str(mid) for mid in (payload.get("memory_ids") or [])])
+                list_hash = hashlib.sha256("|".join(memory_ids).encode("utf-8")).hexdigest()[:20]
+                idempotency_key = f"memory:batch_approve:{list_hash}"
+            return [
+                ENSAction(
+                    kind="memory.moderation.validate",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="memory.moderation.apply",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+            ]
+
+        if signal.type == "config.admin.change_requested":
+            operation = str(signal.payload.get("operation") or "unknown")
+            payload = signal.payload.get("payload") or {}
+            payload_hash = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:20]
+            idempotency_key = f"config:admin:{operation}:{payload_hash}"
+            return [
+                ENSAction(
+                    kind="config.admin.validate",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.admin.apply",
+                    idempotency_key=idempotency_key,
                     params=dict(signal.payload),
                 ),
             ]
@@ -925,6 +1018,15 @@ class ENSRuntime:
         elif signal.type == "config.conversation.change_requested":
             apply_result = next((r for r in action_results if r.get("kind") == "config.conversation.apply"), None)
             response_payload = dict((apply_result or {}).get("output") or {})
+        elif signal.type == "message.mutation_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "message.mutation.apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+        elif signal.type == "memory.moderation_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "memory.moderation.apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+        elif signal.type == "config.admin.change_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "config.admin.apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
         elif signal.type == "config.workflow.change_requested":
             apply_result = next((r for r in action_results if r.get("kind") == "config.workflow.apply_db"), None)
             rollback_result = next((r for r in action_results if r.get("kind") == "config.workflow.rollback_file_or_db"), None)
@@ -946,6 +1048,23 @@ class ENSRuntime:
             action_results=action_results,
             response_payload=response_payload,
         )
+
+    def _continuity_inputs_watermark(self, db, character_id: str) -> str:
+        """Compute a stable watermark from latest continuity-relevant inputs."""
+        latest_summary = (
+            db.query(func.max(ConversationSummary.created_at))
+            .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
+            .filter(Conversation.character_id == character_id)
+            .scalar()
+        )
+        latest_memory = (
+            db.query(func.max(Memory.created_at))
+            .filter(Memory.character_id == character_id)
+            .scalar()
+        )
+        summary_part = latest_summary.isoformat() if latest_summary else "none"
+        memory_part = latest_memory.isoformat() if latest_memory else "none"
+        return hashlib.sha256(f"{summary_part}|{memory_part}".encode("utf-8")).hexdigest()[:20]
 
     def _persist(
         self,

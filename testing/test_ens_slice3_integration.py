@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from chorus_engine.models.conversation import ImageAttachment, Memory, MemoryType, Message, MessageRole, MomentPin
 from chorus_engine.models.ens import ENSActionResult, ENSDecision
+from chorus_engine.repositories import MemoryRepository
 from chorus_engine.services.continuity_bootstrap_task import ContinuityBootstrapTaskHandler
 from chorus_engine.services.heartbeat_service import BackgroundTask, TaskPriority
 
@@ -71,6 +72,63 @@ def test_slice3_continuity_refresh_routes_through_ens(client, db, helpers):
     )
     assert decision_count >= 1
     assert action_count >= 1
+
+
+def test_slice3_continuity_idempotency_key_changes_when_inputs_change(client, db, helpers):
+    class _FakeContinuityService:
+        async def generate_and_save(self, character, conversation_id=None, force=False):
+            _ = (character, conversation_id, force)
+            return {"skipped": False, "cache": {"ok": True}}
+
+    helpers.app_module.app_state["continuity_service"] = _FakeContinuityService()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=False,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice3_continuity_writes_ownership=True,
+    )
+
+    # First run should execute and create a success action result.
+    r1 = client.post("/continuity/refresh", json={"character_id": "test_char", "force": False})
+    assert r1.status_code == 200, r1.text
+    success_before = (
+        db.query(ENSActionResult)
+        .filter(ENSActionResult.kind == "continuity.bootstrap", ENSActionResult.status == "success")
+        .count()
+    )
+    assert success_before >= 1
+
+    # Second run with unchanged inputs should replay/skip.
+    r2 = client.post("/continuity/refresh", json={"character_id": "test_char", "force": False})
+    assert r2.status_code == 200, r2.text
+    skipped_mid = (
+        db.query(ENSActionResult)
+        .filter(ENSActionResult.kind == "continuity.bootstrap", ENSActionResult.status == "skipped")
+        .count()
+    )
+    assert skipped_mid >= 1
+
+    # Add a new memory input; watermark should change and force a new success.
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    mem_repo = MemoryRepository(db)
+    mem_repo.create(
+        content="new continuity-relevant memory",
+        character_id="test_char",
+        memory_type=MemoryType.IMPLICIT,
+        conversation_id=conversation_id,
+        thread_id=thread_id,
+        status="approved",
+    )
+
+    r3 = client.post("/continuity/refresh", json={"character_id": "test_char", "force": False})
+    assert r3.status_code == 200, r3.text
+    success_after = (
+        db.query(ENSActionResult)
+        .filter(ENSActionResult.kind == "continuity.bootstrap", ENSActionResult.status == "success")
+        .count()
+    )
+    assert success_after >= success_before + 1
 
 
 def test_slice3_continuity_heartbeat_task_routes_through_ens(db, helpers):

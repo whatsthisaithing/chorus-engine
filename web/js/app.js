@@ -1020,7 +1020,7 @@ window.App = {
         }
         this.state.configDriftPollTimer = setInterval(() => {
             this.checkConfigDrift();
-        }, 60000);
+        }, 300000);
     },
 
     onPotentialConfigMutation(_endpoint, _method, _response) {

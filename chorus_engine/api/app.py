@@ -8,12 +8,13 @@ import json
 import hashlib
 import yaml
 import time
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -3509,6 +3510,117 @@ async def _ens_config_change(
     return dict(outcome.response_payload or {})
 
 
+async def _ens_message_mutation(
+    *,
+    operation: str,
+    payload: Dict[str, Any],
+    assistant_id: Optional[str] = None,
+    surface: str = "web",
+    source: str = "web",
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    signal = SignalEnvelope(
+        type="message.mutation_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=assistant_id or "system",
+        payload={
+            "operation": operation,
+            "payload": payload,
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface,
+            source=source,
+            data={"domain": "message"},
+        ),
+    )
+    return dict(outcome.response_payload or {})
+
+
+async def _ens_memory_moderation(
+    *,
+    operation: str,
+    payload: Dict[str, Any],
+    assistant_id: Optional[str] = None,
+    surface: str = "web",
+    source: str = "web",
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    signal = SignalEnvelope(
+        type="memory.moderation_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=assistant_id or "system",
+        payload={
+            "operation": operation,
+            "payload": payload,
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface,
+            source=source,
+            data={"domain": "memory"},
+        ),
+    )
+    return dict(outcome.response_payload or {})
+
+
+async def _ens_admin_change(
+    *,
+    operation: str,
+    payload: Dict[str, Any],
+    surface: str = "web",
+    source: str = "web",
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    signal = SignalEnvelope(
+        type="config.admin.change_requested",
+        scope="GLOBAL",
+        source="external",
+        assistant_id="system",
+        payload={
+            "operation": operation,
+            "payload": payload,
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface,
+            source=source,
+            data={"domain": "admin"},
+        ),
+    )
+    return dict(outcome.response_payload or {})
+
+
+def _ensure_admin_access(x_admin_token: Optional[str]) -> None:
+    if bool(getattr(app_state.get("system_config"), "debug_ui", False)):
+        return
+    configured_token = (
+        getattr(app_state.get("system_config"), "admin_token", None)
+        or os.getenv("CHORUS_ADMIN_TOKEN")
+    )
+    if not configured_token:
+        raise HTTPException(status_code=403, detail="Admin access requires debug_ui or admin token")
+    if not x_admin_token or x_admin_token != configured_token:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
 async def _ens_simple_chat(request: ChatRequest) -> ChatResponse:
     runtime = app_state.get("ens_runtime")
     if not runtime:
@@ -4366,6 +4478,26 @@ async def set_continuity_choice(
     db: Session = Depends(get_db)
 ):
     """Save continuity choice for a conversation and optionally persist preference."""
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.conversation.change_requested",
+            payload={
+                "operation": "set_continuity_choice",
+                "conversation_id": request.conversation_id,
+                "payload": {
+                    "conversation_id": request.conversation_id,
+                    "mode": request.mode,
+                    "remember_choice": bool(request.remember_choice),
+                },
+            },
+        )
+        if outcome.get("reason") == "validation_failed":
+            errors = outcome.get("errors") or []
+            if "Conversation not found" in errors:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
+        return {"success": True, "mode": (outcome.get("mode") or request.mode)}
+
     conversation_repo = ConversationRepository(db)
     conversation = conversation_repo.get_by_id(request.conversation_id)
     if not conversation:
@@ -4920,6 +5052,29 @@ async def update_conversation(
     db: Session = Depends(get_db)
 ):
     """Update conversation title."""
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.conversation.change_requested",
+            payload={
+                "operation": "update_title",
+                "conversation_id": conversation_id,
+                "payload": {
+                    "conversation_id": conversation_id,
+                    "title": request.title,
+                },
+            },
+        )
+        if outcome.get("reason") == "validation_failed":
+            errors = outcome.get("errors") or []
+            if "Conversation not found" in errors:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
+        repo = ConversationRepository(db)
+        conversation = repo.get_by_id(conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation
+
     repo = ConversationRepository(db)
     conversation = repo.update(conversation_id, title=request.title)
     
@@ -5540,7 +5695,24 @@ async def soft_delete_messages(
             status_code=400,
             detail="System messages cannot be deleted"
         )
-    
+
+    if _ens_slice4_enabled():
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(thread.conversation_id)
+        source = (conversation.source if conversation else "web") or "web"
+        outcome = await _ens_message_mutation(
+            operation="soft_delete",
+            payload={"thread_id": thread_id, "message_ids": request.message_ids},
+            assistant_id=conversation.character_id if conversation else None,
+            surface=source,
+            source=source,
+        )
+        return outcome
+
     repo = MessageRepository(db)
     deleted_ids, skipped_ids = repo.soft_delete(request.message_ids)
     
@@ -6929,13 +7101,34 @@ async def update_message_metadata(
     preventing duplicate messages during history sync.
     
     Merges new metadata with existing metadata (preserves existing keys).
+
+    Note: `metadata.system.hidden` is currently reserved-only and does not
+    control message visibility in API/UI. Visibility is controlled by
+    soft-delete (`messages.deleted_at`) today.
     """
     # Get message
     msg_repo = MessageRepository(db)
     message = msg_repo.get_by_id(message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
-    
+
+    if _ens_slice4_enabled():
+        thread_repo = ThreadRepository(db)
+        thread = thread_repo.get_by_id(message.thread_id)
+        conversation = None
+        if thread:
+            conv_repo = ConversationRepository(db)
+            conversation = conv_repo.get_by_id(thread.conversation_id)
+        source = (conversation.source if conversation else "web") or "web"
+        outcome = await _ens_message_mutation(
+            operation="update_metadata",
+            payload={"message_id": message_id, "metadata": request.metadata},
+            assistant_id=conversation.character_id if conversation else None,
+            surface=source,
+            source=source,
+        )
+        return outcome
+
     # Merge metadata (preserve existing, add/update new)
     existing_metadata = message.meta_data or {}
     updated_metadata = {**existing_metadata, **request.metadata}
@@ -8642,6 +8835,26 @@ async def create_memory(
 ):
     """Create an explicit memory for a conversation."""
     # Verify conversation exists
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.conversation.change_requested",
+            payload={
+                "operation": "delete_conversation",
+                "conversation_id": conversation_id,
+                "payload": {
+                    "conversation_id": conversation_id,
+                    "delete_memories": bool(delete_memories),
+                    "delete_moment_pins": bool(delete_moment_pins),
+                },
+            },
+        )
+        if outcome.get("reason") == "validation_failed":
+            errors = outcome.get("errors") or []
+            if "Conversation not found" in errors:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
+        return outcome
+
     conv_repo = ConversationRepository(db)
     conversation = conv_repo.get_by_id(conversation_id)
     if not conversation:
@@ -9114,6 +9327,18 @@ async def approve_memory(
     db: Session = Depends(get_db)
 ):
     """Approve a pending memory and add it to vector store."""
+    if _ens_slice4_enabled():
+        outcome = await _ens_memory_moderation(
+            operation="approve",
+            payload={"memory_id": memory_id},
+        )
+        if outcome.get("reason") == "validation_failed":
+            errors = outcome.get("errors") or []
+            if "Memory not found" in errors:
+                raise HTTPException(status_code=404, detail="Memory not found or not pending")
+            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
+        return outcome
+
     extraction_service = app_state.get("extraction_service")
     if not extraction_service:
         raise HTTPException(status_code=503, detail="Extraction service not available")
@@ -9132,6 +9357,18 @@ async def reject_memory(
     db: Session = Depends(get_db)
 ):
     """Reject and delete a pending memory."""
+    if _ens_slice4_enabled():
+        outcome = await _ens_memory_moderation(
+            operation="reject",
+            payload={"memory_id": memory_id},
+        )
+        if outcome.get("reason") == "validation_failed":
+            errors = outcome.get("errors") or []
+            if "Memory not found" in errors:
+                raise HTTPException(status_code=404, detail="Memory not found")
+            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
+        return outcome
+
     memory_repo = MemoryRepository(db)
     success = memory_repo.delete(memory_id)
     
@@ -9152,6 +9389,15 @@ async def batch_approve_memories(
     db: Session = Depends(get_db)
 ):
     """Approve multiple pending memories at once."""
+    if _ens_slice4_enabled():
+        outcome = await _ens_memory_moderation(
+            operation="batch_approve",
+            payload={"memory_ids": request.memory_ids},
+        )
+        if outcome.get("reason") == "validation_failed":
+            raise HTTPException(status_code=400, detail=", ".join(outcome.get("errors") or []) or "Validation failed")
+        return outcome
+
     extraction_service = app_state.get("extraction_service")
     if not extraction_service:
         raise HTTPException(status_code=503, detail="Extraction service not available")
@@ -11652,6 +11898,8 @@ async def update_workflow_config(
 
 @app.post("/reset")
 async def reset_databases(
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+    x_chorus_confirm: Optional[str] = Header(default=None, alias="X-Chorus-Confirm"),
     db: Session = Depends(get_db)
 ):
     """
@@ -11659,6 +11907,24 @@ async def reset_databases(
     This deletes ALL conversations, messages, memories, images, and workflows.
     Character definitions are preserved.
     """
+    _ensure_admin_access(x_admin_token)
+    if x_chorus_confirm != "RESET":
+        raise HTTPException(status_code=400, detail="Missing or invalid X-Chorus-Confirm header")
+
+    if _ens_slice4_enabled():
+        outcome = await _ens_admin_change(
+            operation="reset",
+            payload={"confirmed": True},
+        )
+        if outcome.get("reason") == "validation_failed":
+            raise HTTPException(status_code=400, detail=", ".join(outcome.get("errors") or []) or "Validation failed")
+        if not bool(outcome.get("success", False)):
+            raise HTTPException(status_code=500, detail=outcome.get("error") or "Failed to reset databases")
+        return {
+            "success": True,
+            "message": "All databases reset successfully. Character definitions preserved. Workflows and images deleted.",
+        }
+
     try:
         # Import repositories
         conv_repo = ConversationRepository(db)
@@ -12400,18 +12666,31 @@ async def update_system_config(config: dict):
 
 
 @app.post("/system/restart")
-async def trigger_restart():
+async def trigger_restart(
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
+):
     """
     Manually restart the server.
     
     Useful after operations that require a full reload (e.g., after restoring a character).
     Returns immediately, server restarts after 1 second delay.
     """
+    _ensure_admin_access(x_admin_token)
+    if _ens_slice4_enabled():
+        outcome = await _ens_admin_change(
+            operation="restart",
+            payload={"requested_at": datetime.utcnow().isoformat()},
+        )
+        if outcome.get("reason") == "validation_failed":
+            raise HTTPException(status_code=400, detail=", ".join(outcome.get("errors") or []) or "Validation failed")
+        if bool(outcome.get("restart_requested")):
+            logger.info("Manual server restart requested via ENS API")
+            asyncio.create_task(restart_server())
+            return {"success": True, "message": "Server restarting..."}
+        return {"success": False, "message": "Restart request was not accepted"}
+
     logger.info("Manual server restart triggered via API")
-    
-    # Trigger server restart in background
     asyncio.create_task(restart_server())
-    
     return {"success": True, "message": "Server restarting..."}
 
 

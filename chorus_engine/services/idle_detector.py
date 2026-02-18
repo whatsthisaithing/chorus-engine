@@ -84,6 +84,7 @@ class IdleDetector:
         # Paths to exclude from activity tracking (polling/monitoring endpoints)
         self._excluded_paths = {
             "/health",
+            "/config/drift",
             "/heartbeat/status",
             "/heartbeat/pause",
             "/heartbeat/resume",

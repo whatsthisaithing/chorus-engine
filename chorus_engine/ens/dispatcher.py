@@ -50,6 +50,7 @@ from chorus_engine.services.structured_response import (
     serialize_structured_response,
     template_rules,
 )
+from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ class ENSDispatcher:
 
     _config_apply_mutex = Lock()
     _config_apply_mutex_key = "global:ens_config_apply"
+    _metadata_reject_log_window_seconds = 60.0
 
     def _refresh_config_drift_baseline(self) -> None:
         config_path = Path("config/system.yaml")
@@ -222,6 +224,18 @@ class ENSDispatcher:
                 output = self._validate_conversation_config_change(db, action.params)
             elif action.kind == "config.conversation.apply":
                 output = self._apply_conversation_config_change(db, action.params)
+            elif action.kind == "message.mutation.validate":
+                output = self._validate_message_mutation(db, action.params)
+            elif action.kind == "message.mutation.apply":
+                output = self._apply_message_mutation(db, action.params)
+            elif action.kind == "memory.moderation.validate":
+                output = self._validate_memory_moderation(db, action.params)
+            elif action.kind == "memory.moderation.apply":
+                output = await self._apply_memory_moderation(db, action.params)
+            elif action.kind == "config.admin.validate":
+                output = self._validate_admin_change(db, action.params)
+            elif action.kind == "config.admin.apply":
+                output = self._apply_admin_change(db, action.params)
             elif action.kind == "config.workflow.validate":
                 output = self._validate_workflow_config_change(db, action.params)
             elif action.kind == "config.workflow.apply_file":
@@ -1825,6 +1839,19 @@ class ENSDispatcher:
         elif operation == "tts_update":
             desired = 1 if bool(payload.get("enabled")) else 0
             no_change = int(conversation.tts_enabled or 0) == desired
+        elif operation == "set_continuity_choice":
+            mode = payload.get("mode")
+            if mode not in ("use", "fresh"):
+                return {"ok": False, "errors": ["Invalid continuity mode"], "warnings": []}
+            remember_choice = bool(payload.get("remember_choice"))
+            no_change = (
+                conversation.continuity_mode == mode
+                and conversation.continuity_choice_remembered == ("true" if remember_choice else "false")
+            )
+        elif operation == "update_title":
+            no_change = (conversation.title or "") == ((payload.get("title") or ""))
+        elif operation == "delete_conversation":
+            no_change = False
         else:
             return {"ok": False, "errors": [f"Unsupported conversation operation: {operation}"], "warnings": []}
 
@@ -1877,8 +1904,350 @@ class ENSDispatcher:
                 conversation.tts_enabled = desired
                 db.commit()
                 return {"success": True, "tts_enabled": bool(payload.get("enabled")), "conversation_id": conversation_id}
+            if operation == "set_continuity_choice":
+                mode = payload.get("mode")
+                remember_choice = bool(payload.get("remember_choice"))
+                if mode not in ("use", "fresh"):
+                    raise RuntimeError("Invalid continuity mode")
+                no_change = (
+                    conversation.continuity_mode == mode
+                    and conversation.continuity_choice_remembered == ("true" if remember_choice else "false")
+                )
+                if no_change:
+                    return {
+                        "_ens_action_status": "skipped",
+                        "reason": "no_change",
+                        "conversation_id": conversation_id,
+                        "mode": mode,
+                    }
+                conversation.continuity_mode = mode
+                conversation.continuity_choice_remembered = "true" if remember_choice else "false"
+                conversation.updated_at = datetime.utcnow()
+                db.commit()
+                if remember_choice:
+                    from chorus_engine.config.loader import ConfigLoader
+
+                    loader = ConfigLoader()
+                    character = loader.load_character(conversation.character_id)
+                    character.continuity_preferences.default_mode = mode
+                    self._save_character_atomic(character)
+                    self.app_state.setdefault("characters", {})[character.id] = character
+                    self._refresh_config_drift_baseline()
+                return {
+                    "success": True,
+                    "conversation_id": conversation_id,
+                    "mode": mode,
+                    "remember_choice": remember_choice,
+                }
+            if operation == "update_title":
+                title = payload.get("title")
+                if (conversation.title or "") == (title or ""):
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "conversation_id": conversation_id}
+                conversation.title = title
+                conversation.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "id": conversation.id,
+                    "title": conversation.title,
+                    "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+                }
+            if operation == "delete_conversation":
+                from chorus_engine.models.conversation import Memory
+
+                mem_repo = MemoryRepository(db)
+                pin_repo = MomentPinRepository(db)
+                delete_memories = bool(payload.get("delete_memories", False))
+                delete_moment_pins = bool(payload.get("delete_moment_pins", False))
+
+                memory_count = mem_repo.count_by_conversation(conversation_id)
+                if delete_memories:
+                    memories = db.query(Memory).filter(Memory.conversation_id == conversation_id).all()
+                    vector_ids = [m.vector_id for m in memories if m.vector_id]
+                    deleted_count = mem_repo.delete_by_conversation(conversation_id)
+                    if vector_ids and conversation.character_id:
+                        vector_store = self.app_state.get("vector_store")
+                        if vector_store:
+                            try:
+                                vector_store.delete_memories(
+                                    character_id=conversation.character_id,
+                                    memory_ids=vector_ids,
+                                )
+                            except Exception as e:
+                                logger.error("Failed deleting memory vectors during conversation delete: %s", e)
+                    memory_action = "deleted"
+                else:
+                    deleted_count = mem_repo.orphan_conversation_memories(conversation_id)
+                    memory_action = "orphaned"
+
+                pins_for_conversation = pin_repo.list_by_conversation(conversation_id)
+                pin_count = len(pins_for_conversation)
+                if delete_moment_pins:
+                    pin_vector_store = self.app_state.get("moment_pin_vector_store")
+                    if pin_vector_store:
+                        for pin in pins_for_conversation:
+                            try:
+                                pin_vector_store.delete_pin(character_id=pin.character_id, pin_id=pin.id)
+                            except Exception as e:
+                                logger.warning("Failed deleting moment pin vector %s: %s", pin.id, e)
+                    deleted_pin_count = pin_repo.delete_by_conversation(conversation_id)
+                    moment_pin_action = "deleted"
+                else:
+                    deleted_pin_count = pin_repo.orphan_conversation_pins(conversation_id)
+                    moment_pin_action = "orphaned"
+
+                if conversation.character_id:
+                    summary_vector_store = self.app_state.get("summary_vector_store")
+                    if summary_vector_store:
+                        try:
+                            summary_vector_store.delete_summary(
+                                character_id=conversation.character_id,
+                                conversation_id=conversation_id,
+                            )
+                        except Exception as e:
+                            logger.error("Failed deleting summary vector during conversation delete: %s", e)
+
+                conv_repo.delete(conversation_id)
+                db.commit()
+                return {
+                    "status": "deleted",
+                    "id": conversation_id,
+                    "memories": {"count": memory_count, "affected": deleted_count, "action": memory_action},
+                    "moment_pins": {
+                        "count": pin_count,
+                        "affected": deleted_pin_count,
+                        "action": moment_pin_action,
+                    },
+                }
 
         raise RuntimeError(f"Unsupported conversation operation: {operation}")
+
+    def _validate_message_mutation(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        msg_repo = MessageRepository(db)
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        if operation == "update_metadata":
+            message_id = payload.get("message_id")
+            patch = payload.get("metadata") or {}
+            message = msg_repo.get_by_id(message_id)
+            if not message:
+                errors.append("Message not found")
+            if not isinstance(patch, dict):
+                errors.append("metadata must be an object")
+        elif operation == "soft_delete":
+            message_ids = payload.get("message_ids") or []
+            thread_id = payload.get("thread_id")
+            if not message_ids:
+                errors.append("message_ids is required")
+            if not thread_id:
+                errors.append("thread_id is required")
+            if message_ids and thread_id:
+                from chorus_engine.models.conversation import Message as MessageModel, MessageRole
+
+                messages = db.query(MessageModel).filter(MessageModel.id.in_(message_ids)).all()
+                message_map = {msg.id: msg for msg in messages}
+                invalid_thread_ids = [
+                    msg_id for msg_id in message_ids
+                    if msg_id in message_map and message_map[msg_id].thread_id != thread_id
+                ]
+                if invalid_thread_ids:
+                    errors.append("All message_ids must belong to the specified thread")
+                invalid_role_ids = [
+                    msg_id for msg_id in message_ids
+                    if msg_id in message_map and message_map[msg_id].role == MessageRole.SYSTEM
+                ]
+                if invalid_role_ids:
+                    errors.append("System messages cannot be deleted")
+        else:
+            errors.append(f"Unsupported message mutation operation: {operation}")
+
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+    def _log_rejected_system_metadata(self, rejected: List[Dict[str, str]]) -> None:
+        from time import time
+
+        now = time()
+        cache = self.app_state.setdefault("ens_metadata_reject_log_cache", {})
+        for item in rejected:
+            key = item.get("key") or ""
+            if not key.startswith("system."):
+                continue
+            signature = f"{key}:{item.get('reason')}"
+            last = float(cache.get(signature, 0.0))
+            if (now - last) < self._metadata_reject_log_window_seconds:
+                continue
+            cache[signature] = now
+            logger.warning("ENS metadata patch rejected key=%s reason=%s", key, item.get("reason"))
+
+    def _apply_message_mutation(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        msg_repo = MessageRepository(db)
+
+        if operation == "update_metadata":
+            message_id = payload.get("message_id")
+            patch = payload.get("metadata") or {}
+            message = msg_repo.get_by_id(message_id)
+            if not message:
+                raise RuntimeError("Message not found")
+            existing_metadata = message.meta_data or {}
+            accepted, rejected = sanitize_metadata_patch(
+                existing_metadata=existing_metadata,
+                patch=patch,
+            )
+            self._log_rejected_system_metadata(rejected)
+            updated_metadata = {**existing_metadata, **accepted}
+            message.meta_data = updated_metadata
+            db.commit()
+            return {
+                "success": True,
+                "message_id": message_id,
+                "metadata": updated_metadata,
+                "applied_keys": sorted(list(accepted.keys())),
+                "rejected": rejected,
+            }
+
+        if operation == "soft_delete":
+            deleted_ids, skipped_ids = msg_repo.soft_delete(payload.get("message_ids") or [])
+            return {
+                "success": True,
+                "deleted_ids": deleted_ids,
+                "skipped_ids": skipped_ids,
+                "message": f"Soft deleted {len(deleted_ids)} messages",
+            }
+
+        raise RuntimeError(f"Unsupported message mutation operation: {operation}")
+
+    def _validate_memory_moderation(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        errors: List[str] = []
+        repo = MemoryRepository(db)
+
+        if operation in ("approve", "reject"):
+            memory_id = payload.get("memory_id")
+            if not memory_id:
+                errors.append("memory_id is required")
+            elif not repo.get_by_id(str(memory_id)):
+                errors.append("Memory not found")
+        elif operation == "batch_approve":
+            memory_ids = payload.get("memory_ids") or []
+            if not isinstance(memory_ids, list) or not memory_ids:
+                errors.append("memory_ids is required")
+            else:
+                for memory_id in memory_ids:
+                    if not repo.get_by_id(str(memory_id)):
+                        errors.append(f"Memory not found: {memory_id}")
+        else:
+            errors.append(f"Unsupported memory moderation operation: {operation}")
+
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": []}
+
+    async def _apply_memory_moderation(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        repo = MemoryRepository(db)
+
+        if operation == "approve":
+            extraction_service = self.app_state.get("extraction_service")
+            if not extraction_service:
+                raise RuntimeError("Extraction service not available")
+            memory_id = str(payload.get("memory_id"))
+            success = await extraction_service.approve_pending_memory(memory_id)
+            if not success:
+                raise RuntimeError("Memory not found or not pending")
+            return {"status": "approved", "memory_id": memory_id}
+
+        if operation == "reject":
+            memory_id = str(payload.get("memory_id"))
+            success = repo.delete(memory_id)
+            if not success:
+                raise RuntimeError("Memory not found")
+            return {"status": "rejected", "memory_id": memory_id}
+
+        if operation == "batch_approve":
+            extraction_service = self.app_state.get("extraction_service")
+            if not extraction_service:
+                raise RuntimeError("Extraction service not available")
+            memory_ids = [str(mid) for mid in (payload.get("memory_ids") or [])]
+            approved_count = 0
+            failed: List[str] = []
+            for memory_id in memory_ids:
+                success = await extraction_service.approve_pending_memory(memory_id)
+                if success:
+                    approved_count += 1
+                else:
+                    failed.append(memory_id)
+            return {
+                "status": "completed",
+                "approved_count": approved_count,
+                "failed": failed,
+            }
+
+        raise RuntimeError(f"Unsupported memory moderation operation: {operation}")
+
+    def _validate_admin_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        payload = params.get("payload") or {}
+        errors: List[str] = []
+        if operation not in ("reset", "restart"):
+            errors.append(f"Unsupported admin operation: {operation}")
+        if operation == "reset" and not bool(payload.get("confirmed")):
+            errors.append("reset confirmation is required")
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": []}
+
+    def _apply_admin_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        operation = params.get("operation")
+        if operation == "restart":
+            return {
+                "operation": "restart",
+                "attempted": True,
+                "success": True,
+                "error": None,
+                "restart_requested": True,
+            }
+        if operation == "reset":
+            attempted = True
+            success = False
+            error: Optional[str] = None
+            try:
+                conv_repo = ConversationRepository(db)
+                conversations = conv_repo.list_all()
+                for conv in conversations:
+                    conv_repo.delete(conv.id)
+
+                from chorus_engine.models.conversation import GeneratedImage
+                from chorus_engine.models.workflow import Workflow
+
+                db.query(GeneratedImage).delete()
+                db.query(Workflow).delete()
+                db.commit()
+
+                vector_store = self.app_state.get("vector_store")
+                characters = self.app_state.get("characters", {})
+                if vector_store is not None:
+                    for character_id in characters.keys():
+                        try:
+                            vector_store.client.delete_collection(f"character_{character_id}")
+                        except Exception:
+                            pass
+                        vector_store.client.create_collection(
+                            name=f"character_{character_id}",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                success = True
+            except Exception as e:
+                db.rollback()
+                error = str(e)
+            return {
+                "operation": "reset",
+                "attempted": attempted,
+                "success": success,
+                "error": error,
+            }
+        raise RuntimeError(f"Unsupported admin operation: {operation}")
 
     def _validate_workflow_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         from chorus_engine.repositories import WorkflowRepository

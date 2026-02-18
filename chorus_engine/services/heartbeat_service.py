@@ -155,6 +155,7 @@ class HeartbeatService:
         self.resume_grace_seconds = self._config.get("resume_grace_seconds", 2)
         self.batch_size = self._config.get("analysis_batch_size", 3)
         self.gpu_check_cooldown_seconds = self._config.get("gpu_check_cooldown_seconds", 0.5)
+        self.not_idle_log_interval_seconds = float(self._config.get("not_idle_log_interval_seconds", 300))
         
         # Task queue and handlers
         self._task_queue: List[BackgroundTask] = []
@@ -170,6 +171,7 @@ class HeartbeatService:
         self._task: Optional[asyncio.Task] = None
         self._app_state: Optional[Dict[str, Any]] = None
         self._last_task_completed_at: Optional[datetime] = None
+        self._last_not_idle_log_at: Optional[datetime] = None
         
         # Statistics
         self._stats = {
@@ -343,8 +345,16 @@ class HeartbeatService:
                 
                 # Check if system is idle
                 if not self._is_safe_to_process():
-                    logger.debug("[HEARTBEAT] System not idle, skipping cycle")
+                    now = datetime.utcnow()
+                    if (
+                        self._last_not_idle_log_at is None
+                        or (now - self._last_not_idle_log_at).total_seconds() >= self.not_idle_log_interval_seconds
+                    ):
+                        logger.debug("[HEARTBEAT] System not idle, skipping cycle")
+                        self._last_not_idle_log_at = now
                     continue
+                else:
+                    self._last_not_idle_log_at = None
                 
                 # Process tasks if we have any
                 if self._task_queue:

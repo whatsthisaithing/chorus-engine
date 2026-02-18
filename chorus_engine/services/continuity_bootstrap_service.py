@@ -844,8 +844,12 @@ class ContinuityBootstrapService:
                 collection = self.memory_vector_store.get_collection(character_id)
                 if collection is not None:
                     results = collection.get(ids=vector_ids, include=["embeddings"])
-                    ids = results.get("ids") or []
-                    embeddings = results.get("embeddings") or []
+                    ids = results.get("ids")
+                    embeddings = results.get("embeddings")
+                    if ids is None:
+                        ids = []
+                    if embeddings is None:
+                        embeddings = []
                     for idx, vector_id in enumerate(ids):
                         if idx < len(embeddings) and embeddings[idx] is not None:
                             vector_id_to_embedding[vector_id] = embeddings[idx]

@@ -572,6 +572,10 @@ class SystemConfig(BaseModel):
     time_context: TimeContextConfig = Field(default_factory=TimeContextConfig)
     debug: bool = False
     debug_ui: bool = False
+    admin_token: Optional[str] = Field(
+        default=None,
+        description="Optional admin token for privileged endpoints when debug_ui is disabled",
+    )
     api_host: str = "localhost"
     api_port: int = Field(default=8080, gt=0, le=65535)
     
