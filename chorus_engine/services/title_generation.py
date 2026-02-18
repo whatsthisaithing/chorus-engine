@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Awaitable, Callable, Any
 from dataclasses import dataclass
 
 from chorus_engine.models.conversation import Message, MessageRole
@@ -33,7 +33,8 @@ class TitleGenerationService:
         min_words: int = 3,
         max_words: int = 8,
         max_chars: int = 90,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize the title generation service.
@@ -50,6 +51,7 @@ class TitleGenerationService:
         self.max_words = max_words
         self.max_chars = max_chars
         self.temperature = temperature
+        self.llm_invoke_fn = llm_invoke_fn
     
     def _build_title_prompt(self, messages: List[Message], character_name: str) -> tuple[str, str]:
         """
@@ -198,16 +200,30 @@ Title:"""
             logger.info(f"[TITLE GEN] Generating title with model {model}")
             
             # Generate title using character's already-loaded model
-            response = await self.llm_client.generate(
-                prompt=user_content,
-                system_prompt=system_prompt,
-                temperature=self.temperature,
-                max_tokens=30,  # Titles are short
-                model=model
-            )
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_content,
+                    system_prompt=system_prompt,
+                    temperature=self.temperature,
+                    max_tokens=30,
+                    model=model,
+                    metadata={
+                        "invocation_kind": "title_generation",
+                        "analysis_kind": "title_generation",
+                    },
+                )
+                title_text = (invocation.get("content") or "").strip()
+            else:
+                response = await self.llm_client.generate(
+                    prompt=user_content,
+                    system_prompt=system_prompt,
+                    temperature=self.temperature,
+                    max_tokens=30,  # Titles are short
+                    model=model
+                )
+                title_text = response.content if hasattr(response, 'content') else str(response)
             
             # Extract and validate title
-            title_text = response.content if hasattr(response, 'content') else str(response)
             title_text = title_text.strip()
             
             # Validate and clean

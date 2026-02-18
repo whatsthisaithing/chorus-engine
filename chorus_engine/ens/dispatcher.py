@@ -57,6 +57,7 @@ from chorus_engine.services.structured_response import (
 )
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
+from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,11 @@ class ENSDispatcher:
 
     def __init__(self, app_state: Dict[str, Any]) -> None:
         self.app_state = app_state
+        self.llm_invoker = LLMInvocationService(app_state)
+
+    def _slice7_enabled(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        return bool(ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice7_unified_llm_invocation", False))
 
     async def execute(
         self,
@@ -350,6 +356,8 @@ class ENSDispatcher:
         linked_attachment_ids: List[str] = []
         missing_attachment_ids: List[str] = []
         conversation_id = params.get("conversation_id")
+        thread_id = params.get("thread_id")
+        attachment_invocations: List[Dict[str, Any]] = []
         character_id = params.get("character_id")
         for attachment_id in attachment_ids:
             attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
@@ -394,6 +402,8 @@ class ENSDispatcher:
         context = params.get("content", "")
         character_id = params.get("character_id")
         conversation_id = params.get("conversation_id")
+        thread_id = params.get("thread_id")
+        attachment_invocations: List[Dict[str, Any]] = []
 
         for attachment_id in attachment_ids:
             attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
@@ -403,11 +413,23 @@ class ENSDispatcher:
                 already_processed_count += 1
                 continue
             try:
-                result = await vision_service.analyze_image(
-                    image_path=Path(attachment.original_path),
-                    context=context,
-                    character_id=character_id,
-                )
+                try:
+                    result = await vision_service.analyze_image(
+                        image_path=Path(attachment.original_path),
+                        context=context,
+                        character_id=character_id,
+                        conversation_id=conversation_id,
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        attachment_id=attachment.id,
+                    )
+                except TypeError:
+                    # Backward compatibility for legacy/fake vision services with older signature.
+                    result = await vision_service.analyze_image(
+                        image_path=Path(attachment.original_path),
+                        context=context,
+                        character_id=character_id,
+                    )
                 attachment.vision_processed = "true"
                 attachment.vision_model = result.model
                 attachment.vision_backend = result.backend
@@ -416,6 +438,17 @@ class ENSDispatcher:
                 attachment.vision_observation = result.observation
                 attachment.vision_confidence = result.confidence
                 attachment.vision_tags = json.dumps(result.tags) if result.tags else None
+                llm_invocation = getattr(result, "llm_invocation", None)
+                if llm_invocation:
+                    attachment_invocations.append(
+                        {
+                            "attachment_id": attachment.id,
+                            "provider": llm_invocation.get("provider"),
+                            "engine": llm_invocation.get("engine"),
+                            "request_fingerprint": llm_invocation.get("request_fingerprint"),
+                            "attempts": llm_invocation.get("attempts"),
+                        }
+                    )
                 processed_count += 1
 
                 if memory_config.get("auto_create", True) and result.confidence >= min_confidence:
@@ -479,6 +512,7 @@ class ENSDispatcher:
             "already_processed_count": already_processed_count,
             "memory_ids": memory_ids,
             "current_turn_visual_context_count": current_turn_visual_context_count,
+            "llm_invocations": attachment_invocations,
         }
 
     def _evaluate_media_gating(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -597,10 +631,6 @@ class ENSDispatcher:
     async def _invoke_llm_chat(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         from chorus_engine.models.conversation import ImageAttachment
 
-        llm_client = self.app_state.get("llm_client")
-        if not llm_client:
-            raise RuntimeError("LLM client not initialized")
-
         thread_id = params["thread_id"]
         character_id = params["character_id"]
         msg_repo = MessageRepository(db)
@@ -657,17 +687,34 @@ class ENSDispatcher:
         )
         messages = prompt_assembler.format_for_api(prompt_components)
 
-        temperature = character.preferred_llm.temperature
-        max_tokens = character.preferred_llm.max_tokens
-        model = character.preferred_llm.model or self.app_state["system_config"].llm.model
-
-        response = await llm_client.generate_with_history(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            model=model,
+        effective = self.llm_invoker.resolve_effective_config(
+            character=character,
+            invocation_kind="chat",
         )
-        raw_content = response.content or ""
+        request = InvocationRequest(
+            invocation_kind="chat",
+            idempotency_key=params.get("idempotency_key") or f"llm:chat:{thread_id}:{params.get('user_message_id') or 'na'}",
+            model_id=effective.model_id,
+            provider=effective.provider,
+            engine=effective.engine,
+            session_id=params.get("session_id"),
+            conversation_id=conversation.id,
+            thread_id=thread_id,
+            surface_id=source,
+            character_id=character_id,
+            messages=messages,
+            temperature=effective.temperature,
+            max_tokens=effective.max_tokens,
+            metadata={
+                "conversation_source": source,
+                "media_gate_snapshot": media_gate_snapshot,
+            },
+        )
+        invocation = await self.llm_invoker.invoke(request)
+        if invocation.get("status") != "success":
+            error = (invocation.get("error") or {}).get("message") or "LLM invocation failed"
+            raise RuntimeError(error)
+        raw_content = invocation.get("output_text") or ""
         payload_extraction = extract_tool_payload(raw_content)
         payload_obj = parse_tool_payload(payload_extraction.payload_text)
         display_text = payload_extraction.display_text
@@ -739,7 +786,15 @@ class ENSDispatcher:
         result = {
             "content": display_text,
             "raw_content": raw_content,
-            "model": model,
+            "model": effective.model_id,
+            "provider": invocation.get("provider"),
+            "engine": invocation.get("engine"),
+            "token_usage": invocation.get("token_usage"),
+            "cost": invocation.get("cost"),
+            "attempts": invocation.get("attempts"),
+            "replayed": invocation.get("replayed"),
+            "request_fingerprint": invocation.get("request_fingerprint"),
+            "invocation_status": invocation.get("status"),
             "content_length": len(display_text),
             "response_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
             "response_excerpt": raw_content[:240],
@@ -937,21 +992,39 @@ class ENSDispatcher:
         return result
 
     async def _invoke_llm_simple(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        llm_client = self.app_state.get("llm_client")
-        if not llm_client:
-            raise RuntimeError("LLM client not initialized")
-
         character = self.app_state["characters"].get(params["character_id"])
         if not character:
             raise RuntimeError("Character not found")
-
-        model = character.preferred_llm.model or self.app_state["system_config"].llm.model
-        response = await llm_client.generate(
-            prompt=params["content"],
-            system_prompt=character.system_prompt,
-            model=model,
+        effective = self.llm_invoker.resolve_effective_config(
+            character=character,
+            invocation_kind="chat",
         )
-        return {"content": response.content or "", "model": model, "character_name": character.name}
+        invocation = await self.llm_invoker.invoke(
+            InvocationRequest(
+                invocation_kind="chat",
+                idempotency_key=params.get("idempotency_key") or f"llm:simple:{params['character_id']}:{hashlib.sha256(params['content'].encode('utf-8')).hexdigest()[:16]}",
+                model_id=effective.model_id,
+                provider=effective.provider,
+                engine=effective.engine,
+                character_id=params["character_id"],
+                prompt=params["content"],
+                system_prompt=character.system_prompt,
+                temperature=effective.temperature,
+                max_tokens=effective.max_tokens,
+                metadata={"endpoint": "chat.simple"},
+            )
+        )
+        if invocation.get("status") != "success":
+            error = (invocation.get("error") or {}).get("message") or "LLM invocation failed"
+            raise RuntimeError(error)
+        return {
+            "content": invocation.get("output_text") or "",
+            "model": effective.model_id,
+            "provider": invocation.get("provider"),
+            "engine": invocation.get("engine"),
+            "request_fingerprint": invocation.get("request_fingerprint"),
+            "character_name": character.name,
+        }
 
     @staticmethod
     def user_message_key(session_id: str, content: str, client_message_id: Optional[str]) -> str:
@@ -1101,6 +1174,42 @@ class ENSDispatcher:
         character = self.app_state["characters"].get(character_id)
         if not character:
             raise RuntimeError(f"Character not found: {character_id}")
+
+        if self._slice7_enabled():
+            async def _invoke_analysis(*, prompt: str, system_prompt: str, model: str, temperature: float, max_tokens: int, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                range_start = ((metadata or {}).get("range_start_message_id") or "na")
+                range_end = ((metadata or {}).get("range_end_message_id") or "na")
+                analysis_kind_meta = (metadata or {}).get("analysis_kind") or "general"
+                effective = self.llm_invoker.resolve_effective_config(
+                    character=character,
+                    invocation_kind="analysis",
+                    model_override=model,
+                    temperature_override=temperature,
+                    max_tokens_override=max_tokens,
+                )
+                idempotency_key = (
+                    f"llm:analysis:{conversation_id}:{analysis_kind_meta}:{range_start}:{range_end}:{effective.model_id}"
+                )
+                invocation = await self.llm_invoker.invoke(
+                    InvocationRequest(
+                        invocation_kind="analysis",
+                        idempotency_key=idempotency_key,
+                        model_id=effective.model_id,
+                        provider=effective.provider,
+                        engine=effective.engine,
+                        conversation_id=conversation_id,
+                        character_id=character_id,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=effective.temperature,
+                        max_tokens=effective.max_tokens,
+                        metadata=metadata or {},
+                    )
+                )
+                if invocation.get("status") != "success":
+                    raise RuntimeError((invocation.get("error") or {}).get("message") or "Analysis invocation failed")
+                return invocation
+            analysis_service.llm_invoke_fn = _invoke_analysis
 
         if analysis_kind == "summary":
             analysis = await analysis_service.analyze_summary_only(
@@ -1285,10 +1394,6 @@ class ENSDispatcher:
         character_id = params["character_id"]
         model = params["model"]
         user_id = params.get("user_id") or "User"
-        llm_client = self.app_state.get("llm_client")
-        if not llm_client:
-            raise RuntimeError("LLM client not initialized")
-
         selection_fingerprint = hashlib.sha256(
             "|".join(selected_message_ids).encode("utf-8")
         ).hexdigest()
@@ -1306,7 +1411,50 @@ class ENSDispatcher:
         if existing:
             return {"pin_id": existing.id, "replayed": True}
 
-        extraction = MomentPinExtractionService(db=db, llm_client=llm_client, model=model)
+        llm_invoke_fn = None
+        if self._slice7_enabled():
+            async def _invoke_analysis(*, prompt: str, system_prompt: str, model: str, temperature: float, max_tokens: int, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                effective = self.llm_invoker.resolve_effective_config(
+                    character=self.app_state["characters"].get(character_id),
+                    invocation_kind="analysis",
+                    model_override=model,
+                    temperature_override=temperature,
+                    max_tokens_override=max_tokens,
+                )
+                invocation = await self.llm_invoker.invoke(
+                    InvocationRequest(
+                        invocation_kind="analysis",
+                        idempotency_key=f"llm:moment_pin:{conversation_id}:{selection_fingerprint}:{effective.model_id}",
+                        model_id=effective.model_id,
+                        provider=effective.provider,
+                        engine=effective.engine,
+                        conversation_id=conversation_id,
+                        character_id=character_id,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=effective.temperature,
+                        max_tokens=effective.max_tokens,
+                        metadata=metadata or {},
+                    )
+                )
+                if invocation.get("status") != "success":
+                    raise RuntimeError((invocation.get("error") or {}).get("message") or "Moment pin invocation failed")
+                return invocation
+            llm_invoke_fn = _invoke_analysis
+
+        try:
+            extraction = MomentPinExtractionService(
+                db=db,
+                llm_client=self.app_state.get("llm_client"),
+                model=model,
+                llm_invoke_fn=llm_invoke_fn,
+            )
+        except TypeError:
+            extraction = MomentPinExtractionService(
+                db=db,
+                llm_client=self.app_state.get("llm_client"),
+                model=model,
+            )
         snapshot_json, selected_with_margin = extraction.build_snapshot(
             conversation_id=conversation_id,
             selected_message_ids=selected_message_ids,

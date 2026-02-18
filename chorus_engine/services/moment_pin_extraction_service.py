@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -31,11 +31,18 @@ class MomentPinExtractionService:
 
     MAX_SELECTED_MESSAGES = 20
 
-    def __init__(self, db: Session, llm_client: LLMClient, model: str):
+    def __init__(
+        self,
+        db: Session,
+        llm_client: Optional[LLMClient],
+        model: str,
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
+    ):
         self.db = db
         self.msg_repo = MessageRepository(db)
         self.llm = llm_client
         self.model = model
+        self.llm_invoke_fn = llm_invoke_fn
 
     def _sanitize_message_content(self, message: Message) -> str:
         content = message.content or ""
@@ -178,14 +185,27 @@ OUTPUT (JSON ONLY)
         )
 
         try:
-            response = await self.llm.generate(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                model=self.model,
-                temperature=0.0,
-                max_tokens=1200,
-            )
-            raw_response = response.content or ""
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=self.model,
+                    temperature=0.0,
+                    max_tokens=1200,
+                    metadata={"analysis_kind": "moment_pin"},
+                )
+                raw_response = invocation.get("output_text") or ""
+            else:
+                if self.llm is None:
+                    raise RuntimeError("LLM client not initialized")
+                response = await self.llm.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=self.model,
+                    temperature=0.0,
+                    max_tokens=1200,
+                )
+                raw_response = response.content or ""
             parsed, parse_mode = extract_json_block(raw_response, expected_root="object")
             if not isinstance(parsed, dict):
                 return self.ExtractionResult(

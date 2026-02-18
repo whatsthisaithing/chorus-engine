@@ -87,6 +87,10 @@ class SurfaceRouter:
                 hinted = self.thread_repo.get_by_id(thread_id_hint)
                 if hinted and hinted.conversation_id == conversation_id:
                     thread_id = hinted.id
+            if not thread_id and conversation_id:
+                existing_threads = self.thread_repo.list_by_conversation(conversation_id)
+                if existing_threads:
+                    thread_id = existing_threads[0].id
             if not thread_id:
                 thread = self.thread_repo.create(conversation_id=conversation_id, title="Main Thread")
                 thread_id = thread.id

@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Awaitable, Callable
 
 from chorus_engine.llm.client import LLMClient
 from chorus_engine.config.models import CharacterConfig
@@ -111,7 +111,8 @@ RESPONSE FORMAT:
         self,
         llm_client: LLMClient,
         model: str = "qwen2.5:3b-instruct",
-        temperature: float = 0.1  # Very low for consistent classification
+        temperature: float = 0.1,  # Very low for consistent classification
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize intent detection service.
@@ -124,6 +125,7 @@ RESPONSE FORMAT:
         self.llm_client = llm_client
         self.model = model
         self.temperature = temperature
+        self.llm_invoke_fn = llm_invoke_fn
         
         logger.info(
             "Intent detection service initialized",
@@ -173,12 +175,28 @@ RESPONSE FORMAT:
             prompt = self._build_prompt(message, character, context)
             
             # Call the LLM using generate method
-            response = await self.llm_client.generate(
-                prompt=prompt,
-                system_prompt=None,  # System instructions are in the prompt
-                temperature=self.temperature,
-                model=model
-            )
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=prompt,
+                    system_prompt=None,
+                    temperature=self.temperature,
+                    max_tokens=None,
+                    model=model,
+                    metadata={
+                        "invocation_kind": "analysis",
+                        "analysis_kind": "intent_detection",
+                        "character_id": character.id,
+                    },
+                )
+                response_content = invocation.get("content") or ""
+            else:
+                response = await self.llm_client.generate(
+                    prompt=prompt,
+                    system_prompt=None,  # System instructions are in the prompt
+                    temperature=self.temperature,
+                    model=model
+                )
+                response_content = response.content
             
             # Log to debug file
             log_llm_call(
@@ -186,13 +204,13 @@ RESPONSE FORMAT:
                 interaction_type="intent_detection",
                 model=model,
                 prompt=prompt,
-                response=response.content,
+                response=response_content,
                 settings={"temperature": self.temperature},
                 metadata={"character_id": character.id, "message_preview": message[:100]}
             )
             
             # Parse the response (response is LLMResponse object with .content)
-            result = await self._parse_llm_response(response.content)
+            result = await self._parse_llm_response(response_content)
             
             # Calculate processing time
             processing_time_ms = (time.time() - start_time) * 1000

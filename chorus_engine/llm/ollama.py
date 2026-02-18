@@ -1,6 +1,7 @@
 """Ollama LLM client implementation."""
 
 import json
+from typing import List
 
 from .text_normalization import normalize_mojibake
 import logging
@@ -140,6 +141,52 @@ class OllamaLLMClient(BaseLLMClient):
             raise LLMError(f"HTTP error during LLM generation: {e}")
         except Exception as e:
             raise LLMError(f"Failed to generate LLM response: {e}")
+
+    async def generate_vision(
+        self,
+        *,
+        prompt: str,
+        image_base64_list: List[str],
+        image_mime_type: str = "image/jpeg",
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> LLMResponse:
+        try:
+            if not image_base64_list:
+                raise LLMError("No images provided for vision generation")
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt, "images": image_base64_list})
+            payload = {
+                "model": model if model is not None else self.model,
+                "messages": messages,
+                "stream": False,
+            }
+            payload["options"] = {
+                "temperature": self.temperature if temperature is None else temperature,
+                "num_predict": self.max_tokens if max_tokens is None else max_tokens,
+            }
+            response = await self.client.post(f"{self.base_url}/api/chat", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            content = normalize_mojibake(data.get("message", {}).get("content", ""))
+            return LLMResponse(
+                content=content,
+                model=data.get("model", model if model is not None else self.model),
+                finish_reason=data.get("done_reason"),
+                usage={
+                    "prompt_tokens": data.get("prompt_eval_count", 0),
+                    "completion_tokens": data.get("eval_count", 0),
+                    "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                },
+            )
+        except httpx.HTTPError as e:
+            raise LLMError(f"HTTP error during vision generation: {e}")
+        except Exception as e:
+            raise LLMError(f"Failed to generate vision response: {e}")
     
     async def generate_with_history(
         self,

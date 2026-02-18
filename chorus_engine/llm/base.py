@@ -1,7 +1,7 @@
 """Base abstract class for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, AsyncIterator
+from typing import Optional, AsyncIterator, List
 import httpx
 from pydantic import BaseModel
 
@@ -167,6 +167,20 @@ class BaseLLMClient(ABC):
             LLMError: If generation fails
         """
         pass
+
+    async def generate_vision(
+        self,
+        *,
+        prompt: str,
+        image_base64_list: List[str],
+        image_mime_type: str = "image/jpeg",
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> LLMResponse:
+        """Generate a multimodal completion (text + image)."""
+        raise LLMError(f"Vision generation not supported by {self.__class__.__name__}")
     
     # Optional model management methods (providers can override if supported)
     

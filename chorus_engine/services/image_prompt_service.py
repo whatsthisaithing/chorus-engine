@@ -8,7 +8,7 @@ using LLM to analyze conversation context.
 import json
 import logging
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Awaitable, Callable
 
 from chorus_engine.llm.client import LLMClient
 from chorus_engine.config.models import CharacterConfig, ImageGenerationConfig
@@ -35,7 +35,8 @@ class ImagePromptService:
     def __init__(
         self,
         llm_client: LLMClient,
-        temperature: float = 0.3  # Lower for more consistent prompts
+        temperature: float = 0.3,  # Lower for more consistent prompts
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize image prompt service.
@@ -46,6 +47,7 @@ class ImagePromptService:
         """
         self.llm_client = llm_client
         self.temperature = temperature
+        self.llm_invoke_fn = llm_invoke_fn
         
         logger.info("Image prompt service initialized")
     
@@ -152,16 +154,36 @@ Generate an image prompt based on the USER'S IMAGE REQUEST above. Focus on creat
         try:
             # Call LLM with character's preferred model (if available)
             logger.info(f"[IMAGE PROMPT SERVICE] Calling LLM with model: {model}")
-            response = await self.llm_client.generate(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                temperature=self.temperature,
-                model=model
-            )
-            logger.info(f"[IMAGE PROMPT SERVICE] LLM returned, used model: {response.model}")
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    temperature=self.temperature,
+                    max_tokens=None,
+                    metadata={
+                        "invocation_kind": "media_prompt",
+                        "analysis_kind": "image_prompt",
+                        "character_id": character.id,
+                    },
+                )
+                response_content = invocation.get("content") or ""
+                logger.info(
+                    "[IMAGE PROMPT SERVICE] Unified invoker returned",
+                    extra={"model": invocation.get("model")},
+                )
+            else:
+                response = await self.llm_client.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    temperature=self.temperature,
+                    model=model
+                )
+                response_content = response.content or ""
+                logger.info(f"[IMAGE PROMPT SERVICE] LLM returned, used model: {response.model}")
             
             # Parse JSON response
-            result = self._parse_llm_response(response.content)
+            result = self._parse_llm_response(response_content)
             
             # Detect if trigger word is needed
             needs_trigger = self._should_include_trigger(

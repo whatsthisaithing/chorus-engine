@@ -95,7 +95,8 @@ class ConversationAnalysisService:
         analysis_min_tokens_memories: int = 0,
         analysis_context_window: int = 8192,
         analysis_safety_margin: int = 1500,
-        analysis_recent_messages: int = 12
+        analysis_recent_messages: int = 12,
+        llm_invoke_fn: Optional[Any] = None,
     ):
         self.db = db
         self.llm_client = llm_client
@@ -122,6 +123,7 @@ class ConversationAnalysisService:
         self._archivist_parse_mode: str = "unknown"
         self._archivist_fact_parse_mode: str = "unknown"
         self._archivist_non_fact_parse_mode: str = "unknown"
+        self.llm_invoke_fn = llm_invoke_fn
 
     def _prepare_analysis_context(
         self,
@@ -1626,6 +1628,17 @@ TRANSCRIPT_JSON:
     ) -> str:
         temperature_to_use = self.temperature if temperature is None else temperature
         model_name = model or self.llm_client.model
+        if self.llm_invoke_fn is not None:
+            invocation = await self.llm_invoke_fn(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=model_name,
+                temperature=temperature_to_use,
+                max_tokens=max_tokens,
+                metadata={},
+            )
+            content = invocation.get("output_text") or ""
+            return content
         if self.llm_usage_lock is not None:
             async with self.llm_usage_lock:
                 response = await self.llm_client.generate(

@@ -1,5 +1,6 @@
 from chorus_engine.models.conversation import Conversation, Message, Thread
 from chorus_engine.models.ens import ENSSession, SurfaceBinding
+from chorus_engine.ens import ENSContext, SignalEnvelope
 
 
 def test_slice6_surface_binding_create_and_authoritative_reuse(client, db, helpers):
@@ -138,3 +139,35 @@ def test_slice6_history_idempotency_prefers_message_external_id(client, db, help
 
     message_count = db.query(Message).filter(Message.thread_id == thread_id).count()
     assert message_count == 2
+
+
+def test_slice6_session_signal_with_conversation_hint_reuses_existing_thread(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice6_surface_routing_ownership=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    runtime = helpers.app_module.app_state["ens_runtime"]
+
+    signal = SignalEnvelope(
+        type="analysis.heartbeat_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id="test_char",
+        payload={
+            "conversation_id": conversation_id,
+            "character_id": "test_char",
+            "analysis_kind": "summary",
+        },
+    )
+    _ = helpers.app_module
+    import asyncio
+    asyncio.run(runtime.ingest(signal, ENSContext(app_state=helpers.app_module.app_state, surface="web", source="web")))
+
+    bindings = db.query(SurfaceBinding).filter(SurfaceBinding.conversation_id == conversation_id).all()
+    assert len(bindings) == 1
+    assert bindings[0].thread_id == thread_id
+    assert bindings[0].external_thread_id == thread_id

@@ -5,10 +5,10 @@ Phase 9: Generates third-person observer perspective prompts for user-triggered
 scene captures. Adapted from ImagePromptService but with omniscient narrator viewpoint.
 """
 
-import json
 import logging
+import json
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 
 from chorus_engine.llm.client import LLMClient
 from chorus_engine.config.models import CharacterConfig
@@ -37,7 +37,8 @@ class SceneCapturePromptService:
     def __init__(
         self,
         llm_client: LLMClient,
-        temperature: float = 0.5  # Balanced for focused yet vivid descriptions
+        temperature: float = 0.5,  # Balanced for focused yet vivid descriptions
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize scene capture prompt service.
@@ -48,6 +49,7 @@ class SceneCapturePromptService:
         """
         self.llm_client = llm_client
         self.temperature = temperature
+        self.llm_invoke_fn = llm_invoke_fn
         
         logger.info("Scene capture prompt service initialized")
     
@@ -93,14 +95,25 @@ Generate a detailed scene capture prompt based on this context."""
         logger.debug(f"Context length: {len(context)} chars")
         
         try:
-            response = await self.llm_client.generate(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                model=model,
-                temperature=self.temperature
-            )
-            
-            result = self._parse_llm_response(response.content)
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    temperature=self.temperature,
+                    max_tokens=None,
+                    metadata={"analysis_kind": "scene_prompt"},
+                )
+                raw_content = invocation.get("output_text") or ""
+            else:
+                response = await self.llm_client.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    temperature=self.temperature
+                )
+                raw_content = response.content or ""
+            result = self._parse_llm_response(raw_content)
             
             # Check if trigger word needed
             needs_trigger = self._should_include_trigger(

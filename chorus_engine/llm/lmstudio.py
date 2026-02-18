@@ -1,6 +1,7 @@
 """LM Studio LLM client implementation (OpenAI-compatible)."""
 
 import json
+from typing import List
 import logging
 from typing import Optional, AsyncIterator
 from .base import BaseLLMClient, LLMResponse, LLMError
@@ -124,6 +125,55 @@ class LMStudioLLMClient(BaseLLMClient):
             raise LLMError(f"HTTP error during LLM generation: {e}")
         except Exception as e:
             raise LLMError(f"Failed to generate LLM response: {e}")
+
+    async def generate_vision(
+        self,
+        *,
+        prompt: str,
+        image_base64_list: List[str],
+        image_mime_type: str = "image/jpeg",
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> LLMResponse:
+        try:
+            if not image_base64_list:
+                raise LLMError("No images provided for vision generation")
+            content_parts = [{"type": "text", "text": prompt}]
+            for image_base64 in image_base64_list:
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{image_mime_type};base64,{image_base64}"},
+                    }
+                )
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": content_parts})
+            payload = {
+                "model": model if model is not None else self.model,
+                "messages": messages,
+                "stream": False,
+                "temperature": self.temperature if temperature is None else temperature,
+                "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+            }
+            response = await self.client.post(f"{self.base_url}/v1/chat/completions", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            choice = data.get("choices", [{}])[0]
+            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
+            return LLMResponse(
+                content=content,
+                model=data.get("model", model if model is not None else self.model),
+                finish_reason=choice.get("finish_reason"),
+                usage=data.get("usage"),
+            )
+        except httpx.HTTPError as e:
+            raise LLMError(f"HTTP error during vision generation: {e}")
+        except Exception as e:
+            raise LLMError(f"Failed to generate vision response: {e}")
     
     async def generate_with_history(
         self,

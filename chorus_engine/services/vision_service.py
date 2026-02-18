@@ -14,11 +14,11 @@ import json
 import base64
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable, Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime
 from PIL import Image
-import aiohttp
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ class VisionAnalysisResult:
     processing_time_ms: int = 0
     model: str = ""
     backend: str = ""
+    llm_invocation: Optional[Dict[str, Any]] = None
 
 
 class VisionService:
@@ -69,7 +70,9 @@ class VisionService:
     def __init__(
         self,
         vision_config: Dict[str, Any],
-        llm_config: Dict[str, Any]
+        llm_config: Dict[str, Any],
+        llm_client: Optional[Any] = None,
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize vision service.
@@ -80,6 +83,8 @@ class VisionService:
         """
         self.config = vision_config
         self.llm_config = llm_config
+        self.llm_client = llm_client
+        self.llm_invoke_fn = llm_invoke_fn
         self.enabled = vision_config.get("enabled", True)
         
         # Detect backend from LLM provider
@@ -119,7 +124,12 @@ class VisionService:
         self,
         image_path: Path,
         context: Optional[str] = None,
-        character_id: Optional[str] = None
+        character_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        attachment_id: Optional[str] = None,
+        attachment_fingerprint: Optional[str] = None,
     ) -> VisionAnalysisResult:
         """
         Analyze image with vision model.
@@ -149,7 +159,15 @@ class VisionService:
             
             # 3. Run inference with retries
             start_time = time.time()
-            observation = await self._run_vision_inference_with_retry(processed_path, prompt)
+            observation, invocation_meta = await self._run_vision_inference_with_retry(
+                processed_path,
+                prompt,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                attachment_fingerprint=attachment_fingerprint,
+            )
             processing_time = int((time.time() - start_time) * 1000)
             
             # 4. Parse structured output
@@ -157,6 +175,7 @@ class VisionService:
             result.processing_time_ms = processing_time
             result.model = self.model_name
             result.backend = self.backend
+            result.llm_invocation = invocation_meta
             
             logger.info(f"Image analysis complete in {processing_time}ms (confidence={result.confidence:.2f})")
             return result
@@ -267,8 +286,14 @@ Be specific, factual, and objective. Focus on what is visibly present."""
     async def _run_vision_inference_with_retry(
         self,
         image_path: Path,
-        prompt: str
-    ) -> str:
+        prompt: str,
+        *,
+        conversation_id: Optional[str],
+        thread_id: Optional[str],
+        message_id: Optional[str],
+        attachment_id: Optional[str],
+        attachment_fingerprint: Optional[str],
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
         """
         Run vision inference with retry logic.
         
@@ -277,21 +302,57 @@ Be specific, factual, and objective. Focus on what is visibly present."""
             prompt: Vision prompt
             
         Returns:
-            Raw vision model response
+            Tuple(raw vision model response, invocation metadata)
             
         Raises:
             VisionModelError: If all retries fail
         """
+        if self.llm_invoke_fn is None and self.llm_client is None:
+            raise VisionModelError("Vision service has no LLM transport configured")
+
+        image_data, mime_type = self._encode_image_base64(image_path)
+        prompt_version = "v1"
+        fingerprint = attachment_fingerprint or self._hash_file_sha256(image_path)
+        idempotency_key = (
+            f"llm:vision:{conversation_id or 'na'}:{message_id or 'na'}:{attachment_id or 'na'}:{prompt_version}:{fingerprint or 'na'}"
+        )
         last_error = None
         
         for attempt in range(self.max_retries + 1):
             try:
-                if self.backend == "ollama":
-                    return await self._ollama_vision_inference(image_path, prompt)
-                elif self.backend == "lmstudio":
-                    return await self._lmstudio_vision_inference(image_path, prompt)
+                if self.llm_invoke_fn is not None:
+                    invocation = await self.llm_invoke_fn(
+                        prompt=prompt,
+                        system_prompt=None,
+                        model=self.model_name,
+                        temperature=0.1,
+                        max_tokens=1000,
+                        vision_images=[image_data],
+                        vision_image_mime_type=mime_type,
+                        metadata={
+                            "invocation_kind": "analysis",
+                            "analysis_kind": "vision_interpretation",
+                            "conversation_id": conversation_id,
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "attachment_id": attachment_id,
+                            "vision_prompt_version": prompt_version,
+                            "attachment_fingerprint": fingerprint,
+                            "idempotency_key": idempotency_key,
+                        },
+                    )
+                    return invocation.get("content") or invocation.get("output_text") or "", invocation
                 else:
-                    raise VisionModelError(f"Unsupported backend: {self.backend}")
+                    response = await self.llm_client.generate_vision(
+                        prompt=prompt,
+                        image_base64_list=[image_data],
+                        image_mime_type=mime_type,
+                        system_prompt=None,
+                        temperature=0.1,
+                        max_tokens=1000,
+                        model=self.model_name,
+                    )
+                    return response.content or "", None
                     
             except Exception as e:
                 last_error = e
@@ -304,137 +365,23 @@ Be specific, factual, and objective. Focus on what is visibly present."""
                     logger.error(f"Vision inference failed after {self.max_retries + 1} attempts")
         
         raise VisionModelError(f"Vision inference failed: {last_error}") from last_error
-    
-    async def _ollama_vision_inference(
-        self,
-        image_path: Path,
-        prompt: str
-    ) -> str:
-        """
-        Call Ollama API with vision model.
-        
-        Args:
-            image_path: Path to processed image
-            prompt: Vision prompt
-            
-        Returns:
-            Raw vision model response
-            
-        Raises:
-            VisionModelError: If API call fails
-        """
-        try:
-            # Convert image to base64
-            with open(image_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Build request payload
-            payload = {
-                "model": self.model_name,
-                "messages": [{
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_data]
-                }],
-                "stream": False
-            }
-            
-            # Make API request
-            url = f"{self.base_url}/api/chat"
-            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-            
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise VisionModelError(
-                            f"Ollama API error (status {response.status}): {error_text}"
-                        )
-                    
-                    result = await response.json()
-                    
-                    # Extract message content
-                    if "message" in result and "content" in result["message"]:
-                        return result["message"]["content"]
-                    else:
-                        raise VisionModelError(f"Unexpected Ollama response format: {result}")
-            
-        except aiohttp.ClientError as e:
-            raise VisionModelError(f"Ollama API request failed: {e}") from e
-        except Exception as e:
-            raise VisionModelError(f"Ollama vision inference failed: {e}") from e
-    
-    async def _lmstudio_vision_inference(
-        self,
-        image_path: Path,
-        prompt: str
-    ) -> str:
-        """
-        Call LM Studio API with vision model.
-        
-        LM Studio uses OpenAI-compatible API format with content array:
-        - Text parts: {"type": "text", "text": "..."}
-        - Image parts: {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-        
-        Args:
-            image_path: Path to processed image
-            prompt: Vision prompt
-            
-        Returns:
-            Raw vision model response
-            
-        Raises:
-            VisionModelError: If API call fails
-        """
-        try:
-            # Convert image to base64
-            with open(image_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Detect image format for MIME type
-            img = Image.open(image_path)
-            mime_type = f"image/{img.format.lower()}" if img.format else "image/jpeg"
-            
-            # Build request payload with OpenAI-compatible format
-            payload = {
-                "model": self.model_name,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}}
-                    ]
-                }],
-                "max_tokens": 1000,
-                "temperature": 0.1  # Low temperature for consistent structured output
-            }
-            
-            # Make API request to LM Studio
-            url = f"{self.base_url}/v1/chat/completions"
-            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-            
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise VisionModelError(
-                            f"LM Studio API error (status {response.status}): {error_text}"
-                        )
-                    
-                    result = await response.json()
-                    
-                    # Extract message content from OpenAI format
-                    if "choices" in result and len(result["choices"]) > 0:
-                        choice = result["choices"][0]
-                        if "message" in choice and "content" in choice["message"]:
-                            return choice["message"]["content"]
-                    
-                    raise VisionModelError(f"Unexpected LM Studio response format: {result}")
-            
-        except aiohttp.ClientError as e:
-            raise VisionModelError(f"LM Studio API request failed: {e}") from e
-        except Exception as e:
-            raise VisionModelError(f"LM Studio vision inference failed: {e}") from e
+
+    def _encode_image_base64(self, image_path: Path) -> tuple[str, str]:
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+        img = Image.open(image_path)
+        mime_type = f"image/{img.format.lower()}" if img.format else "image/jpeg"
+        return image_data, mime_type
+
+    def _hash_file_sha256(self, image_path: Path) -> str:
+        h = hashlib.sha256()
+        with open(image_path, "rb") as f:
+            while True:
+                block = f.read(1024 * 1024)
+                if not block:
+                    break
+                h.update(block)
+        return h.hexdigest()
     
     def _parse_vision_output(self, raw_output: str) -> VisionAnalysisResult:
         """

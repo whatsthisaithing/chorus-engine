@@ -124,6 +124,7 @@ from chorus_engine.api.model_routes import router as model_router
 from chorus_engine.ens import ENSRuntime, ENSContext, SignalEnvelope
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.media_generation import ENSMediaGenerator
+from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 
 logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
@@ -465,6 +466,7 @@ async def lifespan(app: FastAPI):
         
         # Initialize LLM client (provider-agnostic factory)
         llm_client = create_llm_client(system_config.llm)
+        llm_invocation_service = LLMInvocationService(app_state)
         
         # Check LLM availability
         llm_available = await llm_client.health_check()
@@ -529,7 +531,8 @@ async def lifespan(app: FastAPI):
             analysis_max_tokens_memories=system_config.llm.analysis_max_tokens_memories,
             analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
             analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories,
-            analysis_context_window=system_config.llm.context_window
+            analysis_context_window=system_config.llm.context_window,
+            llm_invoke_fn=_invoke_llm_analysis_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
         )
         logger.info("✓ Conversation analysis service initialized")
 
@@ -537,7 +540,8 @@ async def lifespan(app: FastAPI):
             db=db_session,
             llm_client=llm_client,
             llm_usage_lock=llm_usage_lock,
-            max_tokens=1024
+            max_tokens=1024,
+            llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
         )
         logger.info("✓ Continuity bootstrap service initialized")
         
@@ -565,7 +569,8 @@ async def lifespan(app: FastAPI):
                     )
                     
                     image_prompt_service = ImagePromptService(
-                        llm_client=llm_client
+                        llm_client=llm_client,
+                        llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
                     )
                     
                     image_storage_service = ImageStorageService(
@@ -586,7 +591,8 @@ async def lifespan(app: FastAPI):
                     video_orchestrator = None
                     try:
                         video_prompt_service = VideoPromptService(
-                            llm_client=llm_client
+                            llm_client=llm_client,
+                            llm_invoke_fn=_invoke_llm_analysis_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
                         )
                         
                         video_storage_service = VideoStorageService(
@@ -665,6 +671,7 @@ async def lifespan(app: FastAPI):
         app_state["system_config"] = system_config
         app_state["characters"] = characters
         app_state["llm_client"] = llm_client
+        app_state["llm_invocation_service"] = llm_invocation_service
         app_state["vector_store"] = vector_store
         app_state["summary_vector_store"] = summary_vector_store  # Conversation summary search
         app_state["moment_pin_vector_store"] = moment_pin_vector_store
@@ -691,7 +698,10 @@ async def lifespan(app: FastAPI):
         
         # Initialize title generation service
         from chorus_engine.services.title_generation import TitleGenerationService
-        title_service = TitleGenerationService(llm_client=llm_client)
+        title_service = TitleGenerationService(
+            llm_client=llm_client,
+            llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+        )
         app_state["title_service"] = title_service
         logger.info("✓ Title generation service initialized")
         
@@ -705,7 +715,9 @@ async def lifespan(app: FastAPI):
                 
                 vision_service = VisionService(
                     vision_config=vision_config.dict(),
-                    llm_config=system_config.llm.dict()
+                    llm_config=system_config.llm.dict(),
+                    llm_client=llm_client,
+                    llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
                 )
                 
                 image_attachment_service = ImageAttachmentService(
@@ -3476,6 +3488,9 @@ def _ens_flags():
         "slice65_egress_outbox_ownership": bool(
             ens_cfg and getattr(ens_cfg, "slice65_egress_outbox_ownership", False)
         ),
+        "slice7_unified_llm_invocation": bool(
+            ens_cfg and getattr(ens_cfg, "slice7_unified_llm_invocation", False)
+        ),
     }
 
 
@@ -3497,6 +3512,121 @@ def _ens_slice6_enabled() -> bool:
 def _ens_slice65_enabled() -> bool:
     flags = _ens_flags()
     return bool(flags.get("enabled") and flags.get("slice65_egress_outbox_ownership"))
+
+
+def _ens_slice7_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice7_unified_llm_invocation"))
+
+
+def _get_llm_invoker() -> LLMInvocationService:
+    invoker = app_state.get("llm_invocation_service")
+    if not invoker:
+        invoker = LLMInvocationService(app_state)
+        app_state["llm_invocation_service"] = invoker
+    return invoker
+
+
+async def _invoke_llm_analysis_unified(
+    *,
+    prompt: str,
+    system_prompt: str,
+    model: str,
+    temperature: float,
+    max_tokens: Optional[int],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    invoker = _get_llm_invoker()
+    meta = dict(metadata or {})
+    character = app_state.get("characters", {}).get(meta.get("character_id")) if meta.get("character_id") else None
+    effective = invoker.resolve_effective_config(
+        character=character,
+        invocation_kind="analysis",
+        model_override=model,
+        temperature_override=temperature,
+        max_tokens_override=max_tokens,
+    )
+    range_start = meta.get("range_start_message_id") or "na"
+    range_end = meta.get("range_end_message_id") or "na"
+    analysis_kind = meta.get("analysis_kind") or "general"
+    conv_id = meta.get("conversation_id") or "na"
+    idempotency_key = f"llm:analysis:{conv_id}:{analysis_kind}:{range_start}:{range_end}:{effective.model_id}"
+    req = InvocationRequest(
+        invocation_kind="analysis",
+        idempotency_key=idempotency_key,
+        model_id=effective.model_id,
+        provider=effective.provider,
+        engine=effective.engine,
+        conversation_id=meta.get("conversation_id"),
+        thread_id=meta.get("thread_id"),
+        character_id=meta.get("character_id"),
+        prompt=prompt,
+        system_prompt=system_prompt,
+        temperature=effective.temperature,
+        max_tokens=effective.max_tokens,
+        metadata=meta,
+    )
+    invocation = await invoker.invoke(req)
+    if invocation.get("status") != "success":
+        raise RuntimeError((invocation.get("error") or {}).get("message") or "LLM invocation failed")
+    invocation["content"] = invocation.get("output_text", "")
+    return invocation
+
+
+async def _invoke_llm_unified(
+    *,
+    prompt: str,
+    system_prompt: Optional[str],
+    model: Optional[str],
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    vision_images: Optional[List[str]] = None,
+    vision_image_mime_type: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    invoker = _get_llm_invoker()
+    meta = dict(metadata or {})
+    invocation_kind = str(meta.get("invocation_kind") or "analysis")
+    character = app_state.get("characters", {}).get(meta.get("character_id")) if meta.get("character_id") else None
+    effective = invoker.resolve_effective_config(
+        character=character,
+        invocation_kind=invocation_kind,
+        model_override=model,
+        temperature_override=temperature,
+        max_tokens_override=max_tokens,
+    )
+    explicit_key = meta.get("idempotency_key")
+    if explicit_key:
+        idempotency_key = str(explicit_key)
+    else:
+        conv_id = meta.get("conversation_id") or "na"
+        thread_id = meta.get("thread_id") or "na"
+        payload_hash = hashlib.sha256(
+            f"{system_prompt or ''}|{prompt or ''}|{effective.model_id}".encode("utf-8")
+        ).hexdigest()
+        idempotency_key = f"llm:{invocation_kind}:{conv_id}:{thread_id}:{payload_hash}"
+    req = InvocationRequest(
+        invocation_kind=invocation_kind,
+        idempotency_key=idempotency_key,
+        model_id=effective.model_id,
+        provider=effective.provider,
+        engine=effective.engine,
+        conversation_id=meta.get("conversation_id"),
+        thread_id=meta.get("thread_id"),
+        character_id=meta.get("character_id"),
+        prompt=prompt,
+        system_prompt=system_prompt,
+        temperature=effective.temperature,
+        max_tokens=effective.max_tokens,
+        vision_images=vision_images,
+        vision_image_mime_type=vision_image_mime_type,
+        metadata=meta,
+    )
+    invocation = await invoker.invoke(req)
+    if invocation.get("status") != "success":
+        raise RuntimeError((invocation.get("error") or {}).get("message") or "LLM invocation failed")
+    invocation["content"] = invocation.get("output_text", "")
+    return invocation
 
 
 def _build_surface_envelope_fields(
@@ -4086,7 +4216,11 @@ async def _ens_scene_preview(db: Session, params: Dict[str, Any]) -> Dict[str, A
     else:
         from chorus_engine.services.scene_capture_prompt_service import SceneCapturePromptService
 
-        scene_prompt_service = SceneCapturePromptService(llm_client=app_state["llm_client"])
+        llm_invoke_fn = _invoke_llm_analysis_unified if _ens_slice7_enabled() else None
+        scene_prompt_service = SceneCapturePromptService(
+            llm_client=app_state["llm_client"],
+            llm_invoke_fn=llm_invoke_fn,
+        )
         prompt_data = await scene_prompt_service.generate_prompt(
             messages=messages,
             character=character,
@@ -4491,6 +4625,11 @@ async def chat(request: ChatRequest):
     flags = _ens_flags()
     if flags["enabled"]:
         return await _ens_simple_chat(request)
+    if _ens_slice7_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Legacy /chat generation path is disabled when ens.slice7_unified_llm_invocation=true",
+        )
     
     # Check LLM availability
     if not llm_client:
@@ -5382,7 +5521,12 @@ async def create_moment_pin(
     llm_client = app_state.get("llm_client")
     if llm_client is None:
         raise HTTPException(status_code=503, detail="LLM client not initialized")
-    extraction = MomentPinExtractionService(db=db, llm_client=llm_client, model=model)
+    extraction = MomentPinExtractionService(
+        db=db,
+        llm_client=llm_client,
+        model=model,
+        llm_invoke_fn=_invoke_llm_analysis_unified if _ens_slice7_enabled() else None,
+    )
 
     try:
         snapshot_json, selected_with_margin = extraction.build_snapshot(
@@ -5885,6 +6029,11 @@ async def send_message(
     character = app_state["characters"][character_id]
 
     flags = _ens_flags()
+    if flags["enabled"] and flags["slice7_unified_llm_invocation"] and (flags["nonstream_intake_only"] or not flags["slice1_chat_ownership"]):
+        raise HTTPException(
+            status_code=409,
+            detail="Legacy non-stream generation path is disabled when ens.slice7_unified_llm_invocation=true. Enable ens.slice1_chat_ownership=true.",
+        )
     if flags["enabled"] and (flags["nonstream_intake_only"] or not flags["slice1_chat_ownership"]):
         try:
             await _ens_nonstream_intake_only(
@@ -7357,6 +7506,11 @@ async def send_message_stream(
             )
         except Exception as e:
             logger.error(f"ENS stream intake failed: {e}", exc_info=True)
+    if flags["enabled"] and flags["slice7_unified_llm_invocation"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Legacy streaming generation path is disabled when ens.slice7_unified_llm_invocation=true",
+        )
     
     # Check LLM availability
     llm_client = app_state["llm_client"]
@@ -8513,7 +8667,8 @@ async def generate_scene_capture_prompt(
     from chorus_engine.services.scene_capture_prompt_service import SceneCapturePromptService
     
     scene_prompt_service = SceneCapturePromptService(
-        llm_client=app_state["llm_client"]
+        llm_client=app_state["llm_client"],
+        llm_invoke_fn=_invoke_llm_analysis_unified if _ens_slice7_enabled() else None,
     )
     
     model = character.preferred_llm.model if character.preferred_llm.model else None
@@ -8702,7 +8857,8 @@ async def capture_scene(
         from chorus_engine.services.scene_capture_prompt_service import SceneCapturePromptService
         
         scene_prompt_service = SceneCapturePromptService(
-            llm_client=app_state["llm_client"]
+            llm_client=app_state["llm_client"],
+            llm_invoke_fn=_invoke_llm_analysis_unified if _ens_slice7_enabled() else None,
         )
         
         try:

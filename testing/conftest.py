@@ -15,7 +15,10 @@ from chorus_engine.db.database import Base
 import chorus_engine.db.database as db_module
 import chorus_engine.ens.runtime as ens_runtime_module
 from chorus_engine.ens import ENSRuntime
+from chorus_engine.ens.llm_invocation_service import LLMInvocationService
+from chorus_engine.ens.llm_invocation_service import in_invoker_context
 from chorus_engine.models.conversation import Conversation, Thread
+from chorus_engine.llm.base import LLMResponse
 
 
 class _DummyResponse:
@@ -39,6 +42,24 @@ class DummyLLMClient:
 
     async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
         return _DummyResponse(f"Echo: {prompt}")
+
+    async def generate_vision(
+        self,
+        *,
+        prompt,
+        image_base64_list,
+        image_mime_type="image/jpeg",
+        system_prompt=None,
+        temperature=None,
+        max_tokens=None,
+        model=None,
+    ):
+        return LLMResponse(
+            content='{"main_subject":"test subject","objects":["obj1"],"people":{"count":0,"descriptions":[]},"text_content":"","spatial_layout":"center","mood":"neutral","colors":["blue"],"notable_details":["detail"],"confidence":0.9}',
+            model=model or "dummy-vision",
+            finish_reason="stop",
+            usage=None,
+        )
 
     async def stream_with_history(self, messages, temperature=None, max_tokens=None, model=None):
         yield "Echo streamed response"
@@ -79,6 +100,7 @@ class AppHelper:
         slice4_config_ownership: bool = False,
         slice6_surface_routing_ownership: bool = False,
         slice65_egress_outbox_ownership: bool = False,
+        slice7_unified_llm_invocation: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -95,6 +117,7 @@ class AppHelper:
             slice4_config_ownership=slice4_config_ownership,
             slice6_surface_routing_ownership=slice6_surface_routing_ownership,
             slice65_egress_outbox_ownership=slice65_egress_outbox_ownership,
+            slice7_unified_llm_invocation=slice7_unified_llm_invocation,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:
@@ -182,10 +205,12 @@ def app(tmp_path, monkeypatch) -> Generator:
             "vision_service": None,
             "title_service": None,
             "ens_runtime": None,
+            "llm_invocation_service": None,
             "ens_tool_executor": app_module._ens_execute_tool_call,
             "ens_scene_preview_executor": app_module._ens_scene_preview,
         }
     )
+    app_module.app_state["llm_invocation_service"] = LLMInvocationService(app_module.app_state)
     app_module.app_state["ens_runtime"] = ENSRuntime(app_module.app_state)
 
     helper = AppHelper(app_module=app_module, SessionLocal=TestingSessionLocal)
@@ -213,3 +238,52 @@ def db(app):
 def helpers(app) -> AppHelper:
     _test_app, helper = app
     return helper
+
+
+@pytest.fixture(autouse=True)
+def _slice7_strict_direct_generate_guard(monkeypatch, app):
+    _test_app, helper = app
+    llm_client = helper.app_module.app_state.get("llm_client")
+    if llm_client is None:
+        return
+
+    def _slice7_guard_enabled() -> bool:
+        cfg = helper.app_module.app_state.get("system_config")
+        ens_cfg = getattr(cfg, "ens", None) if cfg else None
+        return bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "slice7_unified_llm_invocation", False)
+        )
+
+    orig_generate = llm_client.generate
+    orig_generate_with_history = llm_client.generate_with_history
+    orig_stream_with_history = llm_client.stream_with_history
+    orig_generate_vision = getattr(llm_client, "generate_vision", None)
+
+    async def guarded_generate(*args, **kwargs):
+        if _slice7_guard_enabled() and not in_invoker_context():
+            raise RuntimeError("Direct llm_client.generate call blocked under slice7")
+        return await orig_generate(*args, **kwargs)
+
+    async def guarded_generate_with_history(*args, **kwargs):
+        if _slice7_guard_enabled() and not in_invoker_context():
+            raise RuntimeError("Direct llm_client.generate_with_history call blocked under slice7")
+        return await orig_generate_with_history(*args, **kwargs)
+
+    async def guarded_stream_with_history(*args, **kwargs):
+        if _slice7_guard_enabled() and not in_invoker_context():
+            raise RuntimeError("Direct llm_client.stream_with_history call blocked under slice7")
+        async for chunk in orig_stream_with_history(*args, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(llm_client, "generate", guarded_generate)
+    monkeypatch.setattr(llm_client, "generate_with_history", guarded_generate_with_history)
+    monkeypatch.setattr(llm_client, "stream_with_history", guarded_stream_with_history)
+
+    if orig_generate_vision is not None:
+        async def guarded_generate_vision(*args, **kwargs):
+            if _slice7_guard_enabled() and not in_invoker_context():
+                raise RuntimeError("Direct llm_client.generate_vision call blocked under slice7")
+            return await orig_generate_vision(*args, **kwargs)
+        monkeypatch.setattr(llm_client, "generate_vision", guarded_generate_vision)

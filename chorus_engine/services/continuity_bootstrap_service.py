@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Awaitable, Callable
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
@@ -60,13 +60,15 @@ class ContinuityBootstrapService:
         llm_client: LLMClient,
         llm_usage_lock: Optional[Any] = None,
         token_counter: Optional[TokenCounter] = None,
-        max_tokens: int = 1024
+        max_tokens: int = 1024,
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         self.db = db
         self.llm_client = llm_client
         self.llm_usage_lock = llm_usage_lock
         self.token_counter = token_counter or TokenCounter()
         self.max_tokens = max_tokens
+        self.llm_invoke_fn = llm_invoke_fn
         self.continuity_repo = ContinuityRepository(db)
         self.conv_repo = ConversationRepository(db)
         self.memory_repo = MemoryRepository(db)
@@ -975,6 +977,19 @@ class ContinuityBootstrapService:
     ) -> str:
         system_prompt = normalize_mojibake(system_prompt)
         user_prompt = normalize_mojibake(user_prompt)
+        if self.llm_invoke_fn is not None:
+            invocation = await self.llm_invoke_fn(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=None,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                metadata={
+                    "invocation_kind": "analysis",
+                    "analysis_kind": "continuity_bootstrap",
+                },
+            )
+            return normalize_mojibake(invocation.get("content") or "")
         if self.llm_usage_lock is not None:
             async with self.llm_usage_lock:
                 response = await self.llm_client.generate(

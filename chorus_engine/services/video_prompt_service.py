@@ -6,7 +6,7 @@ Similar to ImagePromptService but emphasizes dynamic action and temporal progres
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, Awaitable
 from chorus_engine.llm.client import LLMClient
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.config.models import CharacterConfig
@@ -26,7 +26,8 @@ class VideoPromptService:
     def __init__(
         self,
         llm_client: LLMClient,
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
     ):
         """
         Initialize video prompt service.
@@ -37,6 +38,7 @@ class VideoPromptService:
         """
         self.llm_client = llm_client
         self.temperature = temperature
+        self.llm_invoke_fn = llm_invoke_fn
         
         logger.info("Video prompt service initialized")
     
@@ -165,17 +167,28 @@ Remember: Motion and action are key! Describe what MOVES and CHANGES in the scen
             
             # Generate prompt via LLM
             logger.info(f"[VIDEO PROMPT SERVICE] Calling LLM with model: {model}")
-            response = await self.llm_client.generate(
-                prompt=user_message,
-                system_prompt=system_prompt,
-                temperature=self.temperature,  # Use configured temperature
-                max_tokens=300,  # Enough for detailed motion description
-                model=model  # Use specified model
-            )
-            logger.info(f"[VIDEO PROMPT SERVICE] LLM returned, used model: {response.model}")
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_message,
+                    system_prompt=system_prompt,
+                    model=model,
+                    temperature=self.temperature,
+                    max_tokens=300,
+                    metadata={"analysis_kind": "video_prompt"},
+                )
+                raw_content = invocation.get("output_text") or ""
+            else:
+                response = await self.llm_client.generate(
+                    prompt=user_message,
+                    system_prompt=system_prompt,
+                    temperature=self.temperature,  # Use configured temperature
+                    max_tokens=300,  # Enough for detailed motion description
+                    model=model  # Use specified model
+                )
+                raw_content = response.content or ""
             
             # Parse JSON response
-            result = self._parse_llm_response(response.content)
+            result = self._parse_llm_response(raw_content)
             
             # Determine if trigger words are needed
             needs_trigger = bool(trigger_words)
@@ -368,17 +381,28 @@ Generate a detailed video scene capture prompt based on this context. Focus on M
             logger.info(f"[VIDEO SCENE CAPTURE] Generating from observer perspective")
             logger.debug(f"Context length: {len(context)} chars")
             
-            response = await self.llm_client.generate(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                temperature=self.temperature,  # Use configured temperature
-                max_tokens=300,
-                model=model
-            )
-            logger.info(f"[VIDEO SCENE CAPTURE] LLM returned, used model: {response.model}")
+            if self.llm_invoke_fn is not None:
+                invocation = await self.llm_invoke_fn(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    temperature=self.temperature,
+                    max_tokens=300,
+                    metadata={"analysis_kind": "video_scene_prompt"},
+                )
+                raw_content = invocation.get("output_text") or ""
+            else:
+                response = await self.llm_client.generate(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    temperature=self.temperature,  # Use configured temperature
+                    max_tokens=300,
+                    model=model
+                )
+                raw_content = response.content or ""
             
             # Parse JSON response
-            result = self._parse_llm_response(response.content)
+            result = self._parse_llm_response(raw_content)
             
             # Determine if trigger words are needed (scene captures typically include character)
             needs_trigger = bool(workflow_config and workflow_config.get("trigger_word"))

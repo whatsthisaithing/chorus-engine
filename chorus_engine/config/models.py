@@ -555,6 +555,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns normalized surface egress outbox intent persistence",
     )
+    slice7_unified_llm_invocation: bool = Field(
+        default=False,
+        description="ENS owns unified provider-agnostic LLM invocation path",
+    )
 
 
 class SystemConfig(BaseModel):

@@ -19,6 +19,7 @@ from chorus_engine.ens.decision_store import ENSDecisionStore
 from chorus_engine.ens.session_registry import ENSSessionRegistry
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.surface_router import SurfaceRouter
+from chorus_engine.repositories import ThreadRepository
 from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MessageRole
 
 logger = logging.getLogger(__name__)
@@ -411,6 +412,14 @@ class ENSRuntime:
                 and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
             )
             thread_id = signal.payload.get("thread_id")
+            if not thread_id:
+                conversation_id = signal.payload.get("conversation_id")
+                if conversation_id:
+                    thread_repo = ThreadRepository(db)
+                    threads = thread_repo.list_by_conversation(conversation_id)
+                    if threads:
+                        thread_id = threads[0].id
+                        signal.payload["thread_id"] = thread_id
             assistant_id = signal.assistant_id or signal.payload.get("assistant_id")
             if slice6_enabled and assistant_id:
                 surface_id = signal.surface_id or signal.payload.get("surface_id") or ctx.surface or signal.source
