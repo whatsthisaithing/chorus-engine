@@ -17,6 +17,7 @@ import chorus_engine.ens.runtime as ens_runtime_module
 from chorus_engine.ens import ENSRuntime
 from chorus_engine.ens.llm_invocation_service import LLMInvocationService
 from chorus_engine.ens.llm_invocation_service import in_invoker_context
+from chorus_engine.ens.llm_control_plane_service import in_control_plane_context
 from chorus_engine.models.conversation import Conversation, Thread
 from chorus_engine.llm.base import LLMResponse
 
@@ -67,6 +68,20 @@ class DummyLLMClient:
     async def get_loaded_models(self):
         return []
 
+    async def ensure_model_loaded(self, model):
+        _ = model
+        return True
+
+    async def unload_all_models(self):
+        return None
+
+    async def reload_model(self):
+        return None
+
+    async def switch_model(self, model_path):
+        _ = model_path
+        return True
+
     async def unload_model(self, model_name):
         return None
 
@@ -101,6 +116,7 @@ class AppHelper:
         slice6_surface_routing_ownership: bool = False,
         slice65_egress_outbox_ownership: bool = False,
         slice7_unified_llm_invocation: bool = False,
+        slice75_llm_control_plane_ownership: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -118,6 +134,7 @@ class AppHelper:
             slice6_surface_routing_ownership=slice6_surface_routing_ownership,
             slice65_egress_outbox_ownership=slice65_egress_outbox_ownership,
             slice7_unified_llm_invocation=slice7_unified_llm_invocation,
+            slice75_llm_control_plane_ownership=slice75_llm_control_plane_ownership,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:
@@ -287,3 +304,40 @@ def _slice7_strict_direct_generate_guard(monkeypatch, app):
                 raise RuntimeError("Direct llm_client.generate_vision call blocked under slice7")
             return await orig_generate_vision(*args, **kwargs)
         monkeypatch.setattr(llm_client, "generate_vision", guarded_generate_vision)
+
+
+@pytest.fixture(autouse=True)
+def _slice75_strict_direct_control_guard(monkeypatch, app):
+    _test_app, helper = app
+    llm_client = helper.app_module.app_state.get("llm_client")
+    if llm_client is None:
+        return
+
+    def _slice75_guard_enabled() -> bool:
+        cfg = helper.app_module.app_state.get("system_config")
+        ens_cfg = getattr(cfg, "ens", None) if cfg else None
+        return bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "slice75_llm_control_plane_ownership", False)
+        )
+
+    for method_name in (
+        "health_check",
+        "get_loaded_models",
+        "ensure_model_loaded",
+        "unload_model",
+        "unload_all_models",
+        "reload_model",
+        "switch_model",
+    ):
+        original = getattr(llm_client, method_name, None)
+        if original is None:
+            continue
+
+        async def _guarded(*args, __orig=original, __method=method_name, **kwargs):
+            if _slice75_guard_enabled() and not in_control_plane_context():
+                raise RuntimeError(f"Direct llm_client.{__method} call blocked under slice75")
+            return await __orig(*args, **kwargs)
+
+        monkeypatch.setattr(llm_client, method_name, _guarded)

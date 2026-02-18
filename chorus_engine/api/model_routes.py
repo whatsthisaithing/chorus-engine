@@ -537,6 +537,33 @@ async def get_llm_status():
     This is used to detect missing models and show warnings.
     """
     try:
+        from chorus_engine.api.app import _ens_slice75_enabled, _invoke_llm_control_unified
+        if _ens_slice75_enabled():
+            from chorus_engine.config.loader import ConfigLoader
+            config_loader = ConfigLoader()
+            config = config_loader.load_system_config()
+            provider = config.llm.provider
+            model_path = config.llm.model if provider == "integrated" else None
+            health = await _invoke_llm_control_unified(
+                op="health",
+                reason="api_llm_status",
+                busy_mode="block_with_timeout",
+                timeout_s=5.0,
+            )
+            listed = await _invoke_llm_control_unified(
+                op="list_loaded",
+                reason="api_llm_status",
+                busy_mode="block_with_timeout",
+                timeout_s=5.0,
+            )
+            return {
+                "provider": provider,
+                "model_path": model_path,
+                "model_loaded": bool(health.get("engine_health", False)),
+                "loaded_models": listed.get("loaded_models") or [],
+                "error": None,
+            }
+
         # Import config loader
         from chorus_engine.config.loader import ConfigLoader
         
@@ -614,6 +641,30 @@ async def switch_model(request: SwitchModelRequest):
     Note: This endpoint accesses app_state which is imported from app module.
     """
     try:
+        from chorus_engine.api.app import _ens_slice75_enabled, _invoke_llm_control_unified
+        if _ens_slice75_enabled():
+            # Import app_state from app module to avoid circular imports
+            from chorus_engine.api.app import app_state
+            model_path = Path(request.model_path)
+            if not model_path.exists():
+                raise HTTPException(status_code=404, detail=f"Model file not found: {request.model_path}")
+            if not model_path.suffix == ".gguf":
+                raise HTTPException(status_code=400, detail="Model must be a GGUF file")
+            result = await _invoke_llm_control_unified(
+                op="switch",
+                model_id=str(model_path),
+                reason="api_switch_model",
+                busy_mode="block_with_timeout",
+                timeout_s=30.0,
+            )
+            app_state["current_model"] = str(model_path)
+            return {
+                "success": True,
+                "message": f"Switched to model: {model_path.name}",
+                "model_path": str(model_path),
+                "engine": result.get("engine"),
+            }
+
         # Import app_state from app module to avoid circular imports
         from chorus_engine.api.app import app_state
         

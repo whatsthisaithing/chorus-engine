@@ -1091,6 +1091,40 @@ async def unload_all_models_except(keep_model: Optional[str] = None):
     Args:
         keep_model: Model name to keep loaded (all others will be unloaded)
     """
+    if _ens_slice75_enabled():
+        # Slice 7.5 ownership: avoid direct provider HTTP control paths.
+        await _invoke_llm_control_unified(
+            op="list_loaded",
+            reason="legacy_unload_except_precheck",
+            busy_mode="skip_busy",
+            timeout_s=2.0,
+        )
+        if keep_model:
+            loaded_result = await _invoke_llm_control_unified(
+                op="list_loaded",
+                reason="legacy_unload_except",
+                busy_mode="block_with_timeout",
+                timeout_s=10.0,
+            )
+            for model_name in loaded_result.get("loaded_models") or []:
+                if model_name == keep_model:
+                    continue
+                await _invoke_llm_control_unified(
+                    op="unload",
+                    model_id=str(model_name),
+                    reason="legacy_unload_except",
+                    busy_mode="block_with_timeout",
+                    timeout_s=10.0,
+                )
+        else:
+            await _invoke_llm_control_unified(
+                op="unload_all",
+                reason="legacy_unload_except",
+                busy_mode="block_with_timeout",
+                timeout_s=10.0,
+            )
+        return
+
     llm_client = app_state.get("llm_client")
     if not llm_client:
         return
@@ -1160,6 +1194,21 @@ async def preload_model(model: str, character_id: str):
         model: The model name to preload
         character_id: The character ID requesting the model
     """
+    if _ens_slice75_enabled():
+        try:
+            await _invoke_llm_control_unified(
+                op="ensure_loaded",
+                model_id=model,
+                reason=f"preload:{character_id}",
+                busy_mode="block_with_timeout",
+                timeout_s=30.0,
+                metadata={"character_id": character_id},
+            )
+            app_state["current_model"] = model
+        except Exception as e:
+            logger.warning(f"[PRELOAD] Failed to preload {model}: {e}")
+        return
+
     llm_client = app_state.get("llm_client")
     if not llm_client:
         return
@@ -1198,6 +1247,71 @@ async def ensure_model_loaded(model: str, character_id: str):
     """
     llm_client = app_state.get("llm_client")
     if not llm_client:
+        return
+
+    if _ens_slice75_enabled():
+        current_model = app_state.get("current_model")
+        last_character = app_state.get("last_character")
+        intent_model = app_state.get("intent_model", "gemma2:9b")
+        vision_service = app_state.get("vision_service")
+        vision_model = vision_service.model_name if vision_service else None
+        logger.info(f"[MODEL TRACKING] ensure_model_loaded called: model={model}, character={character_id}, last_character={last_character}")
+        try:
+            loaded_state = await _invoke_llm_control_unified(
+                op="list_loaded",
+                reason="model_tracking_check",
+                busy_mode="block_with_timeout",
+                timeout_s=10.0,
+                metadata={"character_id": character_id},
+            )
+            loaded_models = loaded_state.get("loaded_models") or []
+            logger.info(f"[MODEL TRACKING] LLM provider reports: {len(loaded_models)} loaded: {loaded_models}")
+
+            if model in loaded_models:
+                logger.info(f"[MODEL TRACKING] Model {model} already loaded for {character_id}")
+                app_state["current_model"] = model
+                app_state["last_character"] = character_id
+                return
+
+            character_switched = last_character and last_character != character_id
+            if character_switched:
+                logger.info(f"[MODEL TRACKING] Character switched from {last_character} to {character_id}")
+                models_to_keep = [intent_model]
+                if vision_model:
+                    models_to_keep.append(vision_model)
+                models_to_unload = [m for m in loaded_models if m not in models_to_keep]
+                if models_to_unload:
+                    logger.info(f"[MODEL TRACKING] Unloading old character models: {models_to_unload} (keeping: {models_to_keep})")
+                    for model_name in models_to_unload:
+                        try:
+                            await _invoke_llm_control_unified(
+                                op="unload",
+                                model_id=str(model_name),
+                                reason="character_switch_unload",
+                                busy_mode="block_with_timeout",
+                                timeout_s=10.0,
+                                metadata={"character_id": character_id},
+                            )
+                            logger.info(f"[MODEL TRACKING] Unloaded {model_name}")
+                        except Exception as e:
+                            logger.warning(f"[MODEL TRACKING] Failed to unload {model_name}: {e}")
+                else:
+                    logger.info(f"[MODEL TRACKING] No models to unload (keeping: {models_to_keep})")
+            else:
+                logger.info(f"[MODEL TRACKING] Same character, keeping all loaded models: {loaded_models}")
+        except Exception as e:
+            logger.warning(f"[MODEL TRACKING] Could not check loaded models: {e}")
+
+        app_state["last_character"] = character_id
+        await _invoke_llm_control_unified(
+            op="ensure_loaded",
+            model_id=model,
+            reason="chat_ensure_model",
+            busy_mode="block_with_timeout",
+            timeout_s=20.0,
+            metadata={"character_id": character_id, "current_model": current_model},
+        )
+        app_state["current_model"] = model
         return
     
     current_model = app_state.get("current_model")
@@ -1757,7 +1871,16 @@ async def health_check():
     """Check system health."""
     llm_available = False
     if app_state["llm_client"]:
-        llm_available = await app_state["llm_client"].health_check()
+        if _ens_slice75_enabled():
+            llm_health = await _invoke_llm_control_unified(
+                op="health",
+                reason="health_endpoint",
+                busy_mode="block_with_timeout",
+                timeout_s=5.0,
+            )
+            llm_available = bool(llm_health.get("engine_health", False))
+        else:
+            llm_available = await app_state["llm_client"].health_check()
     
     return HealthResponse(
         status="ok",
@@ -3491,6 +3614,9 @@ def _ens_flags():
         "slice7_unified_llm_invocation": bool(
             ens_cfg and getattr(ens_cfg, "slice7_unified_llm_invocation", False)
         ),
+        "slice75_llm_control_plane_ownership": bool(
+            ens_cfg and getattr(ens_cfg, "slice75_llm_control_plane_ownership", False)
+        ),
     }
 
 
@@ -3517,6 +3643,11 @@ def _ens_slice65_enabled() -> bool:
 def _ens_slice7_enabled() -> bool:
     flags = _ens_flags()
     return bool(flags.get("enabled") and flags.get("slice7_unified_llm_invocation"))
+
+
+def _ens_slice75_enabled() -> bool:
+    flags = _ens_flags()
+    return bool(flags.get("enabled") and flags.get("slice75_llm_control_plane_ownership"))
 
 
 def _get_llm_invoker() -> LLMInvocationService:
@@ -3801,6 +3932,61 @@ async def _ens_surface_send_request(
             surface=surface,
             source=source,
             data={"domain": "egress"},
+        ),
+    )
+    return dict(outcome.response_payload or {})
+
+
+async def _invoke_llm_control_unified(
+    *,
+    op: str,
+    model_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    busy_mode: str = "block_with_timeout",
+    timeout_s: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    surface_id: str = "web",
+    skip_shared_locks: bool = False,
+) -> Dict[str, Any]:
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise RuntimeError("ENS runtime not initialized")
+    llm_client = app_state.get("llm_client")
+    if not llm_client:
+        raise RuntimeError("LLM client not initialized")
+    engine = LLMInvocationService._engine_from_client(llm_client)
+    op_norm = str(op or "").strip().lower()
+    model_part = str(model_id or "na")
+    idempotency_key = f"llm:control:{op_norm}:{engine}:{model_part}"
+    signal = SignalEnvelope(
+        type="llm.control.requested",
+        scope="GLOBAL",
+        source="external",
+        assistant_id="system",
+        payload={
+            "op": op,
+            "model_id": model_id,
+            "reason": reason,
+            "busy_mode": busy_mode,
+            "timeout_s": timeout_s,
+            "provider": "local",
+            "engine": engine,
+            "conversation_id": conversation_id,
+            "thread_id": thread_id,
+            "surface_id": surface_id,
+            "idempotency_key": idempotency_key,
+            "metadata": {**dict(metadata or {}), "skip_shared_locks": bool(skip_shared_locks)},
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=surface_id,
+            source=surface_id,
+            data={"domain": "llm_control_plane"},
         ),
     )
     return dict(outcome.response_payload or {})
@@ -4121,7 +4307,16 @@ async def _ens_media_guard(*, reload_llm_after: bool):
         async with llm_usage_lock:
             if llm_client:
                 try:
-                    await llm_client.unload_all_models()
+                    if _ens_slice75_enabled():
+                        await _invoke_llm_control_unified(
+                            op="unload_all",
+                            reason="ens_media_guard",
+                            busy_mode="block_with_timeout",
+                            timeout_s=20.0,
+                            skip_shared_locks=True,
+                        )
+                    else:
+                        await llm_client.unload_all_models()
                 except Exception as unload_error:
                     logger.warning("ENS media guard failed to unload LLM models: %s", unload_error)
 
@@ -4146,7 +4341,16 @@ async def _ens_media_guard(*, reload_llm_after: bool):
                     idle_detector.decrement_comfy_jobs()
                 if reload_llm_after and llm_client:
                     try:
-                        await llm_client.reload_model()
+                        if _ens_slice75_enabled():
+                            await _invoke_llm_control_unified(
+                                op="reload",
+                                reason="ens_media_guard",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                        else:
+                            await llm_client.reload_model()
                     except Exception as reload_error:
                         logger.warning("ENS media guard failed to reload LLM model: %s", reload_error)
 
@@ -4635,7 +4839,16 @@ async def chat(request: ChatRequest):
     if not llm_client:
         raise HTTPException(status_code=503, detail="LLM client not initialized")
     
-    llm_available = await llm_client.health_check()
+    if _ens_slice75_enabled():
+        llm_health = await _invoke_llm_control_unified(
+            op="health",
+            reason="thread_messages_nonstream",
+            busy_mode="block_with_timeout",
+            timeout_s=5.0,
+        )
+        llm_available = bool(llm_health.get("engine_health", False))
+    else:
+        llm_available = await llm_client.health_check()
     if not llm_available:
         raise HTTPException(
             status_code=503,
@@ -6058,7 +6271,16 @@ async def send_message(
     if not llm_client:
         raise HTTPException(status_code=503, detail="LLM client not initialized")
     
-    llm_available = await llm_client.health_check()
+    if _ens_slice75_enabled():
+        llm_health = await _invoke_llm_control_unified(
+            op="health",
+            reason="thread_messages_stream",
+            busy_mode="block_with_timeout",
+            timeout_s=5.0,
+        )
+        llm_available = bool(llm_health.get("engine_health", False))
+    else:
+        llm_available = await llm_client.health_check()
     if not llm_available:
         raise HTTPException(
             status_code=503,
@@ -6473,7 +6695,16 @@ async def send_message(
             # Ensure character's model is loaded
             if model_for_prompt and llm_client:
                 try:
-                    await llm_client.ensure_model_loaded(model_for_prompt)
+                    if _ens_slice75_enabled():
+                        await _invoke_llm_control_unified(
+                            op="ensure_loaded",
+                            model_id=model_for_prompt,
+                            reason="video_detection_nonstream",
+                            busy_mode="block_with_timeout",
+                            timeout_s=20.0,
+                        )
+                    else:
+                        await llm_client.ensure_model_loaded(model_for_prompt)
                     logger.info(f"[VIDEO DETECTION] Character model loaded: {model_for_prompt}")
                 except Exception as e:
                     logger.warning(f"[VIDEO DETECTION] Could not load character model: {e}")
@@ -7021,7 +7252,16 @@ async def send_message(
                 
                 if llm_client:
                     try:
-                        await llm_client.unload_all_models()
+                        if _ens_slice75_enabled():
+                            await _invoke_llm_control_unified(
+                                op="unload_all",
+                                reason="tts_generation",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                        else:
+                            await llm_client.unload_all_models()
                         logger.info(f"[TTS - VRAM] All models unloaded successfully")
                     except Exception as e:
                         logger.warning(f"[TTS - VRAM] Failed to unload models: {e}")
@@ -7062,7 +7302,16 @@ async def send_message(
                     if llm_client:
                         try:
                             logger.info(f"[TTS - VRAM] Reloading character model after generation...")
-                            await llm_client.reload_model()
+                            if _ens_slice75_enabled():
+                                await _invoke_llm_control_unified(
+                                    op="reload",
+                                    reason="tts_generation",
+                                    busy_mode="block_with_timeout",
+                                    timeout_s=20.0,
+                                    skip_shared_locks=True,
+                                )
+                            else:
+                                await llm_client.reload_model()
                             logger.info(f"[TTS - VRAM] Character model reloaded successfully")
                         except Exception as e:
                             logger.error(f"[TTS - VRAM] Failed to reload character model: {e}")
@@ -7517,7 +7766,16 @@ async def send_message_stream(
     if not llm_client:
         raise HTTPException(status_code=503, detail="LLM client not initialized")
     
-    llm_available = await llm_client.health_check()
+    if _ens_slice75_enabled():
+        llm_health = await _invoke_llm_control_unified(
+            op="health",
+            reason="thread_messages_stream_alt",
+            busy_mode="block_with_timeout",
+            timeout_s=5.0,
+        )
+        llm_available = bool(llm_health.get("engine_health", False))
+    else:
+        llm_available = await llm_client.health_check()
     if not llm_available:
         raise HTTPException(
             status_code=503,
@@ -7856,7 +8114,16 @@ async def send_message_stream(
             # Ensure character's model is loaded before generating prompt
             if model_for_prompt and llm_client:
                 try:
-                    await llm_client.ensure_model_loaded(model_for_prompt)
+                    if _ens_slice75_enabled():
+                        await _invoke_llm_control_unified(
+                            op="ensure_loaded",
+                            model_id=model_for_prompt,
+                            reason="video_detection_stream",
+                            busy_mode="block_with_timeout",
+                            timeout_s=20.0,
+                        )
+                    else:
+                        await llm_client.ensure_model_loaded(model_for_prompt)
                     logger.info(f"[VIDEO DETECTION] Character model loaded: {model_for_prompt}")
                 except Exception as e:
                     logger.warning(f"[VIDEO DETECTION] Could not load character model: {e}")
@@ -8981,7 +9248,16 @@ async def capture_scene(
             
             if llm_client:
                 try:
-                    await llm_client.unload_all_models()
+                    if _ens_slice75_enabled():
+                        await _invoke_llm_control_unified(
+                            op="unload_all",
+                            reason="scene_capture_image",
+                            busy_mode="block_with_timeout",
+                            timeout_s=20.0,
+                            skip_shared_locks=True,
+                        )
+                    else:
+                        await llm_client.unload_all_models()
                     logger.info(f"[SCENE CAPTURE - VRAM] All LLM models unloaded successfully")
                 except Exception as e:
                     logger.warning(f"[SCENE CAPTURE - VRAM] Failed to unload LLM models: {e}")
@@ -9112,7 +9388,16 @@ async def capture_scene(
                 if llm_client:
                     try:
                         logger.info(f"[SCENE CAPTURE - VRAM] Reloading character model after generation...")
-                        await llm_client.reload_model()
+                        if _ens_slice75_enabled():
+                            await _invoke_llm_control_unified(
+                                op="reload",
+                                reason="scene_capture_image",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                        else:
+                            await llm_client.reload_model()
                         logger.info(f"[SCENE CAPTURE - VRAM] Character model reloaded successfully")
                     except Exception as e:
                         logger.error(f"[SCENE CAPTURE - VRAM] Failed to reload character model: {e}")
@@ -9984,8 +10269,21 @@ async def generate_image(
                 if llm_client:
                     try:
                         # Unload all loaded models
-                        await llm_client.unload_all_models()
-                        logger.info(f"[IMAGE GEN - VRAM] All LLM models unloaded successfully")
+                        if _ens_slice75_enabled():
+                            control_result = await _invoke_llm_control_unified(
+                                op="unload_all",
+                                reason="image_generation",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                            if control_result.get("reason") == "busy":
+                                logger.warning("[IMAGE GEN - VRAM] LLM unload skipped: busy")
+                            else:
+                                logger.info(f"[IMAGE GEN - VRAM] All LLM models unloaded successfully")
+                        else:
+                            await llm_client.unload_all_models()
+                            logger.info(f"[IMAGE GEN - VRAM] All LLM models unloaded successfully")
                     except Exception as e:
                         logger.warning(f"[IMAGE GEN - VRAM] Failed to unload LLM models: {e}")
                 
@@ -10547,7 +10845,16 @@ async def generate_video(
                 if llm_client:
                     try:
                         # Unload all loaded models
-                        await llm_client.unload_all_models()
+                        if _ens_slice75_enabled():
+                            await _invoke_llm_control_unified(
+                                op="unload_all",
+                                reason="video_generation",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                        else:
+                            await llm_client.unload_all_models()
                         logger.info("[VIDEO GEN - VRAM] All LLM models unloaded successfully")
                     except Exception as e:
                         logger.warning(f"[VIDEO GEN - VRAM] Failed to unload LLM models: {e}")
@@ -10799,7 +11106,16 @@ async def generate_video_scene_capture_prompt(
     llm_client = app_state.get("llm_client")
     if model_for_prompt and llm_client:
         try:
-            await llm_client.ensure_model_loaded(model_for_prompt)
+            if _ens_slice75_enabled():
+                await _invoke_llm_control_unified(
+                    op="ensure_loaded",
+                    model_id=model_for_prompt,
+                    reason="video_scene_prompt",
+                    busy_mode="block_with_timeout",
+                    timeout_s=20.0,
+                )
+            else:
+                await llm_client.ensure_model_loaded(model_for_prompt)
             logger.info(f"[VIDEO SCENE PROMPT] Character model loaded: {model_for_prompt}")
         except Exception as e:
             logger.warning(f"[VIDEO SCENE PROMPT] Could not load character model: {e}")
@@ -10964,7 +11280,16 @@ async def capture_video_scene(
                 if llm_client:
                     try:
                         # Unload all loaded models
-                        await llm_client.unload_all_models()
+                        if _ens_slice75_enabled():
+                            await _invoke_llm_control_unified(
+                                op="unload_all",
+                                reason="video_scene_generate",
+                                busy_mode="block_with_timeout",
+                                timeout_s=20.0,
+                                skip_shared_locks=True,
+                            )
+                        else:
+                            await llm_client.unload_all_models()
                         logger.info("[VIDEO SCENE - VRAM] All LLM models unloaded successfully")
                     except Exception as e:
                         logger.warning(f"[VIDEO SCENE - VRAM] Failed to unload LLM models: {e}")
@@ -11433,7 +11758,16 @@ async def generate_message_audio(
         if llm_client:
             try:
                 # Unload all loaded models
-                await llm_client.unload_all_models()
+                if _ens_slice75_enabled():
+                    await _invoke_llm_control_unified(
+                        op="unload_all",
+                        reason="audio_generation",
+                        busy_mode="block_with_timeout",
+                        timeout_s=20.0,
+                        skip_shared_locks=True,
+                    )
+                else:
+                    await llm_client.unload_all_models()
                 logger.info(f"[AUDIO GEN - VRAM] All models unloaded successfully")
             except Exception as e:
                 logger.warning(f"[AUDIO GEN - VRAM] Failed to unload models: {e}")
@@ -11482,7 +11816,16 @@ async def generate_message_audio(
             if llm_client:
                 try:
                     logger.info(f"[AUDIO GEN - VRAM] Reloading character model after generation...")
-                    await llm_client.reload_model()
+                    if _ens_slice75_enabled():
+                        await _invoke_llm_control_unified(
+                            op="reload",
+                            reason="audio_generation",
+                            busy_mode="block_with_timeout",
+                            timeout_s=20.0,
+                            skip_shared_locks=True,
+                        )
+                    else:
+                        await llm_client.reload_model()
                     logger.info(f"[AUDIO GEN - VRAM] Character model reloaded successfully")
                 except Exception as e:
                     logger.error(f"[AUDIO GEN - VRAM] Failed to reload character model: {e}")

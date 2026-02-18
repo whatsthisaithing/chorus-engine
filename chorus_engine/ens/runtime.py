@@ -985,6 +985,16 @@ class ENSRuntime:
                 )
             ]
 
+        if signal.type == "llm.control.requested":
+            idempotency_key = signal.payload.get("idempotency_key")
+            return [
+                ENSAction(
+                    kind="llm.control.execute",
+                    idempotency_key=str(idempotency_key) if idempotency_key else None,
+                    params=dict(signal.payload),
+                )
+            ]
+
         return []
 
     def _build_outcome(
@@ -1028,7 +1038,23 @@ class ENSRuntime:
                 "conversation_title_updated": updated_title,
             }
         elif signal.type == "tool.execute_requested" and tool_exec:
-            response_payload = dict((tool_exec or {}).get("output") or {})
+            tool_status = (tool_exec or {}).get("status")
+            if tool_status == "failure":
+                response_payload = {
+                    "success": False,
+                    "error": (tool_exec or {}).get("error_message") or (tool_exec or {}).get("error_code") or "tool execution failed",
+                }
+            elif tool_status == "skipped":
+                skipped_output = dict((tool_exec or {}).get("output") or {})
+                if "success" in skipped_output:
+                    response_payload = skipped_output
+                else:
+                    response_payload = {
+                        "success": False,
+                        "error": skipped_output.get("reason") or "tool execution skipped",
+                    }
+            else:
+                response_payload = dict((tool_exec or {}).get("output") or {})
         elif signal.type == "scene_capture.preview_requested" and scene_preview:
             preview_output = dict((scene_preview or {}).get("output") or {})
             if pending_write:
@@ -1096,6 +1122,9 @@ class ENSRuntime:
         elif signal.type == "surface.send_message_requested":
             intent_result = next((r for r in action_results if r.get("kind") == "surface.egress.persist_intent"), None)
             response_payload = dict((intent_result or {}).get("output") or {})
+        elif signal.type == "llm.control.requested":
+            control_result = next((r for r in action_results if r.get("kind") == "llm.control.execute"), None)
+            response_payload = dict((control_result or {}).get("output") or {})
 
         return ENSOutcome(
             decision_id=decision_id,

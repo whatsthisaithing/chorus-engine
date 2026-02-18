@@ -58,6 +58,7 @@ from chorus_engine.services.structured_response import (
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
+from chorus_engine.ens.llm_control_plane_service import ControlPlaneRequest, LLMControlPlaneService
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class ENSDispatcher:
     def __init__(self, app_state: Dict[str, Any]) -> None:
         self.app_state = app_state
         self.llm_invoker = LLMInvocationService(app_state)
+        self.llm_control_service = LLMControlPlaneService(app_state)
 
     def _slice7_enabled(self) -> bool:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
@@ -264,6 +266,8 @@ class ENSDispatcher:
                 output = self._apply_core_memory_sync_vectors(db, action.params)
             elif action.kind == "surface.egress.persist_intent":
                 output = self._persist_surface_egress_intent(db, action.params)
+            elif action.kind == "llm.control.execute":
+                output = await self._execute_llm_control(action.params)
             else:
                 raise ValueError(f"Unsupported action kind: {action.kind}")
 
@@ -294,6 +298,10 @@ class ENSDispatcher:
                 "output": output,
             }
         except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             logger.error("ENS action failed kind=%s error=%s", action.kind, e)
             return {
                 "action_result_id": str(uuid.uuid4()),
@@ -1089,6 +1097,43 @@ class ENSDispatcher:
             "idempotency_key": intent.idempotency_key,
             "created": bool(created),
             "replayed": not bool(created),
+        }
+
+    async def _execute_llm_control(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        request = ControlPlaneRequest(
+            op=str(params.get("op") or ""),
+            idempotency_key=str(params.get("idempotency_key") or ""),
+            busy_mode=str(params.get("busy_mode") or "block_with_timeout"),
+            timeout_s=params.get("timeout_s"),
+            model_id=params.get("model_id"),
+            reason=params.get("reason"),
+            provider=str(params.get("provider") or "local"),
+            engine=params.get("engine"),
+            session_id=params.get("session_id"),
+            conversation_id=params.get("conversation_id"),
+            thread_id=params.get("thread_id"),
+            surface_id=params.get("surface_id"),
+            metadata=dict(params.get("metadata") or {}),
+        )
+        result = await self.llm_control_service.execute(request)
+        if result.get("_ens_action_status") == "skipped":
+            return result
+        return {
+            "op": result.get("op"),
+            "provider": result.get("provider"),
+            "engine": result.get("engine"),
+            "model_id": result.get("model_id"),
+            "status": result.get("status"),
+            "attempts": int(result.get("attempts") or 1),
+            "duration_ms": int(result.get("duration_ms") or 0),
+            "busy_mode": result.get("busy_mode"),
+            "timeout_s": result.get("timeout_s"),
+            "loaded_models": result.get("loaded_models"),
+            "active_model_id": result.get("active_model_id"),
+            "engine_health": result.get("engine_health"),
+            "switched": result.get("switched"),
+            "loaded": result.get("loaded"),
+            "reason": result.get("reason"),
         }
 
     def _persist_pending_tool_calls(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:

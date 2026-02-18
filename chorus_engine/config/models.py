@@ -559,6 +559,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns unified provider-agnostic LLM invocation path",
     )
+    slice75_llm_control_plane_ownership: bool = Field(
+        default=False,
+        description="ENS owns LLM control-plane operations (health/load/unload/reload/switch)",
+    )
 
 
 class SystemConfig(BaseModel):

@@ -248,6 +248,7 @@ ens:
   slice6_surface_routing_ownership: false  # DEV-ONLY rollout flag (surface binding resolver ownership)
   slice65_egress_outbox_ownership: false  # DEV-ONLY rollout flag (surface egress outbox ownership)
   slice7_unified_llm_invocation: false  # DEV-ONLY rollout flag (unified LLM invoker ownership)
+  slice75_llm_control_plane_ownership: false  # DEV-ONLY rollout flag (LLM control-plane ownership)
 
 # Startup synchronization
 startup:
