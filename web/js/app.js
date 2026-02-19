@@ -37,6 +37,7 @@ window.App = {
         configDrift: null,
         configDriftDismissedFingerprint: null,
         configDriftPollTimer: null,
+        selectedConversationLogFile: null,
     },
     
     /**
@@ -433,6 +434,12 @@ window.App = {
         });
         
         document.getElementById('refreshConversationLogsBtn').addEventListener('click', () => {
+            if (this.state.selectedConversationId) {
+                this.loadConversationLog(this.state.selectedConversationId);
+            }
+        });
+        document.getElementById('conversationLogFileSelect').addEventListener('change', (e) => {
+            this.state.selectedConversationLogFile = e.target.value || null;
             if (this.state.selectedConversationId) {
                 this.loadConversationLog(this.state.selectedConversationId);
             }
@@ -4404,6 +4411,7 @@ window.App = {
         const conversation = this.currentConversation;
         document.getElementById('debugLogConversationTitle').textContent = 
             conversation ? conversation.title : this.state.selectedConversationId;
+        this.state.selectedConversationLogFile = null;
         
         await this.loadConversationLog(this.state.selectedConversationId);
     },
@@ -4434,17 +4442,45 @@ window.App = {
     async loadConversationLog(conversationId) {
         const content = document.getElementById('conversationLogsContent');
         const info = document.getElementById('conversationLogInfo');
+        const fileSelect = document.getElementById('conversationLogFileSelect');
         
         try {
             content.textContent = 'Loading...';
             info.textContent = '';
-            
-            const result = await API.getConversationLog(conversationId);
+
+            const result = await API.getConversationLog(conversationId, {
+                file: this.state.selectedConversationLogFile,
+            });
+
+            if (fileSelect) {
+                const files = Array.isArray(result.available_logs) ? result.available_logs : [];
+                fileSelect.innerHTML = '';
+                if (files.length === 0) {
+                    fileSelect.disabled = true;
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No log files';
+                    fileSelect.appendChild(option);
+                } else {
+                    fileSelect.disabled = false;
+                    files.forEach((entry) => {
+                        const option = document.createElement('option');
+                        option.value = entry.name;
+                        const labelDate = entry.date || entry.modified || '';
+                        option.textContent = labelDate ? `${entry.name} (${labelDate})` : entry.name;
+                        if (entry.name === result.selected_log_file) {
+                            option.selected = true;
+                        }
+                        fileSelect.appendChild(option);
+                    });
+                    this.state.selectedConversationLogFile = result.selected_log_file || files[0].name;
+                }
+            }
             
             if (result.interactions && result.interactions.length > 0) {
                 // Pretty print the JSON
                 content.textContent = JSON.stringify(result.interactions, null, 2);
-                info.textContent = `${result.count} interactions`;
+                info.textContent = `${result.count} interactions | ${result.selected_log_file || 'latest log'}`;
                 
                 // Scroll to bottom
                 content.scrollTop = content.scrollHeight;
@@ -4624,10 +4660,15 @@ window.App = {
     async downloadConversationLog(conversationId) {
         try {
             // Download raw JSONL
-            const url = `${window.location.protocol}//${window.location.host}/logs/conversations/${conversationId}?prettify=false`;
+            const params = new URLSearchParams();
+            params.append('prettify', 'false');
+            if (this.state.selectedConversationLogFile) {
+                params.append('file', this.state.selectedConversationLogFile);
+            }
+            const url = `${window.location.protocol}//${window.location.host}/logs/conversations/${conversationId}?${params.toString()}`;
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${conversationId}_debug.jsonl`;
+            a.download = this.state.selectedConversationLogFile || `${conversationId}_debug.jsonl`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);

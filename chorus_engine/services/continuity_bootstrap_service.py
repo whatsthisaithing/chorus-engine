@@ -62,6 +62,9 @@ class ContinuityBootstrapService:
         token_counter: Optional[TokenCounter] = None,
         max_tokens: int = 1024,
         llm_invoke_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
+        shared_embedding_service: Optional[EmbeddingService] = None,
+        shared_memory_vector_store: Optional[VectorStore] = None,
+        shared_summary_vector_store: Optional[ConversationSummaryVectorStore] = None,
     ):
         self.db = db
         self.llm_client = llm_client
@@ -72,9 +75,9 @@ class ContinuityBootstrapService:
         self.continuity_repo = ContinuityRepository(db)
         self.conv_repo = ConversationRepository(db)
         self.memory_repo = MemoryRepository(db)
-        self._embedding_service: Optional[EmbeddingService] = None
-        self._memory_vector_store: Optional[VectorStore] = None
-        self._summary_vector_store: Optional[ConversationSummaryVectorStore] = None
+        self._embedding_service: Optional[EmbeddingService] = shared_embedding_service
+        self._memory_vector_store: Optional[VectorStore] = shared_memory_vector_store
+        self._summary_vector_store: Optional[ConversationSummaryVectorStore] = shared_summary_vector_store
 
     @property
     def embedding_service(self) -> EmbeddingService:

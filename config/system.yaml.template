@@ -97,6 +97,7 @@ tts:
 # Backend automatically matches llm.provider (ollama, lmstudio, etc.)
 vision:
   enabled: true  # Enable/disable vision capability system-wide
+  max_response_tokens: 2048  # Max tokens for vision model response output
   
   # Model Configuration
   model:

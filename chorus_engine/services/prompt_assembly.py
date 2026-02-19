@@ -94,6 +94,13 @@ class PromptAssemblyService:
         document_budget_ratio: float = 0.15,
         reserve_ratio: float = 0.10,
         conversation_context_budget_ratio: float = 0.05,
+        shared_embedding_service: Optional[EmbeddingService] = None,
+        shared_memory_vector_store: Optional[VectorStore] = None,
+        shared_summary_vector_store: Optional[ConversationSummaryVectorStore] = None,
+        shared_moment_pin_vector_store: Optional[MomentPinVectorStore] = None,
+        shared_document_vector_store: Optional[Any] = None,
+        startup_monotonic: Optional[float] = None,
+        runtime_transient_retry_window_seconds: float = 90.0,
     ):
         """
         Initialize prompt assembly service.
@@ -120,6 +127,13 @@ class PromptAssemblyService:
         self.document_budget_ratio = document_budget_ratio
         self.reserve_ratio = reserve_ratio
         self.conversation_context_budget_ratio = conversation_context_budget_ratio
+        self.shared_embedding_service = shared_embedding_service
+        self.shared_memory_vector_store = shared_memory_vector_store
+        self.shared_summary_vector_store = shared_summary_vector_store
+        self.shared_moment_pin_vector_store = shared_moment_pin_vector_store
+        self.shared_document_vector_store = shared_document_vector_store
+        self.startup_monotonic = startup_monotonic
+        self.runtime_transient_retry_window_seconds = runtime_transient_retry_window_seconds
         
         # Validate ratios sum to ~1.0
         total_ratio = (memory_budget_ratio + history_budget_ratio + document_budget_ratio + 
@@ -197,10 +211,8 @@ class PromptAssemblyService:
     def memory_service(self) -> MemoryRetrievalService:
         """Lazy-initialize memory retrieval service."""
         if self._memory_service is None:
-            from pathlib import Path
-            
-            embedding_service = EmbeddingService()
-            vector_store = VectorStore(Path("data/vector_store"))
+            embedding_service = self.shared_embedding_service or EmbeddingService()
+            vector_store = self.shared_memory_vector_store or VectorStore(Path("data/vector_store"))
             self._memory_service = MemoryRetrievalService(
                 self.db,
                 vector_store,
@@ -212,12 +224,10 @@ class PromptAssemblyService:
     def conversation_context_service(self) -> ConversationContextRetrievalService:
         """Lazy-initialize conversation context retrieval service."""
         if self._conversation_context_service is None:
-            from pathlib import Path
-            
-            embedding_service = EmbeddingService()
+            embedding_service = self.shared_embedding_service or EmbeddingService()
             
             if self._summary_vector_store is None:
-                self._summary_vector_store = ConversationSummaryVectorStore(
+                self._summary_vector_store = self.shared_summary_vector_store or ConversationSummaryVectorStore(
                     Path("data/vector_store")
                 )
             
@@ -244,7 +254,10 @@ class PromptAssemblyService:
                 summary_vector_store=self._summary_vector_store,
                 embedding_service=embedding_service,
                 token_counter=self.token_counter,
-                config=service_config
+                config=service_config,
+                startup_monotonic=self.startup_monotonic,
+                runtime_transient_retry_window_seconds=self.runtime_transient_retry_window_seconds,
+                runtime_transient_retry_attempts=1,
             )
         return self._conversation_context_service
 
@@ -252,8 +265,8 @@ class PromptAssemblyService:
     def moment_pin_service(self) -> MomentPinRetrievalService:
         """Lazy-initialize moment pin retrieval service."""
         if self._moment_pin_service is None:
-            embedding_service = EmbeddingService()
-            pin_vector_store = MomentPinVectorStore(Path("data/vector_store"))
+            embedding_service = self.shared_embedding_service or EmbeddingService()
+            pin_vector_store = self.shared_moment_pin_vector_store or MomentPinVectorStore(Path("data/vector_store"))
             self._moment_pin_service = MomentPinRetrievalService(
                 db=self.db,
                 vector_store=pin_vector_store,

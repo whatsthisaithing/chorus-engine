@@ -1,6 +1,7 @@
 from chorus_engine.models.conversation import Conversation, Message, Thread
 from chorus_engine.models.ens import ENSSession, SurfaceBinding
 from chorus_engine.ens import ENSContext, SignalEnvelope
+import asyncio
 
 
 def test_slice6_surface_binding_create_and_authoritative_reuse(client, db, helpers):
@@ -171,3 +172,43 @@ def test_slice6_session_signal_with_conversation_hint_reuses_existing_thread(hel
     assert len(bindings) == 1
     assert bindings[0].thread_id == thread_id
     assert bindings[0].external_thread_id == thread_id
+
+
+def test_slice6_message_mutation_does_not_auto_create_conversation(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice4_config_ownership=True,
+        slice6_surface_routing_ownership=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    runtime = helpers.app_module.app_state["ens_runtime"]
+
+    before_conv_count = db.query(Conversation).filter(Conversation.character_id == "test_char").count()
+    before_binding_count = db.query(SurfaceBinding).count()
+
+    signal = SignalEnvelope(
+        type="message.mutation_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id="test_char",
+        payload={
+            "operation": "soft_delete",
+            "payload": {
+                "thread_id": thread_id,
+                "message_ids": ["non-existent-id"],
+            },
+        },
+    )
+    asyncio.run(runtime.ingest(signal, ENSContext(app_state=helpers.app_module.app_state, surface="web", source="web")))
+
+    after_conv_count = db.query(Conversation).filter(Conversation.character_id == "test_char").count()
+    after_binding_count = db.query(SurfaceBinding).count()
+    assert after_conv_count == before_conv_count
+    assert after_binding_count == before_binding_count
+
+    latest = db.query(ENSSession).order_by(ENSSession.created_at.desc()).first()
+    assert latest is not None
+    assert latest.thread_id == thread_id

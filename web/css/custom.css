@@ -344,42 +344,49 @@ html, body {
     min-height: 0;
 }
 
-.general-chat-btn {
+.conversation-item.general-chat-btn {
     background-color: var(--accent-primary);
     border-color: var(--bg-tertiary);
     color: var(--bg-tertiary);
     margin-bottom: 0.5rem;
 }
 
-.general-chat-btn:hover {
+.conversation-item.general-chat-btn:hover {
     background-color: var(--accent-tertiary);
     border-color: var(--bg-tertiary);
     color: var(--bg-tertiary);
 }
 
-.general-chat-btn.active {
+.conversation-item.general-chat-btn.active {
     background-color: var(--accent-tertiary);
     border-color: var(--bg-tertiary);
     box-shadow: 0 0 10px rgba(212, 175, 55, 0.2);
 }
 
-.general-chat-btn:disabled {
+.conversation-item.general-chat-btn:disabled {
     color: var(--text-muted);
     border-color: var(--border-color);
     background-color: transparent;
 }
 
-.general-chat-btn.conversation-item .conversation-title {
+.conversation-item.general-chat-btn .conversation-title {
     color: inherit;
 }
 
-.general-chat-btn.conversation-item .conversation-date {
+.conversation-item.general-chat-btn .conversation-date {
     color: inherit;
     opacity: 0.85;
 }
 
-.general-chat-btn:disabled .conversation-date,
-.general-chat-btn:disabled .conversation-title {
+.conversation-item.general-chat-btn:hover .conversation-title,
+.conversation-item.general-chat-btn:hover .conversation-date,
+.conversation-item.general-chat-btn.active .conversation-title,
+.conversation-item.general-chat-btn.active .conversation-date {
+    color: var(--bg-tertiary);
+}
+
+.conversation-item.general-chat-btn:disabled .conversation-date,
+.conversation-item.general-chat-btn:disabled .conversation-title {
     color: var(--text-muted);
     opacity: 1;
 }
@@ -940,6 +947,22 @@ html, body {
     border-color: var(--text-muted);
 }
 
+.btn-outline-primary {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.btn-outline-primary:hover {
+    background-color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: var(--bg-primary);
+}
+
+.btn-outline-primary:disabled {
+    border-color: var(--border-color);
+    color: var(--text-muted);
+}
+
 .btn-outline-light {
     border-color: var(--border-accent);
     color: var(--text-secondary);
@@ -960,6 +983,50 @@ html, body {
     background-color: var(--bg-elevated);
     border-color: var(--accent-primary);
     color: var(--text-primary);
+}
+
+.btn-outline-success {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.btn-outline-success:hover {
+    background-color: var(--success);
+    border-color: var(--success);
+    color: var(--bg-primary);
+}
+
+.btn-outline-warning {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.btn-outline-warning:hover {
+    background-color: var(--warning);
+    border-color: var(--warning);
+    color: var(--bg-primary);
+}
+
+.btn-outline-danger {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+.btn-outline-danger:hover {
+    background-color: var(--error);
+    border-color: var(--error);
+    color: var(--bg-primary);
+}
+
+.btn-outline-info {
+    border-color: var(--info);
+    color: var(--info);
+}
+
+.btn-outline-info:hover {
+    background-color: var(--info);
+    border-color: var(--info);
+    color: var(--bg-primary);
 }
 
 /* Dropdown Menus */

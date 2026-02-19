@@ -18,6 +18,7 @@ without being prompted, while being more liberal when the user asks.
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
@@ -105,7 +106,10 @@ class ConversationContextRetrievalService:
         summary_vector_store: ConversationSummaryVectorStore,
         embedding_service: EmbeddingService,
         token_counter: Optional[TokenCounter] = None,
-        config: Optional[ConversationContextConfig] = None
+        config: Optional[ConversationContextConfig] = None,
+        startup_monotonic: Optional[float] = None,
+        runtime_transient_retry_window_seconds: float = 90.0,
+        runtime_transient_retry_attempts: int = 1,
     ):
         """
         Initialize the conversation context retrieval service.
@@ -120,12 +124,22 @@ class ConversationContextRetrievalService:
         self.embedding_service = embedding_service
         self.token_counter = token_counter
         self.config = config or ConversationContextConfig()
+        self.startup_monotonic = startup_monotonic
+        self.runtime_transient_retry_window_seconds = max(0.0, float(runtime_transient_retry_window_seconds))
+        self.runtime_transient_retry_attempts = max(0, int(runtime_transient_retry_attempts))
         
         logger.debug(
             f"ConversationContextRetrievalService initialized: "
             f"passive_threshold={self.config.passive_threshold}, "
             f"triggered_threshold={self.config.triggered_threshold}"
         )
+
+    def _allow_runtime_transient_retry(self) -> bool:
+        if self.runtime_transient_retry_attempts <= 0:
+            return False
+        if self.startup_monotonic is None:
+            return False
+        return (time.monotonic() - self.startup_monotonic) <= self.runtime_transient_retry_window_seconds
     
     def should_include_summaries(self, user_message: str) -> Tuple[bool, float, bool]:
         """
@@ -195,11 +209,13 @@ class ConversationContextRetrievalService:
             
             # Search with extra results to account for filtering
             search_limit = max_results * 3  # Get extra in case of filtering
+            retry_attempts = self.runtime_transient_retry_attempts if self._allow_runtime_transient_retry() else 0
             
             results = self.summary_vector_store.search_conversations(
                 character_id=character_id,
                 query_embedding=query_embedding,
-                n_results=search_limit
+                n_results=search_limit,
+                transient_retry_attempts=retry_attempts,
             )
             
             if not results.get('ids') or not results['ids'][0]:

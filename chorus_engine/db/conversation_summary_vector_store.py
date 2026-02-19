@@ -11,6 +11,7 @@ one summary per conversation with rich metadata (themes, tone, participants, etc
 import json
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from chorus_engine.db.chroma_config_fix import normalize_collection_configs
@@ -24,6 +25,11 @@ except ImportError:
     chromadb = None
 
 logger = logging.getLogger(__name__)
+
+
+def _is_transient_hnsw_reader_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    return "hnsw segment reader" in msg or "nothing found on disk" in msg
 
 
 class ConversationSummaryVectorStore:
@@ -191,7 +197,9 @@ class ConversationSummaryVectorStore:
         character_id: str,
         query_embedding: List[float],
         n_results: int = 10,
-        where: Optional[Dict[str, Any]] = None
+        where: Optional[Dict[str, Any]] = None,
+        transient_retry_attempts: int = 0,
+        transient_retry_delay_seconds: float = 0.2,
     ) -> Dict[str, Any]:
         """
         Search conversation summaries using semantic search.
@@ -216,32 +224,49 @@ class ConversationSummaryVectorStore:
                 'metadatas': [[]]
             }
         
-        try:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=where
-            )
-            
-            # Deserialize JSON fields in metadata
-            if results.get('metadatas') and results['metadatas'][0]:
-                results['metadatas'][0] = [
-                    self._process_metadata_from_storage(meta)
-                    for meta in results['metadatas'][0]
-                ]
-            
-            return results
-        except Exception as e:
-            logger.error(
-                f"[VECTOR_HEALTH][SUMMARY_QUERY_ERROR] Failed to search conversation summaries "
-                f"for '{character_id}': {e}"
-            )
-            return {
-                'ids': [[]],
-                'distances': [[]],
-                'documents': [[]],
-                'metadatas': [[]]
-            }
+        attempts = 1 + max(0, int(transient_retry_attempts))
+        delay = max(0.0, float(transient_retry_delay_seconds))
+        for attempt_index in range(attempts):
+            try:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results,
+                    where=where
+                )
+                
+                # Deserialize JSON fields in metadata
+                if results.get('metadatas') and results['metadatas'][0]:
+                    results['metadatas'][0] = [
+                        self._process_metadata_from_storage(meta)
+                        for meta in results['metadatas'][0]
+                    ]
+                
+                return results
+            except Exception as e:
+                should_retry = (
+                    attempt_index < attempts - 1 and _is_transient_hnsw_reader_error(e)
+                )
+                if should_retry:
+                    logger.debug(
+                        "[VECTOR_HEALTH] transient summary query error for '%s' (attempt %s/%s): %s",
+                        character_id,
+                        attempt_index + 1,
+                        attempts,
+                        e,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+                    continue
+                logger.error(
+                    f"[VECTOR_HEALTH][SUMMARY_QUERY_ERROR] Failed to search conversation summaries "
+                    f"for '{character_id}': {e}"
+                )
+                return {
+                    'ids': [[]],
+                    'distances': [[]],
+                    'documents': [[]],
+                    'metadatas': [[]]
+                }
     
     def delete_summary(
         self,

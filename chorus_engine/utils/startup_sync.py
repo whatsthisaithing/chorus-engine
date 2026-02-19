@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Set, List
 import uuid
+import time
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
@@ -28,6 +29,33 @@ def _safe_prefix(text: str, max_len: int = 160) -> str:
     if not text:
         return ""
     return text[:max_len]
+
+
+def _is_transient_hnsw_read_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    return "hnsw segment reader" in msg or "nothing found on disk" in msg
+
+
+def _run_with_hnsw_retry(operation, *, label: str, max_attempts: int = 4):
+    """Retry transient HNSW read errors that can happen immediately after heavy writes."""
+    attempt = 0
+    delay = 0.15
+    while True:
+        attempt += 1
+        try:
+            return operation()
+        except Exception as e:
+            if attempt >= max_attempts or not _is_transient_hnsw_read_error(e):
+                raise
+            logger.debug(
+                "[VECTOR_HEALTH] transient HNSW read error during %s (attempt %s/%s): %s",
+                label,
+                attempt,
+                max_attempts,
+                e,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2.0, 1.0)
 
 
 async def sync_conversation_summary_vectors(
@@ -494,6 +522,9 @@ def run_vector_health_checks(
     moment_pin_vector_store: MomentPinVectorStore,
     document_vector_store: DocumentVectorStore,
     embedding_service: Optional[EmbeddingService] = None,
+    include_query_checks: bool = True,
+    character_ids: Optional[List[str]] = None,
+    treat_transient_hnsw_errors_as_healthy: bool = False,
 ) -> dict:
     """
     Run lightweight operational checks for memory/summary/document vector stores.
@@ -501,6 +532,7 @@ def run_vector_health_checks(
     report = {
         "ok": True,
         "issues": [],
+        "transient_issues": [],
         "characters_checked": 0,
         "unhealthy_memory_characters": [],
         "unhealthy_summary_characters": [],
@@ -524,70 +556,120 @@ def run_vector_health_checks(
         report["issues"].append(f"document collection count failed: {e}")
 
     # Character-level smoke tests for query/get paths.
-    character_ids = set()
-    for row in db_session.query(Memory.character_id).distinct().all():
-        if row[0]:
-            character_ids.add(row[0])
-    for row in db_session.query(Conversation.character_id).distinct().all():
-        if row[0]:
-            character_ids.add(row[0])
-    for row in db_session.query(MomentPin.character_id).distinct().all():
-        if row[0]:
-            character_ids.add(row[0])
+    if character_ids is None:
+        character_id_set: Set[str] = set()
+        for row in db_session.query(Memory.character_id).distinct().all():
+            if row[0]:
+                character_id_set.add(row[0])
+        for row in db_session.query(Conversation.character_id).distinct().all():
+            if row[0]:
+                character_id_set.add(row[0])
+        for row in db_session.query(MomentPin.character_id).distinct().all():
+            if row[0]:
+                character_id_set.add(row[0])
+    else:
+        character_id_set = {cid for cid in character_ids if cid}
 
-    for character_id in sorted(character_ids):
+    for character_id in sorted(character_id_set):
         report["characters_checked"] += 1
         collection = vector_store.get_collection(character_id)
         if collection is not None:
             try:
-                count = collection.count()
+                count = _run_with_hnsw_retry(
+                    lambda: collection.count(),
+                    label=f"memory.count:{character_id}",
+                )
                 if count > 0:
                     # Use get-path smoke check to avoid false positives on fresh empty segment files.
-                    collection.get(limit=1, include=[])
-                    if probe_embedding:
-                        collection.query(query_embeddings=[probe_embedding], n_results=1)
+                    _run_with_hnsw_retry(
+                        lambda: collection.get(limit=1, include=[]),
+                        label=f"memory.get:{character_id}",
+                    )
+                    if include_query_checks and probe_embedding:
+                        _run_with_hnsw_retry(
+                            lambda: collection.query(query_embeddings=[probe_embedding], n_results=1),
+                            label=f"memory.query:{character_id}",
+                        )
             except Exception as e:
-                report["issues"].append(
-                    f"memory query failed for '{character_id}': {e}"
-                )
-                report["unhealthy_memory_characters"].append(character_id)
+                msg = f"memory query failed for '{character_id}': {e}"
+                if treat_transient_hnsw_errors_as_healthy and _is_transient_hnsw_read_error(e):
+                    report["transient_issues"].append(msg)
+                else:
+                    report["issues"].append(msg)
+                    report["unhealthy_memory_characters"].append(character_id)
 
         summary_collection = summary_vector_store.get_collection(character_id)
         if summary_collection is not None:
             try:
-                count = summary_collection.count()
-                if count > 0:
-                    summary_collection.get(limit=1, include=[])
-                    if probe_embedding:
-                        summary_collection.query(query_embeddings=[probe_embedding], n_results=1)
-            except Exception as e:
-                report["issues"].append(
-                    f"summary query failed for '{character_id}': {e}"
+                count = _run_with_hnsw_retry(
+                    lambda: summary_collection.count(),
+                    label=f"summary.count:{character_id}",
                 )
-                report["unhealthy_summary_characters"].append(character_id)
+                if count > 0:
+                    _run_with_hnsw_retry(
+                        lambda: summary_collection.get(limit=1, include=[]),
+                        label=f"summary.get:{character_id}",
+                    )
+                    if include_query_checks and probe_embedding:
+                        _run_with_hnsw_retry(
+                            lambda: summary_collection.query(query_embeddings=[probe_embedding], n_results=1),
+                            label=f"summary.query:{character_id}",
+                        )
+            except Exception as e:
+                msg = f"summary query failed for '{character_id}': {e}"
+                if treat_transient_hnsw_errors_as_healthy and _is_transient_hnsw_read_error(e):
+                    report["transient_issues"].append(msg)
+                else:
+                    report["issues"].append(msg)
+                    report["unhealthy_summary_characters"].append(character_id)
 
         pin_collection = moment_pin_vector_store.get_collection(character_id)
         if pin_collection is not None:
             try:
-                count = pin_collection.count()
-                if count > 0:
-                    pin_collection.get(limit=1, include=[])
-                    if probe_embedding:
-                        pin_collection.query(query_embeddings=[probe_embedding], n_results=1)
-            except Exception as e:
-                report["issues"].append(
-                    f"moment pin query failed for '{character_id}': {e}"
+                count = _run_with_hnsw_retry(
+                    lambda: pin_collection.count(),
+                    label=f"moment_pin.count:{character_id}",
                 )
-                report["unhealthy_moment_pin_characters"].append(character_id)
+                if count > 0:
+                    _run_with_hnsw_retry(
+                        lambda: pin_collection.get(limit=1, include=[]),
+                        label=f"moment_pin.get:{character_id}",
+                    )
+                    if include_query_checks and probe_embedding:
+                        _run_with_hnsw_retry(
+                            lambda: pin_collection.query(query_embeddings=[probe_embedding], n_results=1),
+                            label=f"moment_pin.query:{character_id}",
+                        )
+            except Exception as e:
+                msg = f"moment pin query failed for '{character_id}': {e}"
+                if treat_transient_hnsw_errors_as_healthy and _is_transient_hnsw_read_error(e):
+                    report["transient_issues"].append(msg)
+                else:
+                    report["issues"].append(msg)
+                    report["unhealthy_moment_pin_characters"].append(character_id)
 
     # Document collection get path smoke test.
     try:
-        document_vector_store.collection.get(limit=1, include=[])
-        if probe_embedding and document_vector_store.collection.count() > 0:
-            document_vector_store.collection.query(query_embeddings=[probe_embedding], n_results=1)
+        _run_with_hnsw_retry(
+            lambda: document_vector_store.collection.get(limit=1, include=[]),
+            label="document.get",
+        )
+        count = _run_with_hnsw_retry(
+            lambda: document_vector_store.collection.count(),
+            label="document.count",
+        )
+        if include_query_checks and probe_embedding and count > 0:
+            _run_with_hnsw_retry(
+                lambda: document_vector_store.collection.query(query_embeddings=[probe_embedding], n_results=1),
+                label="document.query",
+            )
     except Exception as e:
-        report["issues"].append(f"document get failed: {e}")
-        report["document_unhealthy"] = True
+        msg = f"document get failed: {e}"
+        if treat_transient_hnsw_errors_as_healthy and _is_transient_hnsw_read_error(e):
+            report["transient_issues"].append(msg)
+        else:
+            report["issues"].append(msg)
+            report["document_unhealthy"] = True
 
     report["unhealthy_memory_characters"] = sorted(set(report["unhealthy_memory_characters"]))
     report["unhealthy_summary_characters"] = sorted(set(report["unhealthy_summary_characters"]))
@@ -601,6 +683,7 @@ async def repair_unhealthy_vector_collections(
     vector_store: VectorStore,
     summary_vector_store: ConversationSummaryVectorStore,
     moment_pin_vector_store: MomentPinVectorStore,
+    document_vector_store: Optional[DocumentVectorStore],
     embedding_service: EmbeddingService,
     health_report: dict,
 ) -> dict:
@@ -613,6 +696,7 @@ async def repair_unhealthy_vector_collections(
         "memory_rebuilt": [],
         "summary_rebuilt": [],
         "moment_pin_rebuilt": [],
+        "document_rebuilt": False,
         "errors": 0,
     }
 
@@ -644,6 +728,21 @@ async def repair_unhealthy_vector_collections(
         except Exception as e:
             logger.error(f"Failed rebuilding moment pin vectors for '{character_id}': {e}")
             stats["errors"] += 1
+
+    if health_report.get("document_unhealthy"):
+        if document_vector_store is None:
+            logger.error("Failed rebuilding document vectors: document vector store unavailable")
+            stats["errors"] += 1
+        else:
+            try:
+                await _rebuild_document_collection(
+                    db_session=db_session,
+                    document_vector_store=document_vector_store,
+                )
+                stats["document_rebuilt"] = True
+            except Exception as e:
+                logger.error(f"Failed rebuilding document vectors: {e}")
+                stats["errors"] += 1
 
     return stats
 
@@ -793,6 +892,33 @@ def _rebuild_moment_pin_collection(
 
     logger.info(
         f"[VECTOR_HEALTH] Rebuilt moment pin collection for '{character_id}' with {rebuilt} vectors"
+    )
+
+
+async def _rebuild_document_collection(
+    db_session: Session,
+    document_vector_store: DocumentVectorStore,
+) -> None:
+    """Rebuild document vector collection from SQL document chunks."""
+    collection_name = getattr(document_vector_store, "COLLECTION_NAME", "document_library")
+    metadata = {
+        "hnsw:space": "cosine",
+        "description": "Document chunks for semantic retrieval",
+    }
+    try:
+        document_vector_store.client.delete_collection(name=collection_name)
+    except Exception:
+        pass
+    document_vector_store.collection = document_vector_store.client.create_collection(
+        name=collection_name,
+        metadata=metadata,
+    )
+    sync_stats = await sync_document_vectors(db_session, document_vector_store)
+    if int(sync_stats.get("errors", 0)) > 0:
+        raise RuntimeError(f"document sync after rebuild reported errors: {sync_stats}")
+    logger.info(
+        "[VECTOR_HEALTH] Rebuilt document collection with %s vectors",
+        int(sync_stats.get("synced", 0)),
     )
 
 

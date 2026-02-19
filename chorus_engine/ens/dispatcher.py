@@ -336,8 +336,10 @@ class ENSDispatcher:
         try:
             conv_dir = Path("data/debug_logs/conversations") / str(conversation_id)
             conv_dir.mkdir(parents=True, exist_ok=True)
-            log_file = conv_dir / "ens_conversation.jsonl"
-            doc = {"timestamp": datetime.utcnow().isoformat(), **event}
+            timestamp = datetime.utcnow()
+            # Rotate ENS conversation logs daily (UTC) to keep long-lived conversations manageable.
+            log_file = conv_dir / f"ens_conversation_{timestamp.strftime('%Y-%m-%d')}.jsonl"
+            doc = {"timestamp": timestamp.isoformat(), **event}
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(doc, ensure_ascii=False) + "\n")
         except Exception as e:
@@ -487,6 +489,9 @@ class ENSDispatcher:
                             "engine": llm_invocation.get("engine"),
                             "request_fingerprint": llm_invocation.get("request_fingerprint"),
                             "attempts": llm_invocation.get("attempts"),
+                            "finish_reason": llm_invocation.get("finish_reason"),
+                            "output_empty": bool(llm_invocation.get("output_empty")),
+                            "completion_flags": llm_invocation.get("completion_flags") or [],
                         }
                     )
                 processed_count += 1
@@ -707,6 +712,16 @@ class ENSDispatcher:
             character_id=character.id,
             model_name=self.app_state["system_config"].llm.model,
             context_window=character.preferred_llm.context_window or self.app_state["system_config"].llm.context_window,
+            shared_embedding_service=self.app_state.get("embedding_service"),
+            shared_memory_vector_store=self.app_state.get("vector_store"),
+            shared_summary_vector_store=self.app_state.get("summary_vector_store"),
+            shared_moment_pin_vector_store=self.app_state.get("moment_pin_vector_store"),
+            shared_document_vector_store=(
+                self.app_state.get("document_manager").vector_store
+                if self.app_state.get("document_manager")
+                else None
+            ),
+            startup_monotonic=self.app_state.get("startup_monotonic"),
         )
         prompt_components = prompt_assembler.assemble_prompt(
             thread_id=thread_id,
@@ -837,6 +852,9 @@ class ENSDispatcher:
             "provider": invocation.get("provider"),
             "engine": invocation.get("engine"),
             "token_usage": invocation.get("token_usage"),
+            "finish_reason": invocation.get("finish_reason"),
+            "output_empty": bool(invocation.get("output_empty")),
+            "completion_flags": invocation.get("completion_flags") or [],
             "cost": invocation.get("cost"),
             "attempts": invocation.get("attempts"),
             "replayed": invocation.get("replayed"),
@@ -888,6 +906,9 @@ class ENSDispatcher:
                 "messages_tail": messages[-6:],
                 "raw_content": raw_content,
                 "display_content": display_text,
+                "finish_reason": result.get("finish_reason"),
+                "output_empty": result.get("output_empty"),
+                "completion_flags": result.get("completion_flags"),
             },
         )
         return result
@@ -1074,6 +1095,9 @@ class ENSDispatcher:
             "provider": invocation.get("provider"),
             "engine": invocation.get("engine"),
             "request_fingerprint": invocation.get("request_fingerprint"),
+            "finish_reason": invocation.get("finish_reason"),
+            "output_empty": bool(invocation.get("output_empty")),
+            "completion_flags": invocation.get("completion_flags") or [],
             "character_name": character.name,
         }
 
@@ -2022,7 +2046,10 @@ class ENSDispatcher:
                 )
                 self.app_state.setdefault("card_previews", {}).pop(preview_id, None)
                 if preview_data["character_data"].get("core_memories"):
-                    core_loader = CoreMemoryLoader(db)
+                    core_loader = CoreMemoryLoader(
+                        db,
+                        vector_store=self.app_state.get("vector_store"),
+                    )
                     try:
                         core_loader.load_character_core_memories(character_filename)
                     except Exception:
@@ -2821,7 +2848,10 @@ class ENSDispatcher:
         diff = params.get("diff_result") or {}
         if diff.get("no_change"):
             return {"_ens_action_status": "skipped", "reason": "no_change", "character_id": character_id}
-        loader = CoreMemoryLoader(db)
+        loader = CoreMemoryLoader(
+            db,
+            vector_store=self.app_state.get("vector_store"),
+        )
         deleted = loader.delete_core_memories(character_id)
         loaded = loader.load_character_core_memories(character_id)
         return {"character_id": character_id, "deleted": deleted, "loaded": loaded}

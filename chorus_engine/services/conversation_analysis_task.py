@@ -15,8 +15,10 @@ from sqlalchemy import or_
 from chorus_engine.services.heartbeat_service import (
     BackgroundTaskHandler, BackgroundTask, TaskResult, TaskPriority
 )
+from chorus_engine.db.database import SessionLocal
 from chorus_engine.ens.models import SignalEnvelope
 from chorus_engine.ens.runtime import ENSContext
+from chorus_engine.models.conversation import Conversation
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +238,25 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                             memories=True,
                             reason="analysis_failed"
                         )
+                else:
+                    now = datetime.utcnow()
+                    values = {"last_analyzed_at": now}
+                    if analysis_kind == "summary":
+                        values["last_summary_analyzed_at"] = now
+                    elif analysis_kind == "memories":
+                        values["last_memories_analyzed_at"] = now
+                    else:
+                        values["last_summary_analyzed_at"] = now
+                        values["last_memories_analyzed_at"] = now
+                    fallback_db = SessionLocal()
+                    try:
+                        fallback_db.query(Conversation).filter(Conversation.id == conversation_id).update(
+                            values,
+                            synchronize_session=False,
+                        )
+                        fallback_db.commit()
+                    finally:
+                        fallback_db.close()
                 return TaskResult(
                     success=False,
                     task_id=task.id,

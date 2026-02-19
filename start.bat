@@ -1,7 +1,7 @@
 @echo off
 REM Chorus Engine - Windows Startup Script
 REM Launches the backend server and opens web UI in browser
-setlocal
+setlocal EnableDelayedExpansion
 
 echo ============================================
 echo    Chorus Engine - Starting Up
@@ -71,11 +71,20 @@ if "%API_PORT%"=="" set API_PORT=8080
 
 echo [INFO] Server configured for %API_HOST%:%API_PORT%
 
-REM Check if configured port is available
-netstat -ano | findstr ":%API_PORT%" >nul
-if not errorlevel 1 (
+REM Check if configured port is actively LISTENING.
+REM NOTE: We intentionally ignore TIME_WAIT/ESTABLISHED sockets to avoid false positives.
+set "PORT_PIDS="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:"TCP .*:%API_PORT% .*LISTENING"') do (
+    if not "%%P"=="0" set "PORT_PIDS=!PORT_PIDS! %%P"
+)
+
+if defined PORT_PIDS (
     echo [WARNING] Port %API_PORT% is already in use!
     echo Another instance might be running, or another application is using the port.
+    echo Listening PID^(s^): !PORT_PIDS!
+    for %%P in (!PORT_PIDS!) do (
+        tasklist /FI "PID eq %%P" /FO TABLE /NH
+    )
     choice /C YN /M "Do you want to continue anyway?"
     if errorlevel 2 exit /b 1
 )

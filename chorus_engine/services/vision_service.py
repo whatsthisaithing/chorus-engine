@@ -117,6 +117,7 @@ class VisionService:
         output_config = vision_config.get("output", {})
         self.output_format = output_config.get("format", "structured")
         self.include_confidence = output_config.get("include_confidence", True)
+        self.max_response_tokens = vision_config.get("max_response_tokens", 2048)
         
         logger.info(f"Vision service initialized (backend={self.backend}, model={self.model_name})")
     
@@ -326,7 +327,7 @@ Be specific, factual, and objective. Focus on what is visibly present."""
                         system_prompt=None,
                         model=self.model_name,
                         temperature=0.1,
-                        max_tokens=1000,
+                        max_tokens=self.max_response_tokens,
                         vision_images=[image_data],
                         vision_image_mime_type=mime_type,
                         metadata={
@@ -341,6 +342,14 @@ Be specific, factual, and objective. Focus on what is visibly present."""
                             "idempotency_key": idempotency_key,
                         },
                     )
+                    if invocation.get("output_empty") or (invocation.get("completion_flags") or []):
+                        logger.warning(
+                            "[VISION] Flagged LLM invocation (attachment_id=%s, finish_reason=%s, flags=%s, fingerprint=%s)",
+                            attachment_id,
+                            invocation.get("finish_reason"),
+                            invocation.get("completion_flags") or [],
+                            (invocation.get("request_fingerprint") or "")[:12],
+                        )
                     return invocation.get("content") or invocation.get("output_text") or "", invocation
                 else:
                     response = await self.llm_client.generate_vision(
@@ -349,7 +358,7 @@ Be specific, factual, and objective. Focus on what is visibly present."""
                         image_mime_type=mime_type,
                         system_prompt=None,
                         temperature=0.1,
-                        max_tokens=1000,
+                        max_tokens=self.max_response_tokens,
                         model=self.model_name,
                     )
                     return response.content or "", None

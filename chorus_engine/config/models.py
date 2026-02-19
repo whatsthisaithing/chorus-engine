@@ -269,6 +269,12 @@ class VisionConfig(BaseModel):
     """Vision system configuration."""
     
     enabled: bool = Field(default=False, description="Enable vision system")
+    max_response_tokens: int = Field(
+        default=2048,
+        gt=0,
+        le=8192,
+        description="Maximum response tokens for vision model output."
+    )
     model: dict = Field(
         default_factory=lambda: {
             "name": "qwen2-vl:7b",

@@ -180,6 +180,7 @@ class SystemSettingsManager {
         
         // Model settings (backend is derived from llm.provider, not configurable separately)
         document.getElementById('vision_model_name').value = vision.model?.name || 'qwen3-vl:4b';
+        document.getElementById('vision_max_response_tokens').value = vision.max_response_tokens || 2048;
         document.getElementById('vision_model_load_timeout_seconds').value = vision.model?.load_timeout_seconds || 60;
         
         // Processing settings
@@ -318,6 +319,7 @@ class SystemSettingsManager {
             },
             vision: {
                 enabled: document.getElementById('vision_enabled').checked,
+                max_response_tokens: parseInt(document.getElementById('vision_max_response_tokens').value),
                 model: {
                     name: document.getElementById('vision_model_name').value,
                     load_timeout_seconds: parseInt(document.getElementById('vision_model_load_timeout_seconds').value)
@@ -399,6 +401,32 @@ class SystemSettingsManager {
                 data[key] = loaded[key];
             }
         });
+
+        // Preserve nested keys not managed by the modal for sections we do manage.
+        // /system/config performs full-replace writes, so we need to keep unknown
+        // properties to avoid deleting them on save.
+        const preserveMissingNestedKeys = (target, source) => {
+            if (!target || !source || typeof target !== 'object' || typeof source !== 'object') return;
+            Object.keys(source).forEach((key) => {
+                if (!(key in target)) {
+                    target[key] = source[key];
+                    return;
+                }
+                const src = source[key];
+                const dst = target[key];
+                if (
+                    src &&
+                    dst &&
+                    typeof src === 'object' &&
+                    typeof dst === 'object' &&
+                    !Array.isArray(src) &&
+                    !Array.isArray(dst)
+                ) {
+                    preserveMissingNestedKeys(dst, src);
+                }
+            });
+        };
+        preserveMissingNestedKeys(data, loaded);
 
         return data;
     }

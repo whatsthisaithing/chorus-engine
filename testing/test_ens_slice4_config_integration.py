@@ -1,6 +1,8 @@
 from chorus_engine.models.ens import ENSActionResult, ENSDecision
 from chorus_engine.models.workflow import Workflow
+from chorus_engine.models.conversation import Conversation
 from pathlib import Path
+from sqlalchemy import text
 
 
 def test_slice4_user_identity_update_routes_through_ens(client, db, helpers):
@@ -172,3 +174,45 @@ def test_slice4_reload_controls_route_via_ens(client, db, helpers):
 
     system_decisions = db.query(ENSDecision).filter(ENSDecision.signal_type == "config.system.change_requested").count()
     assert system_decisions >= 1
+
+
+def test_slice4_config_change_uses_global_scope_and_does_not_create_routed_conversation(client, db, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=False,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice4_config_ownership=True,
+        slice6_surface_routing_ownership=True,
+    )
+
+    before_conv_count = db.query(Conversation).filter(Conversation.character_id == "test_char").count()
+    before_binding_count = db.execute(
+        text(
+            "SELECT COUNT(*) FROM surface_bindings "
+            "WHERE surface_id='web' AND external_thread_id='local:web:test_char'"
+        )
+    ).scalar_one()
+
+    resp = client.post("/characters/test_char/reload-core-memories")
+    assert resp.status_code == 200, resp.text
+
+    after_conv_count = db.query(Conversation).filter(Conversation.character_id == "test_char").count()
+    after_binding_count = db.execute(
+        text(
+            "SELECT COUNT(*) FROM surface_bindings "
+            "WHERE surface_id='web' AND external_thread_id='local:web:test_char'"
+        )
+    ).scalar_one()
+
+    assert after_conv_count == before_conv_count
+    assert after_binding_count == before_binding_count
+
+    decision = (
+        db.query(ENSDecision)
+        .filter(ENSDecision.signal_type == "config.core_memory.sync_requested")
+        .order_by(ENSDecision.created_at.desc())
+        .first()
+    )
+    assert decision is not None
+    assert decision.scope == "GLOBAL"

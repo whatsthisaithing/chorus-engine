@@ -885,8 +885,12 @@ class API {
         return this.request('/logs/conversations');
     }
     
-    static async getConversationLog(conversationId) {
-        return this.request(`/logs/conversations/${conversationId}?prettify=true`);
+    static async getConversationLog(conversationId, options = {}) {
+        const params = new URLSearchParams();
+        params.append('prettify', 'true');
+        if (options.file) params.append('file', options.file);
+        if (options.date) params.append('date', options.date);
+        return this.request(`/logs/conversations/${conversationId}?${params.toString()}`);
     }
     
     static async getExtractionLog(conversationId) {

@@ -17,7 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
@@ -344,6 +344,12 @@ app_state = {
     "ens_runtime": None,  # ENS runtime
     "ens_tool_executor": None,  # ENS tool execution callback
     "ens_scene_preview_executor": None,  # ENS scene preview callback
+    "is_shutting_down": False,  # Reject mutating requests during shutdown drain
+    "active_requests": 0,  # In-flight HTTP request counter
+    "active_requests_lock": None,  # Async lock for request counter updates
+    "vector_health_deep_check_task": None,  # Deferred deep query health checks
+    "vector_health_repair_performed_this_boot": False,  # Skip deep rechecks after startup repair
+    "startup_monotonic": None,  # Monotonic startup timestamp for warm-window logic
 }
 
 
@@ -435,6 +441,122 @@ def _check_and_log_config_drift() -> None:
     )
 
 
+async def _run_deferred_vector_health_deep_check() -> None:
+    """
+    Run deep vector health checks after startup settles.
+
+    Policy:
+    - wait for startup write activity to settle
+    - require two consecutive deep-check failures before repair
+    - skip immediate post-repair deep recheck to avoid read-after-write thrash
+    """
+    startup = getattr(app_state.get("system_config"), "startup", None)
+    initial_delay = float(getattr(startup, "vector_health_deep_check_delay_seconds", 6.0))
+    retry_delay = float(getattr(startup, "vector_health_deep_check_retry_delay_seconds", 8.0))
+
+    await asyncio.sleep(max(0.0, initial_delay))
+    if app_state.get("is_shutting_down"):
+        return
+    if app_state.get("vector_health_repair_performed_this_boot"):
+        logger.info("[VECTOR_HEALTH] Deferred deep check skipped (repair already performed this boot)")
+        return
+
+    def _collect_deep_report() -> dict:
+        document_manager = app_state.get("document_manager")
+        if not document_manager:
+            return {
+                "ok": False,
+                "issues": ["document manager unavailable for deferred vector health check"],
+                "characters_checked": 0,
+                "unhealthy_memory_characters": [],
+                "unhealthy_summary_characters": [],
+                "unhealthy_moment_pin_characters": [],
+                "document_unhealthy": True,
+            }
+        db_gen = get_db()
+        db = next(db_gen)
+        try:
+            return run_vector_health_checks(
+                db_session=db,
+                vector_store=app_state.get("vector_store"),
+                summary_vector_store=app_state.get("summary_vector_store"),
+                moment_pin_vector_store=app_state.get("moment_pin_vector_store"),
+                document_vector_store=document_manager.vector_store,
+                embedding_service=app_state.get("embedding_service"),
+                include_query_checks=True,
+                character_ids=sorted((app_state.get("characters") or {}).keys()),
+                treat_transient_hnsw_errors_as_healthy=True,
+            )
+        finally:
+            db.close()
+
+    report1 = _collect_deep_report()
+    if report1.get("ok"):
+        logger.info("[VECTOR_HEALTH] Deferred deep check passed")
+        transient_count = len(report1.get("transient_issues") or [])
+        if transient_count > 0:
+            logger.warning(
+                "[VECTOR_HEALTH] Deferred deep check suppressed %s transient startup read issue(s)",
+                transient_count,
+            )
+        return
+
+    logger.warning("[VECTOR_HEALTH] Deferred deep check found issues; retrying once before repair")
+    for issue in report1.get("issues", []):
+        logger.warning(f"[VECTOR_HEALTH] deferred issue: {issue}")
+
+    await asyncio.sleep(max(0.0, retry_delay))
+    if app_state.get("is_shutting_down"):
+        return
+
+    report2 = _collect_deep_report()
+    if report2.get("ok"):
+        logger.info("[VECTOR_HEALTH] Deferred deep check recovered without repair")
+        transient_count = len(report2.get("transient_issues") or [])
+        if transient_count > 0:
+            logger.warning(
+                "[VECTOR_HEALTH] Deferred deep check suppressed %s transient startup read issue(s)",
+                transient_count,
+            )
+        return
+
+    logger.error("[VECTOR_HEALTH] Deferred deep check failed twice; triggering repair")
+    for issue in report2.get("issues", []):
+        logger.error(f"[VECTOR_HEALTH] deferred persistent issue: {issue}")
+
+    startup_cfg = getattr(app_state.get("system_config"), "startup", None)
+    auto_repair = bool(getattr(startup_cfg, "auto_repair_unhealthy_vectors", True))
+    embedding_service = app_state.get("embedding_service")
+    if not auto_repair or not embedding_service:
+        logger.warning("[VECTOR_HEALTH] Deferred repair skipped (disabled or missing embedding service)")
+        return
+
+    db_gen = get_db()
+    db = next(db_gen)
+    try:
+        app_state["vector_health_repair_performed_this_boot"] = True
+        repair_stats = await repair_unhealthy_vector_collections(
+            db_session=db,
+            vector_store=app_state.get("vector_store"),
+            summary_vector_store=app_state.get("summary_vector_store"),
+            moment_pin_vector_store=app_state.get("moment_pin_vector_store"),
+            document_vector_store=app_state.get("document_manager").vector_store if app_state.get("document_manager") else None,
+            embedding_service=embedding_service,
+            health_report=report2,
+        )
+    finally:
+        db.close()
+
+    logger.info(
+        "[ENS_AUDIT] deferred.vector_health_repair memory=%s summary=%s moment_pins=%s document=%s errors=%s",
+        len(repair_stats.get("memory_rebuilt", [])),
+        len(repair_stats.get("summary_rebuilt", [])),
+        len(repair_stats.get("moment_pin_rebuilt", [])),
+        1 if repair_stats.get("document_rebuilt") else 0,
+        int(repair_stats.get("errors", 0)),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
@@ -497,7 +619,7 @@ async def lifespan(app: FastAPI):
         db_session = next(get_db())
         
         # Load core memories for all characters
-        core_memory_loader = CoreMemoryLoader(db_session)
+        core_memory_loader = CoreMemoryLoader(db_session, vector_store=vector_store)
         for character_id in characters.keys():
             try:
                 loaded_count = core_memory_loader.load_character_core_memories(character_id)
@@ -544,6 +666,9 @@ async def lifespan(app: FastAPI):
             llm_usage_lock=llm_usage_lock,
             max_tokens=1024,
             llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+            shared_embedding_service=embedding_service,
+            shared_memory_vector_store=vector_store,
+            shared_summary_vector_store=summary_vector_store,
         )
         logger.info("✓ Continuity bootstrap service initialized")
         
@@ -669,6 +794,13 @@ async def lifespan(app: FastAPI):
             logger.info("Audio generation disabled (requires ComfyUI)")
         
         
+        # Initialize runtime shutdown/drain guards.
+        app_state["is_shutting_down"] = False
+        app_state["active_requests"] = 0
+        app_state["active_requests_lock"] = asyncio.Lock()
+        app_state["vector_health_repair_performed_this_boot"] = False
+        app_state["startup_monotonic"] = time.monotonic()
+
         # Store in app state
         app_state["system_config"] = system_config
         app_state["characters"] = characters
@@ -858,55 +990,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"âš  Failed to sync document vectors: {e}")
 
-        try:
-            health_report = run_vector_health_checks(
-                db_session=db_session,
-                vector_store=vector_store,
-                summary_vector_store=summary_vector_store,
-                moment_pin_vector_store=moment_pin_vector_store,
-                document_vector_store=document_manager.vector_store,
-                embedding_service=embedding_service,
-            )
-            if health_report["ok"]:
-                logger.info(
-                    f"[VECTOR_HEALTH] OK - checked {health_report['characters_checked']} characters"
-                )
-            else:
-                logger.error("[VECTOR_HEALTH] STARTUP CHECK FAILED")
-                for issue in health_report["issues"]:
-                    logger.error(f"[VECTOR_HEALTH] {issue}")
-                if auto_repair_unhealthy_vectors and embedding_service:
-                    repair_stats = await repair_unhealthy_vector_collections(
-                        db_session=db_session,
-                        vector_store=vector_store,
-                        summary_vector_store=summary_vector_store,
-                        moment_pin_vector_store=moment_pin_vector_store,
-                        embedding_service=embedding_service,
-                        health_report=health_report,
-                    )
-                    logger.info(
-                        "[ENS_AUDIT] startup.vector_health_repair memory=%s summary=%s moment_pins=%s errors=%s",
-                        len(repair_stats.get("memory_rebuilt", [])),
-                        len(repair_stats.get("summary_rebuilt", [])),
-                        len(repair_stats.get("moment_pin_rebuilt", [])),
-                        int(repair_stats.get("errors", 0)),
-                    )
-                    post_repair_report = run_vector_health_checks(
-                        db_session=db_session,
-                        vector_store=vector_store,
-                        summary_vector_store=summary_vector_store,
-                        moment_pin_vector_store=moment_pin_vector_store,
-                        document_vector_store=document_manager.vector_store,
-                        embedding_service=embedding_service,
-                    )
-                    if post_repair_report["ok"]:
-                        logger.info("[VECTOR_HEALTH] Startup repair completed successfully")
-                    else:
-                        logger.error("[VECTOR_HEALTH] Startup repair incomplete; remaining issues:")
-                        for issue in post_repair_report["issues"]:
-                            logger.error(f"[VECTOR_HEALTH] {issue}")
-        except Exception as e:
-            logger.error(f"[VECTOR_HEALTH] Startup health check crashed: {e}")
+        logger.info("[VECTOR_HEALTH] Startup query-based HNSW health checks are disabled; startup sync is authoritative")
 
         # Initialize idle detector for background processing (Phase D)
         heartbeat_config = getattr(system_config, 'heartbeat', None)
@@ -1071,6 +1155,9 @@ async def lifespan(app: FastAPI):
             app_state["heartbeat_service"] = None
             app_state["stale_finder"] = None
             logger.info("✓ Idle detector initialized (heartbeat disabled)")
+
+        # Deferred deep startup HNSW query checks are intentionally disabled.
+        app_state["vector_health_deep_check_task"] = None
         
         logger.info(f"✓ Chorus Engine ready with {len(characters)} character(s)")
         
@@ -1082,11 +1169,44 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Chorus Engine...")
-    
+
+    # Stop accepting mutating traffic and wait for in-flight requests to drain.
+    app_state["is_shutting_down"] = True
+    drain_timeout_seconds = 20.0
+    drain_started = time.monotonic()
+    while True:
+        in_flight = int(app_state.get("active_requests") or 0)
+        if in_flight <= 0:
+            break
+        elapsed = time.monotonic() - drain_started
+        if elapsed >= drain_timeout_seconds:
+            logger.warning(
+                "Shutdown drain timeout reached with %s in-flight request(s); continuing shutdown",
+                in_flight,
+            )
+            break
+        await asyncio.sleep(0.1)
+
     # Phase D: Stop heartbeat service
     if app_state.get("heartbeat_service"):
+        try:
+            app_state["heartbeat_service"].pause()
+        except Exception:
+            pass
         await app_state["heartbeat_service"].stop()
         logger.info("✓ Heartbeat service stopped")
+
+    deep_check_task = app_state.get("vector_health_deep_check_task")
+    if deep_check_task:
+        deep_check_task.cancel()
+        try:
+            await deep_check_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Deferred vector health check task ended with error: {e}")
+        finally:
+            app_state["vector_health_deep_check_task"] = None
     
     # Close persistent database session
     if app_state.get("db_session"):
@@ -1455,14 +1575,31 @@ app.add_middleware(
 @app.middleware("http")
 async def activity_tracking_middleware(request, call_next):
     """Track user activity for idle detection."""
+    is_mutating = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+    if app_state.get("is_shutting_down") and is_mutating:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Server is shutting down; retry shortly."},
+        )
+
+    request_lock = app_state.get("active_requests_lock")
+    if request_lock:
+        async with request_lock:
+            app_state["active_requests"] = int(app_state.get("active_requests") or 0) + 1
+
     idle_detector = app_state.get("idle_detector")
     if idle_detector:
         # Record activity with request path for filtering
         idle_detector.record_activity(path=request.url.path)
     _check_and_log_config_drift()
-    
-    response = await call_next(request)
-    return response
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        if request_lock:
+            async with request_lock:
+                app_state["active_requests"] = max(0, int(app_state.get("active_requests") or 0) - 1)
 
 
 # Include API routers
@@ -3090,7 +3227,10 @@ async def confirm_character_card_import(request: dict, db: Session = Depends(get
         # Load core memories into database if character has any
         if preview_data["character_data"].get("core_memories"):
             logger.info(f"Loading core memories for imported character: {character_filename}")
-            core_loader = CoreMemoryLoader(db)
+            core_loader = CoreMemoryLoader(
+                db,
+                vector_store=app_state.get("vector_store"),
+            )
             try:
                 loaded_count = core_loader.load_character_core_memories(character_filename)
                 logger.info(f"Loaded {loaded_count} core memories for {character_filename}")
@@ -3373,111 +3513,204 @@ async def get_server_logs(lines: int = Query(default=500, le=10000)):
         raise HTTPException(status_code=500, detail=f"Failed to read server logs: {e}")
 
 
+def _parse_rotated_ens_log_date(file_name: str) -> Optional[str]:
+    prefix = "ens_conversation_"
+    suffix = ".jsonl"
+    if not (file_name.startswith(prefix) and file_name.endswith(suffix)):
+        return None
+    date_part = file_name[len(prefix):-len(suffix)]
+    if len(date_part) != 10:
+        return None
+    try:
+        datetime.strptime(date_part, "%Y-%m-%d")
+        return date_part
+    except ValueError:
+        return None
+
+
+def _list_conversation_log_files(conversation_id: str) -> List[Path]:
+    conv_dir = Path("data/debug_logs/conversations") / str(conversation_id)
+    if not conv_dir.exists() or not conv_dir.is_dir():
+        return []
+
+    candidates: List[Path] = []
+    for legacy_name in ("ens_conversation.jsonl", "conversation.jsonl"):
+        path = conv_dir / legacy_name
+        if path.exists() and path.is_file():
+            candidates.append(path)
+
+    for path in conv_dir.glob("ens_conversation_*.jsonl"):
+        if path.is_file() and _parse_rotated_ens_log_date(path.name):
+            candidates.append(path)
+
+    # newest first so default selection reads the latest active file.
+    candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    return candidates
+
+
+def _build_conversation_log_file_meta(path: Path) -> Dict[str, Any]:
+    stat = path.stat()
+    return {
+        "name": path.name,
+        "relative_path": str(path.relative_to(Path("."))),
+        "size_bytes": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "date": _parse_rotated_ens_log_date(path.name),
+    }
+
+
+def _resolve_conversation_log_file(
+    conversation_id: str,
+    *,
+    file_name: Optional[str],
+    log_date: Optional[str],
+) -> tuple[Path, List[Path]]:
+    files = _list_conversation_log_files(conversation_id)
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No debug log found for conversation {conversation_id}",
+        )
+
+    if file_name and log_date:
+        raise HTTPException(status_code=400, detail="Specify either file or date, not both")
+
+    if file_name:
+        if "/" in file_name or "\\" in file_name or file_name in (".", ".."):
+            raise HTTPException(status_code=400, detail="Invalid log file name")
+        for candidate in files:
+            if candidate.name == file_name:
+                return candidate, files
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file '{file_name}' not found for conversation {conversation_id}",
+        )
+
+    if log_date:
+        try:
+            datetime.strptime(log_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        target_name = f"ens_conversation_{log_date}.jsonl"
+        for candidate in files:
+            if candidate.name == target_name:
+                return candidate, files
+        raise HTTPException(
+            status_code=404,
+            detail=f"No rotated ENS log found for date {log_date} in conversation {conversation_id}",
+        )
+
+    return files[0], files
+
+
 @app.get("/logs/conversations")
 async def list_conversation_logs(db: Session = Depends(get_db)):
     """
     List all available conversation debug logs with metadata.
-    
-    Returns a list of conversation IDs with character and title info.
+
+    Returns a list of conversation IDs with character/title details and available log files.
     """
     try:
         debug_dir = Path("data/debug_logs/conversations")
-        
+
         if not debug_dir.exists():
             return {"conversations": []}
-        
-        # Get all conversation directories (skip intent_detection)
+
         conv_dirs = [d for d in debug_dir.iterdir() if d.is_dir() and d.name != "intent_detection"]
-        
+
         conv_repo = ConversationRepository(db)
         characters = app_state["characters"]
-        
+
         conversations = []
         for conv_dir in conv_dirs:
-            log_file = conv_dir / "conversation.jsonl"
-            if log_file.exists():
-                stat = log_file.stat()
-                
-                # Try to get conversation details from database
-                conv_id = conv_dir.name
-                character_name = "Unknown"
-                title = "Unknown"
-                
-                try:
-                    conversation = conv_repo.get(conv_id)
-                    if conversation:
-                        title = conversation.title or "Untitled"
-                        character = characters.get(conversation.character_id)
-                        if character:
-                            character_name = character.name
-                except:
-                    pass  # Conversation might be deleted
-                
-                conversations.append({
+            conv_id = conv_dir.name
+            files = _list_conversation_log_files(conv_id)
+            if not files:
+                continue
+
+            selected_meta = _build_conversation_log_file_meta(files[0])
+            file_metas = [_build_conversation_log_file_meta(path) for path in files]
+
+            character_name = "Unknown"
+            title = "Unknown"
+            try:
+                conversation = conv_repo.get(conv_id)
+                if conversation:
+                    title = conversation.title or "Untitled"
+                    character = characters.get(conversation.character_id)
+                    if character:
+                        character_name = character.name
+            except Exception:
+                pass
+
+            conversations.append(
+                {
                     "conversation_id": conv_id,
                     "character_name": character_name,
                     "title": title,
-                    "log_file": str(log_file.relative_to(Path("."))),
-                    "size_bytes": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
-                })
-        
-        # Sort by modification time, newest first
+                    "log_file": selected_meta["relative_path"],
+                    "size_bytes": selected_meta["size_bytes"],
+                    "modified": selected_meta["modified"],
+                    "selected_log_file": selected_meta["name"],
+                    "log_files": file_metas,
+                }
+            )
+
         conversations.sort(key=lambda x: x["modified"], reverse=True)
-        
         return {"conversations": conversations}
-        
+
     except Exception as e:
         logger.error(f"Failed to list conversation logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list conversation logs: {e}")
 
 
 @app.get("/logs/conversations/{conversation_id}")
-async def get_conversation_log(conversation_id: str, prettify: bool = Query(default=True)):
+async def get_conversation_log(
+    conversation_id: str,
+    prettify: bool = Query(default=True),
+    file: Optional[str] = Query(default=None),
+    date: Optional[str] = Query(default=None),
+):
     """
     Get debug log for a specific conversation.
-    
-    Returns the conversation debug log (all LLM interactions).
-    
-    Args:
-        conversation_id: ID of the conversation
-        prettify: Whether to prettify the JSON (default: true)
+
+    Defaults to the newest available log file. Optional selection by file name or UTC date.
     """
     try:
-        log_file = Path(f"data/debug_logs/conversations/{conversation_id}/conversation.jsonl")
-        
-        if not log_file.exists():
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No debug log found for conversation {conversation_id}"
-            )
-        
-        # Read all interactions
+        log_file, available_files = _resolve_conversation_log_file(
+            conversation_id,
+            file_name=file,
+            log_date=date,
+        )
+
         interactions = []
         with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
-                if line.strip():
-                    interactions.append(json.loads(line))
-        
+                if not line.strip():
+                    continue
+                interactions.append(json.loads(line))
+
+        available = [_build_conversation_log_file_meta(path) for path in available_files]
+
         if prettify:
-            # Return prettified JSON
             return {
                 "conversation_id": conversation_id,
+                "selected_log_file": log_file.name,
+                "available_logs": available,
                 "interactions": interactions,
-                "count": len(interactions)
+                "count": len(interactions),
             }
-        else:
-            # Return raw JSONL for download
-            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            return Response(
-                content=content,
-                media_type="application/x-ndjson",
-                headers={
-                    "Content-Disposition": f"attachment; filename={conversation_id}_debug.jsonl"
-                }
-            )
-        
+
+        with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        return Response(
+            content=content,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": f"attachment; filename={log_file.name}"
+            },
+        )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3845,7 +4078,7 @@ async def _ens_config_change(
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
     signal = SignalEnvelope(
         type=signal_type,
-        scope="SESSION",
+        scope="GLOBAL",
         source="external",
         assistant_id=assistant_id,
         payload=payload,
@@ -3880,6 +4113,8 @@ async def _ens_message_mutation(
         payload={
             "operation": operation,
             "payload": payload,
+            "thread_id": payload.get("thread_id"),
+            "conversation_id": payload.get("conversation_id"),
         },
     )
     outcome = await runtime.ingest(
@@ -5418,6 +5653,13 @@ async def analyze_conversation_now(
     for thread in threads:
         messages = message_repo.list_by_thread(thread.id)
         all_messages.extend(messages)
+
+    ordered_messages = sorted(
+        all_messages,
+        key=lambda m: ((m.created_at.isoformat() if getattr(m, "created_at", None) else ""), str(m.id)),
+    )
+    range_start_message_id = ordered_messages[0].id if ordered_messages else None
+    range_end_message_id = ordered_messages[-1].id if ordered_messages else None
     
     # Check soft minimums (unless forced)
     if not force:
@@ -5449,6 +5691,8 @@ async def analyze_conversation_now(
                     "conversation_id": conversation_id,
                     "character_id": conversation.character_id,
                     "analysis_kind": analysis_kind,
+                    "range_start_message_id": range_start_message_id,
+                    "range_end_message_id": range_end_message_id,
                 },
             )
             outcome = await runtime.ingest(
@@ -6318,7 +6562,11 @@ async def soft_delete_messages(
         source = (conversation.source if conversation else "web") or "web"
         outcome = await _ens_message_mutation(
             operation="soft_delete",
-            payload={"thread_id": thread_id, "message_ids": request.message_ids},
+            payload={
+                "thread_id": thread_id,
+                "conversation_id": conversation.id if conversation else None,
+                "message_ids": request.message_ids,
+            },
             assistant_id=conversation.character_id if conversation else None,
             surface=source,
             source=source,
@@ -6925,7 +7173,13 @@ async def send_message(
             'db': db,
             'character_id': character_id,
             'model_name': app_state["system_config"].llm.model,
-            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window
+            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window,
+            'shared_embedding_service': app_state.get("embedding_service"),
+            'shared_memory_vector_store': app_state.get("vector_store"),
+            'shared_summary_vector_store': app_state.get("summary_vector_store"),
+            'shared_moment_pin_vector_store': app_state.get("moment_pin_vector_store"),
+            'shared_document_vector_store': app_state.get("document_manager").vector_store if app_state.get("document_manager") else None,
+            'startup_monotonic': app_state.get("startup_monotonic"),
         }
         if doc_budget_ratio is not None:
             assembler_kwargs['document_budget_ratio'] = doc_budget_ratio
@@ -8365,7 +8619,13 @@ async def send_message_stream(
             'db': db,
             'character_id': character_id,
             'model_name': app_state["system_config"].llm.model,
-            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window
+            'context_window': character.preferred_llm.context_window or app_state["system_config"].llm.context_window,
+            'shared_embedding_service': app_state.get("embedding_service"),
+            'shared_memory_vector_store': app_state.get("vector_store"),
+            'shared_summary_vector_store': app_state.get("summary_vector_store"),
+            'shared_moment_pin_vector_store': app_state.get("moment_pin_vector_store"),
+            'shared_document_vector_store': app_state.get("document_manager").vector_store if app_state.get("document_manager") else None,
+            'startup_monotonic': app_state.get("startup_monotonic"),
         }
         if doc_budget_ratio is not None:
             assembler_kwargs['document_budget_ratio'] = doc_budget_ratio
@@ -9968,7 +10228,10 @@ async def reload_character_core_memories(
         }
     
     # Create a fresh core memory loader
-    core_loader = CoreMemoryLoader(db)
+    core_loader = CoreMemoryLoader(
+        db,
+        vector_store=app_state.get("vector_store"),
+    )
     
     try:
         # Delete existing core memories

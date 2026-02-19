@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import random
 import time
 from contextvars import ContextVar
@@ -23,6 +24,7 @@ NON_DETERMINISTIC_METADATA_KEYS = {
 }
 
 _IN_INVOKER_CONTEXT: ContextVar[bool] = ContextVar("ens_in_invoker_context", default=False)
+logger = logging.getLogger(__name__)
 
 
 def in_invoker_context() -> bool:
@@ -146,12 +148,30 @@ class LLMInvocationService:
                         self._call_provider(request),
                         timeout=timeout_s,
                     )
+                    output_text = response.get("output_text", "")
+                    finish_reason = response.get("finish_reason")
+                    completion_flags = self._compute_completion_flags(output_text, finish_reason)
+                    if completion_flags:
+                        logger.warning(
+                            "[LLM_INVOCATION][FLAGGED] kind=%s engine=%s model=%s finish_reason=%s empty=%s flags=%s attempts=%s fingerprint=%s",
+                            request.invocation_kind,
+                            request.engine,
+                            request.model_id,
+                            finish_reason,
+                            not bool((output_text or "").strip()),
+                            completion_flags,
+                            attempt,
+                            request_fingerprint[:12],
+                        )
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     return {
                         "status": "success",
-                        "output_text": response.get("output_text", ""),
+                        "output_text": output_text,
                         "raw_response_excerpt": response.get("raw_response_excerpt"),
                         "token_usage": response.get("token_usage"),
+                        "finish_reason": finish_reason,
+                        "output_empty": not bool((output_text or "").strip()),
+                        "completion_flags": completion_flags,
                         "cost": response.get("cost"),
                         "provider": request.provider,
                         "engine": request.engine,
@@ -191,6 +211,9 @@ class LLMInvocationService:
             "output_text": "",
             "raw_response_excerpt": None,
             "token_usage": None,
+            "finish_reason": None,
+            "output_empty": True,
+            "completion_flags": [],
             "cost": None,
             "provider": request.provider,
             "engine": request.engine,
@@ -235,9 +258,26 @@ class LLMInvocationService:
         return {
             "output_text": content,
             "raw_response_excerpt": content[:240],
-            "token_usage": None,
+            "token_usage": getattr(response, "usage", None),
+            "finish_reason": getattr(response, "finish_reason", None),
             "cost": None,
         }
+
+    @staticmethod
+    def _compute_completion_flags(output_text: str, finish_reason: Optional[str]) -> List[str]:
+        flags: List[str] = []
+        empty_output = not bool((output_text or "").strip())
+        reason = (finish_reason or "").strip().lower()
+
+        if empty_output:
+            flags.append("empty_output")
+        if reason == "length":
+            flags.append("ended_by_length")
+        elif reason and reason not in {"stop"}:
+            flags.append(f"ended_by_{reason}")
+        if empty_output and reason == "length":
+            flags.append("empty_due_to_length")
+        return flags
 
     def resolve_effective_config(
         self,

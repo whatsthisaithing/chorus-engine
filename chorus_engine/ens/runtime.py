@@ -20,7 +20,7 @@ from chorus_engine.ens.session_registry import ENSSessionRegistry
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.surface_router import SurfaceRouter
 from chorus_engine.repositories import ThreadRepository
-from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, MessageRole
+from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, Message, MessageRole, Thread
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ENSRuntime:
         try:
             decision_id = str(uuid.uuid4())
             resolved_signal = self._resolve_signal_session(db, signal, ctx)
-            actions = self._propose_actions(resolved_signal, ctx)
+            actions = self._propose_actions(db, resolved_signal, ctx)
             action_results: List[Dict[str, Any]] = []
             for action in actions:
                 if action.kind in (
@@ -412,6 +412,16 @@ class ENSRuntime:
                 and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
             )
             thread_id = signal.payload.get("thread_id")
+            if signal.type == "message.mutation_requested" and not thread_id:
+                nested_payload = signal.payload.get("payload") or {}
+                nested_thread_id = nested_payload.get("thread_id")
+                if nested_thread_id:
+                    thread_id = nested_thread_id
+                    signal.payload["thread_id"] = thread_id
+                if not signal.payload.get("conversation_id"):
+                    nested_conversation_id = nested_payload.get("conversation_id")
+                    if nested_conversation_id:
+                        signal.payload["conversation_id"] = nested_conversation_id
             if not thread_id:
                 conversation_id = signal.payload.get("conversation_id")
                 if conversation_id:
@@ -421,7 +431,7 @@ class ENSRuntime:
                         thread_id = threads[0].id
                         signal.payload["thread_id"] = thread_id
             assistant_id = signal.assistant_id or signal.payload.get("assistant_id")
-            if slice6_enabled and assistant_id:
+            if slice6_enabled and assistant_id and signal.type != "message.mutation_requested":
                 surface_id = signal.surface_id or signal.payload.get("surface_id") or ctx.surface or signal.source
                 source = canonicalize_surface_id(surface_id)
                 external_thread_id = signal.external_thread_id or signal.payload.get("external_thread_id") or thread_id
@@ -459,7 +469,7 @@ class ENSRuntime:
                 signal.user_id = session.user_id
         return signal
 
-    def _propose_actions(self, signal: SignalEnvelope, ctx: ENSContext) -> List[ENSAction]:
+    def _propose_actions(self, db, signal: SignalEnvelope, ctx: ENSContext) -> List[ENSAction]:
         if signal.type == "user.message":
             ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
             slice2_tool_parsing_ownership = bool(
@@ -664,17 +674,30 @@ class ENSRuntime:
             conversation_id = signal.payload["conversation_id"]
             analysis_kind = signal.payload.get("analysis_kind", "both")
             character_id = signal.assistant_id or signal.payload.get("character_id")
+            payload = dict(signal.payload)
+            if not payload.get("range_start_message_id") or not payload.get("range_end_message_id"):
+                derived_start, derived_end = self._resolve_analysis_idempotency_range(
+                    db,
+                    conversation_id=conversation_id,
+                    analysis_kind=analysis_kind,
+                )
+                if derived_start != "na" and not payload.get("range_start_message_id"):
+                    payload["range_start_message_id"] = derived_start
+                if derived_end != "na" and not payload.get("range_end_message_id"):
+                    payload["range_end_message_id"] = derived_end
             return [
                 ENSAction(
                     kind="analysis.execute",
                     idempotency_key=(
-                        f"analysis:{conversation_id}:{analysis_kind}:{signal.payload.get('range_start_message_id')}:"
-                        f"{signal.payload.get('range_end_message_id')}:ens.slice3.v1"
+                        f"analysis:{conversation_id}:{analysis_kind}:{payload.get('range_start_message_id') or 'na'}:"
+                        f"{payload.get('range_end_message_id') or 'na'}:ens.slice3.v1"
                     ),
                     params={
                         "conversation_id": conversation_id,
                         "character_id": character_id,
                         "analysis_kind": analysis_kind,
+                        "range_start_message_id": payload.get("range_start_message_id"),
+                        "range_end_message_id": payload.get("range_end_message_id"),
                         "manual": signal.type == "analysis.manual_requested",
                     },
                 )
@@ -999,6 +1022,74 @@ class ENSRuntime:
             ]
 
         return []
+
+    @staticmethod
+    def _message_is_after_cursor(
+        *,
+        created_at: Optional[datetime],
+        message_id: Optional[str],
+        cursor_created_at: Optional[datetime],
+        cursor_message_id: Optional[str],
+    ) -> bool:
+        if not cursor_created_at:
+            return True
+        if created_at and created_at > cursor_created_at:
+            return True
+        if created_at and created_at < cursor_created_at:
+            return False
+        if not cursor_message_id:
+            return True
+        return str(message_id or "") > str(cursor_message_id)
+
+    def _resolve_analysis_idempotency_range(
+        self,
+        db,
+        *,
+        conversation_id: str,
+        analysis_kind: str,
+    ) -> tuple[str, str]:
+        """
+        Derive stable message-range markers for analysis idempotency keys.
+
+        - Standard conversations: full non-deleted transcript range.
+        - General chat memories: strictly-new incremental range using tuple cursor semantics.
+        """
+        conversation = (
+            db.query(Conversation)
+            .filter(Conversation.id == conversation_id)
+            .first()
+        )
+        if not conversation:
+            return "na", "na"
+
+        rows = (
+            db.query(Message.id, Message.created_at)
+            .join(Thread, Message.thread_id == Thread.id)
+            .filter(Thread.conversation_id == conversation_id)
+            .filter(Message.deleted_at.is_(None))
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .all()
+        )
+        if not rows:
+            return "na", "na"
+
+        if conversation.conversation_kind == "general_chat" and analysis_kind == "memories":
+            cursor_created_at = getattr(conversation, "general_chat_memories_processed_through_created_at", None)
+            cursor_message_id = getattr(conversation, "general_chat_memories_processed_through_message_id", None)
+            new_rows = [
+                row for row in rows
+                if self._message_is_after_cursor(
+                    created_at=row.created_at,
+                    message_id=row.id,
+                    cursor_created_at=cursor_created_at,
+                    cursor_message_id=cursor_message_id,
+                )
+            ]
+            if not new_rows:
+                return "na", "na"
+            return str(new_rows[0].id), str(new_rows[-1].id)
+
+        return str(rows[0].id), str(rows[-1].id)
 
     def _build_outcome(
         self,

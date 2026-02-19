@@ -95,14 +95,20 @@ def main():
     logger.info(f"Server will listen on {system_config.api_host}:{system_config.api_port}")
     
     # Run server
-    uvicorn.run(
-        "chorus_engine.api.app:app",
-        host=system_config.api_host,
-        port=system_config.api_port,
-        reload=False,  # Disable hot reload - use manual restart for changes
-        log_level="info",  # Use info level for uvicorn itself
-        log_config=None,  # Don't modify uvicorn's log config - use our basicConfig
-    )
+    try:
+        uvicorn.run(
+            "chorus_engine.api.app:app",
+            host=system_config.api_host,
+            port=system_config.api_port,
+            reload=False,  # Disable hot reload - use manual restart for changes
+            log_level="info",  # Use info level for uvicorn itself
+            log_config=None,  # Don't modify uvicorn's log config - use our basicConfig
+            timeout_graceful_shutdown=20,
+        )
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received; shutting down server gracefully...")
+    finally:
+        logging.shutdown()
 
 
 if __name__ == "__main__":

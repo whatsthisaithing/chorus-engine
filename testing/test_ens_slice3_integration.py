@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from chorus_engine.ens import ENSContext, SignalEnvelope
 from chorus_engine.models.conversation import ImageAttachment, Memory, MemoryType, Message, MessageRole, MomentPin
 from chorus_engine.models.ens import ENSActionResult, ENSDecision
 from chorus_engine.repositories import MemoryRepository
@@ -336,6 +337,213 @@ def test_slice3_manual_analyze_routes_through_ens(client, db, helpers):
     actions = db.query(ENSActionResult).filter(ENSActionResult.kind == "analysis.execute").count()
     assert decisions >= 1
     assert actions >= 1
+
+
+def test_slice3_manual_analyze_idempotency_changes_with_new_messages_general_chat(client, db, helpers):
+    class _FakeMemory:
+        def __init__(self):
+            self.memory_type = type("T", (), {"value": "fact"})()
+            self.content = "A new memory"
+            self.confidence = 0.9
+            self.emotional_weight = 0.1
+            self.reasoning = "test"
+            self.durability = "long_term"
+            self.pattern_eligible = False
+
+    class _FakeAnalysisService:
+        async def analyze_summary_only(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return None
+
+        async def save_summary_only(self, conversation_id, character_id, analysis, manual):
+            _ = (conversation_id, character_id, analysis, manual)
+            return False
+
+        async def analyze_memories_only(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return SimpleNamespace(
+                memories=[_FakeMemory()],
+                summary="",
+                key_topics=[],
+                tone="",
+                emotional_arc=[],
+                participants=[],
+                open_questions=[],
+                processed_through_message_id="cursor-1",
+                processed_through_created_at=None,
+            )
+
+        async def save_memories_only(self, conversation_id, character_id, analysis):
+            _ = (conversation_id, character_id, analysis)
+            return True
+
+        async def analyze_conversation(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return None
+
+        async def save_analysis(self, conversation_id, character_id, analysis, manual):
+            _ = (conversation_id, character_id, analysis, manual)
+            return False
+
+    helpers.app_module.app_state["analysis_service"] = _FakeAnalysisService()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=False,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice3_continuity_writes_ownership=True,
+    )
+
+    from chorus_engine.models.conversation import Conversation
+
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    conv.conversation_kind = "general_chat"
+    db.commit()
+
+    m1 = Message(thread_id=thread_id, role=MessageRole.USER, content="one")
+    m2 = Message(thread_id=thread_id, role=MessageRole.ASSISTANT, content="two")
+    db.add_all([m1, m2])
+    db.commit()
+
+    r1 = client.post(f"/conversations/{conversation_id}/analyze?force=true")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["status"] == "success"
+
+    key_1 = (
+        db.query(ENSActionResult.idempotency_key)
+        .filter(ENSActionResult.kind == "analysis.execute")
+        .order_by(ENSActionResult.created_at.desc())
+        .first()
+    )
+    assert key_1 is not None
+    key_1 = key_1[0]
+    assert ":memories:" in key_1
+    assert ":None:None:" not in key_1
+
+    m3 = Message(thread_id=thread_id, role=MessageRole.USER, content="three")
+    db.add(m3)
+    db.commit()
+
+    r2 = client.post(f"/conversations/{conversation_id}/analyze?force=true")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["status"] == "success"
+
+    key_2 = (
+        db.query(ENSActionResult.idempotency_key)
+        .filter(ENSActionResult.kind == "analysis.execute")
+        .order_by(ENSActionResult.created_at.desc())
+        .first()
+    )
+    assert key_2 is not None
+    key_2 = key_2[0]
+    assert key_2 != key_1
+
+
+def test_slice3_heartbeat_analyze_idempotency_derives_message_ranges_when_missing(db, helpers):
+    class _FakeMemory:
+        def __init__(self):
+            self.memory_type = type("T", (), {"value": "fact"})()
+            self.content = "A new memory"
+            self.confidence = 0.9
+            self.emotional_weight = 0.1
+            self.reasoning = "test"
+            self.durability = "long_term"
+            self.pattern_eligible = False
+
+    class _FakeAnalysisService:
+        async def analyze_summary_only(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return None
+
+        async def save_summary_only(self, conversation_id, character_id, analysis, manual):
+            _ = (conversation_id, character_id, analysis, manual)
+            return False
+
+        async def analyze_memories_only(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return SimpleNamespace(
+                memories=[_FakeMemory()],
+                summary="",
+                key_topics=[],
+                tone="",
+                emotional_arc=[],
+                participants=[],
+                open_questions=[],
+                processed_through_message_id="cursor-1",
+                processed_through_created_at=None,
+            )
+
+        async def save_memories_only(self, conversation_id, character_id, analysis):
+            _ = (conversation_id, character_id, analysis)
+            return True
+
+        async def analyze_conversation(self, conversation_id, character, manual):
+            _ = (conversation_id, character, manual)
+            return None
+
+        async def save_analysis(self, conversation_id, character_id, analysis, manual):
+            _ = (conversation_id, character_id, analysis, manual)
+            return False
+
+    helpers.app_module.app_state["analysis_service"] = _FakeAnalysisService()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=False,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice3_continuity_writes_ownership=True,
+    )
+
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    runtime = helpers.app_module.app_state["ens_runtime"]
+
+    db.add_all(
+        [
+            Message(thread_id=thread_id, role=MessageRole.USER, content="one"),
+            Message(thread_id=thread_id, role=MessageRole.ASSISTANT, content="two"),
+        ]
+    )
+    db.commit()
+
+    signal = SignalEnvelope(
+        type="analysis.heartbeat_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id="test_char",
+        payload={
+            "conversation_id": conversation_id,
+            "character_id": "test_char",
+            "analysis_kind": "memories",
+        },
+    )
+    asyncio.run(runtime.ingest(signal, ENSContext(app_state=helpers.app_module.app_state, surface="web", source="web")))
+
+    key_1 = (
+        db.query(ENSActionResult.idempotency_key)
+        .filter(ENSActionResult.kind == "analysis.execute")
+        .order_by(ENSActionResult.created_at.desc())
+        .first()
+    )
+    assert key_1 is not None
+    key_1 = key_1[0]
+    assert ":memories:" in key_1
+    assert ":None:None:" not in key_1
+    assert ":na:na:" not in key_1
+
+    db.add(Message(thread_id=thread_id, role=MessageRole.USER, content="three"))
+    db.commit()
+    asyncio.run(runtime.ingest(signal, ENSContext(app_state=helpers.app_module.app_state, surface="web", source="web")))
+
+    key_2 = (
+        db.query(ENSActionResult.idempotency_key)
+        .filter(ENSActionResult.kind == "analysis.execute")
+        .order_by(ENSActionResult.created_at.desc())
+        .first()
+    )
+    assert key_2 is not None
+    key_2 = key_2[0]
+    assert key_2 != key_1
 
 
 def test_slice3_core_memory_db_first_endpoint_is_dev_gated(client, helpers):
