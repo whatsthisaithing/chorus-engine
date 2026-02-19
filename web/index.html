@@ -99,24 +99,19 @@
                 </div>
                 
                 <!-- CONVERSATION Section -->
-                <div class="sidebar-section">
+                <div class="sidebar-section conversation-section">
                     <h6 class="sidebar-section-header text-muted text-uppercase small mb-2">Conversation</h6>
-                    <button id="newConversationBtn" class="btn btn-primary btn-sm w-100 mb-2">
+                    <button id="generalChatBtn" class="conversation-item general-chat-btn w-100 text-start mb-2" title="General Chat" disabled>
+                        <div class="conversation-title"><i class="bi bi-chat me-1"></i> General Chat</div>
+                        <div class="conversation-date">Not started</div>
+                    </button>
+                    <div class="conversation-create-separator"></div>
+                    <button id="newConversationBtn" class="btn btn-primary btn-sm w-100 mb-3">
                         <i class="bi bi-plus-circle me-1"></i> New Conversation
                     </button>
-                    <button id="memoryPanelBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
-                        <i class="bi bi-database me-1"></i> Memory
-                    </button>
-                    <button id="pending-memories-btn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
-                        <i class="bi bi-hourglass-split me-1"></i> Pending Memories
-                        <span id="pending-count" class="badge bg-danger" style="display: none;">0</span>
-                    </button>
-                    <button id="momentPinsBtn" class="btn btn-outline-light btn-sm w-100 mb-3" disabled>
-                        <i class="bi bi-pin-angle me-1"></i> Moment Pins
-                    </button>
-                    
+
                     <!-- Conversation List -->
-                    <div class="mb-3">
+                    <div class="conversation-list-wrapper mb-3">
                         <div class="d-flex align-items-center justify-content-between mb-2">
                             <div class="d-flex align-items-center gap-2">
                                 <h6 class="small text-theme-secondary mb-0">Recent</h6>
@@ -137,7 +132,25 @@
                         <div id="conversationList" class="conversation-list">
                             <!-- Populated by JS -->
                         </div>
+                        <button id="conversationShowMoreBtn" class="conversation-show-more-btn" type="button" style="display: none;">
+                            Show more
+                        </button>
                     </div>
+                </div>
+
+                <!-- CONTINUITY Section -->
+                <div class="sidebar-section">
+                    <h6 class="sidebar-section-header text-muted text-uppercase small mb-2">Continuity</h6>
+                    <button id="memoryPanelBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-database me-1"></i> Memory
+                    </button>
+                    <button id="pending-memories-btn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-hourglass-split me-1"></i> Pending Memories
+                        <span id="pending-count" class="badge bg-danger" style="display: none;">0</span>
+                    </button>
+                    <button id="momentPinsBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-pin-angle me-1"></i> Moment Pins
+                    </button>
                 </div>
                 
                 <!-- Settings at bottom -->
@@ -743,7 +756,7 @@
                     <div class="alert alert-danger d-flex align-items-start" role="alert">
                         <i class="bi bi-exclamation-triangle-fill me-3 fs-4"></i>
                         <div>
-                            <h6 class="alert-heading mb-2">⚠️ Warning: Advanced System Configuration</h6>
+                            <h6 class="alert-heading mb-2">?? Warning: Advanced System Configuration</h6>
                             <p class="mb-2">Changes to these settings affect the entire system and <strong>require a server restart</strong> to take effect.</p>
                             <p class="mb-0">
                                 <strong>Recommendation:</strong> Backup your <code>config/system.yaml</code> file before making changes.
@@ -1709,9 +1722,9 @@
                     <div class="mb-3">
                         <label class="form-label">Privacy Scope</label>
                         <select class="form-select bg-dark text-white" id="docScope">
-                            <option value="conversation">🔒 Conversation Only (Highest Privacy)</option>
-                            <option value="character">👤 Character-Wide (All Conversations)</option>
-                            <option value="global">🌐 Global (System-Wide)</option>
+                            <option value="conversation">?? Conversation Only (Highest Privacy)</option>
+                            <option value="character">?? Character-Wide (All Conversations)</option>
+                            <option value="global">?? Global (System-Wide)</option>
                         </select>
                         <small class="form-text text-light d-block mt-1" id="docScopeHelp"></small>
                     </div>
@@ -1996,7 +2009,7 @@
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="charCustomSystemPrompt">
                                                 <label class="form-check-label" for="charCustomSystemPrompt">
-                                                    <strong>⚡ Custom System Prompt (Power User Mode)</strong>
+                                                    <strong>? Custom System Prompt (Power User Mode)</strong>
                                                 </label>
                                             </div>
                                             <small class="text-theme-secondary d-block mt-1">
@@ -3443,7 +3456,7 @@
                                 <span class="text-danger">Overwrite existing character</span>
                             </label>
                             <small class="form-text text-danger d-block">
-                                ⚠️ WARNING: Permanently deletes existing character and replaces with backup. Cannot be undone!
+                                ?? WARNING: Permanently deletes existing character and replaces with backup. Cannot be undone!
                             </small>
                         </div>
                     </div>
@@ -3794,10 +3807,10 @@
                                 <div class="col-md-4">
                                     <select class="form-select bg-dark text-light border-secondary" id="modelCategoryFilter">
                                         <option value="all">All Categories</option>
-                                        <option value="balanced">⚖️ Balanced</option>
-                                        <option value="creative">🎨 Creative</option>
-                                        <option value="technical">🔧 Technical</option>
-                                        <option value="advanced">🚀 Advanced</option>
+                                        <option value="balanced">?? Balanced</option>
+                                        <option value="creative">?? Creative</option>
+                                        <option value="technical">?? Technical</option>
+                                        <option value="advanced">?? Advanced</option>
                                     </select>
                                 </div>
                                 <div class="col-md-4">

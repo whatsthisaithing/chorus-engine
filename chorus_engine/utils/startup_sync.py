@@ -492,7 +492,8 @@ def run_vector_health_checks(
     vector_store: VectorStore,
     summary_vector_store: ConversationSummaryVectorStore,
     moment_pin_vector_store: MomentPinVectorStore,
-    document_vector_store: DocumentVectorStore
+    document_vector_store: DocumentVectorStore,
+    embedding_service: Optional[EmbeddingService] = None,
 ) -> dict:
     """
     Run lightweight operational checks for memory/summary/document vector stores.
@@ -500,8 +501,18 @@ def run_vector_health_checks(
     report = {
         "ok": True,
         "issues": [],
-        "characters_checked": 0
+        "characters_checked": 0,
+        "unhealthy_memory_characters": [],
+        "unhealthy_summary_characters": [],
+        "unhealthy_moment_pin_characters": [],
+        "document_unhealthy": False,
     }
+    probe_embedding: Optional[List[float]] = None
+    if embedding_service is not None:
+        try:
+            probe_embedding = embedding_service.embed("vector health probe")
+        except Exception as e:
+            report["issues"].append(f"probe embedding generation failed: {e}")
 
     # Collection listing checks.
     _ = vector_store.list_collections()
@@ -533,10 +544,13 @@ def run_vector_health_checks(
                 if count > 0:
                     # Use get-path smoke check to avoid false positives on fresh empty segment files.
                     collection.get(limit=1, include=[])
+                    if probe_embedding:
+                        collection.query(query_embeddings=[probe_embedding], n_results=1)
             except Exception as e:
                 report["issues"].append(
-                    f"memory get failed for '{character_id}': {e}"
+                    f"memory query failed for '{character_id}': {e}"
                 )
+                report["unhealthy_memory_characters"].append(character_id)
 
         summary_collection = summary_vector_store.get_collection(character_id)
         if summary_collection is not None:
@@ -544,10 +558,13 @@ def run_vector_health_checks(
                 count = summary_collection.count()
                 if count > 0:
                     summary_collection.get(limit=1, include=[])
+                    if probe_embedding:
+                        summary_collection.query(query_embeddings=[probe_embedding], n_results=1)
             except Exception as e:
                 report["issues"].append(
-                    f"summary get failed for '{character_id}': {e}"
+                    f"summary query failed for '{character_id}': {e}"
                 )
+                report["unhealthy_summary_characters"].append(character_id)
 
         pin_collection = moment_pin_vector_store.get_collection(character_id)
         if pin_collection is not None:
@@ -555,19 +572,228 @@ def run_vector_health_checks(
                 count = pin_collection.count()
                 if count > 0:
                     pin_collection.get(limit=1, include=[])
+                    if probe_embedding:
+                        pin_collection.query(query_embeddings=[probe_embedding], n_results=1)
             except Exception as e:
                 report["issues"].append(
-                    f"moment pin get failed for '{character_id}': {e}"
+                    f"moment pin query failed for '{character_id}': {e}"
                 )
+                report["unhealthy_moment_pin_characters"].append(character_id)
 
     # Document collection get path smoke test.
     try:
         document_vector_store.collection.get(limit=1, include=[])
+        if probe_embedding and document_vector_store.collection.count() > 0:
+            document_vector_store.collection.query(query_embeddings=[probe_embedding], n_results=1)
     except Exception as e:
         report["issues"].append(f"document get failed: {e}")
+        report["document_unhealthy"] = True
 
+    report["unhealthy_memory_characters"] = sorted(set(report["unhealthy_memory_characters"]))
+    report["unhealthy_summary_characters"] = sorted(set(report["unhealthy_summary_characters"]))
+    report["unhealthy_moment_pin_characters"] = sorted(set(report["unhealthy_moment_pin_characters"]))
     report["ok"] = len(report["issues"]) == 0
     return report
+
+
+async def repair_unhealthy_vector_collections(
+    db_session: Session,
+    vector_store: VectorStore,
+    summary_vector_store: ConversationSummaryVectorStore,
+    moment_pin_vector_store: MomentPinVectorStore,
+    embedding_service: EmbeddingService,
+    health_report: dict,
+) -> dict:
+    """
+    Rebuild unhealthy vector collections from SQL truth.
+
+    Only collections explicitly flagged as unhealthy are rebuilt.
+    """
+    stats = {
+        "memory_rebuilt": [],
+        "summary_rebuilt": [],
+        "moment_pin_rebuilt": [],
+        "errors": 0,
+    }
+
+    for character_id in health_report.get("unhealthy_memory_characters", []):
+        try:
+            _rebuild_memory_collection(db_session, vector_store, embedding_service, character_id)
+            stats["memory_rebuilt"].append(character_id)
+        except Exception as e:
+            logger.error(f"Failed rebuilding memory vectors for '{character_id}': {e}")
+            stats["errors"] += 1
+
+    for character_id in health_report.get("unhealthy_summary_characters", []):
+        try:
+            _rebuild_summary_collection(db_session, summary_vector_store, embedding_service, character_id)
+            stats["summary_rebuilt"].append(character_id)
+        except Exception as e:
+            logger.error(f"Failed rebuilding summary vectors for '{character_id}': {e}")
+            stats["errors"] += 1
+
+    for character_id in health_report.get("unhealthy_moment_pin_characters", []):
+        try:
+            _rebuild_moment_pin_collection(
+                db_session=db_session,
+                moment_pin_vector_store=moment_pin_vector_store,
+                embedding_service=embedding_service,
+                character_id=character_id,
+            )
+            stats["moment_pin_rebuilt"].append(character_id)
+        except Exception as e:
+            logger.error(f"Failed rebuilding moment pin vectors for '{character_id}': {e}")
+            stats["errors"] += 1
+
+    return stats
+
+
+def _rebuild_memory_collection(
+    db_session: Session,
+    vector_store: VectorStore,
+    embedding_service: EmbeddingService,
+    character_id: str,
+) -> None:
+    eligible_memories = (
+        db_session.query(Memory)
+        .filter(
+            Memory.character_id == character_id,
+            Memory.status.in_(["approved", "auto_approved"]),
+            or_(Memory.durability.is_(None), Memory.durability != "ephemeral"),
+        )
+        .all()
+    )
+
+    collection_name = f"character_{character_id}"
+    try:
+        vector_store.client.delete_collection(name=collection_name)
+    except Exception:
+        pass
+
+    if not eligible_memories:
+        logger.info(f"[VECTOR_HEALTH] Rebuilt empty memory collection for '{character_id}'")
+        return
+
+    seen_ids: Set[str] = set()
+    for memory in eligible_memories:
+        if not memory.vector_id or memory.vector_id in seen_ids:
+            memory.vector_id = str(uuid.uuid4())
+        seen_ids.add(memory.vector_id)
+    db_session.commit()
+
+    _add_memory_vectors(
+        vector_store=vector_store,
+        embedding_service=embedding_service,
+        memories=eligible_memories,
+    )
+    logger.info(
+        f"[VECTOR_HEALTH] Rebuilt memory collection for '{character_id}' with {len(eligible_memories)} vectors"
+    )
+
+
+def _rebuild_summary_collection(
+    db_session: Session,
+    summary_vector_store: ConversationSummaryVectorStore,
+    embedding_service: EmbeddingService,
+    character_id: str,
+) -> None:
+    latest_subquery = (
+        db_session.query(
+            ConversationSummary.conversation_id.label("conversation_id"),
+            func.max(ConversationSummary.created_at).label("max_created_at"),
+        )
+        .join(
+            Conversation,
+            ConversationSummary.conversation_id == Conversation.id,
+        )
+        .filter(Conversation.character_id == character_id)
+        .group_by(ConversationSummary.conversation_id)
+        .subquery()
+    )
+
+    latest_rows = (
+        db_session.query(ConversationSummary, Conversation)
+        .join(
+            latest_subquery,
+            and_(
+                ConversationSummary.conversation_id == latest_subquery.c.conversation_id,
+                ConversationSummary.created_at == latest_subquery.c.max_created_at,
+            ),
+        )
+        .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
+        .all()
+    )
+
+    try:
+        summary_vector_store.delete_collection(character_id)
+    except Exception:
+        pass
+
+    rebuilt = 0
+    for summary, conversation in latest_rows:
+        if _sync_single_summary(
+            summary_vector_store=summary_vector_store,
+            embedding_service=embedding_service,
+            summary=summary,
+            conversation=conversation,
+            character_id=character_id,
+        ):
+            rebuilt += 1
+
+    logger.info(
+        f"[VECTOR_HEALTH] Rebuilt summary collection for '{character_id}' with {rebuilt} vectors"
+    )
+
+
+def _rebuild_moment_pin_collection(
+    db_session: Session,
+    moment_pin_vector_store: MomentPinVectorStore,
+    embedding_service: EmbeddingService,
+    character_id: str,
+) -> None:
+    pins = (
+        db_session.query(MomentPin)
+        .filter(
+            MomentPin.character_id == character_id,
+            MomentPin.archived == 0,
+        )
+        .all()
+    )
+
+    try:
+        moment_pin_vector_store.client.delete_collection(name=f"moment_pins_{character_id}")
+    except Exception:
+        pass
+
+    rebuilt = 0
+    for pin in pins:
+        hot_text = "\n".join(
+            [
+                pin.what_happened or "",
+                pin.why_user or pin.why_model or "",
+                pin.quote_snippet or "",
+                ", ".join(pin.tags or []),
+            ]
+        ).strip()
+        if not hot_text:
+            continue
+        embedding = embedding_service.embed(hot_text)
+        ok = moment_pin_vector_store.upsert_pin(
+            character_id=character_id,
+            pin_id=pin.id,
+            hot_text=hot_text,
+            embedding=embedding,
+            metadata={
+                "user_id": pin.user_id,
+                "conversation_id": pin.conversation_id or "",
+            },
+        )
+        if ok:
+            rebuilt += 1
+
+    logger.info(
+        f"[VECTOR_HEALTH] Rebuilt moment pin collection for '{character_id}' with {rebuilt} vectors"
+    )
 
 
 def _get_existing_vector_ids(

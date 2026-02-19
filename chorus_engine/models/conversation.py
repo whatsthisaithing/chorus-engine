@@ -108,6 +108,12 @@ class Conversation(Base):
     
     # Source platform (web, discord, etc.)
     source = Column(String(20), nullable=False, default="web")
+
+    # Relationship-first v0
+    relationship_id = Column(String(36), nullable=True, index=True)
+    conversation_kind = Column(String(30), nullable=False, default="standard", index=True)
+    general_chat_memories_processed_through_message_id = Column(String(36), nullable=True, default=None)
+    general_chat_memories_processed_through_created_at = Column(DateTime, nullable=True, default=None)
     
     # Relationships
     threads = relationship("Thread", back_populates="conversation", cascade="all, delete-orphan")

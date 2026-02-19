@@ -9,6 +9,10 @@ window.App = {
         characters: [],
         selectedCharacterId: null,
         conversations: [],
+        conversationListExpanded: false,
+        generalChatConversationId: null,
+        generalChatConversation: null,
+        selectedConversationKind: 'standard',
         conversationSource: 'web',  // Filter: 'web', 'discord', 'test', 'all'
         selectedConversationId: null,
         threads: [],
@@ -152,6 +156,7 @@ window.App = {
         // Conversation source filter
         document.getElementById('conversationSourceFilter').addEventListener('change', async (e) => {
             this.state.conversationSource = e.target.value;
+            this.state.conversationListExpanded = false;
             await this.loadConversations();
         });
         
@@ -175,6 +180,18 @@ window.App = {
         document.getElementById('newConversationBtn').addEventListener('click', () => {
             this.createNewConversation();
         });
+        const generalChatBtn = document.getElementById('generalChatBtn');
+        if (generalChatBtn) {
+            generalChatBtn.addEventListener('click', () => {
+                this.openGeneralChat();
+            });
+        }
+        const conversationShowMoreBtn = document.getElementById('conversationShowMoreBtn');
+        if (conversationShowMoreBtn) {
+            conversationShowMoreBtn.addEventListener('click', () => {
+                this.toggleConversationListExpanded();
+            });
+        }
         
         // Message form
         document.getElementById('messageForm').addEventListener('submit', (e) => {
@@ -612,6 +629,10 @@ window.App = {
         // IMPORTANT: Reset conversation state when switching characters
         // This prevents documents from being uploaded to wrong conversation
         this.state.selectedConversationId = null;
+        this.state.conversationListExpanded = false;
+        this.state.generalChatConversationId = null;
+        this.state.generalChatConversation = null;
+        this.state.selectedConversationKind = 'standard';
         this.state.selectedThreadId = null;
         this.state.currentThread = null;
         this.state.messages = [];
@@ -630,6 +651,8 @@ window.App = {
         document.getElementById('manageWorkflowsBtn').disabled = false;
         document.getElementById('manageVoiceSamplesBtn').disabled = false; // Phase 6
         document.getElementById('searchConversationsBtn').disabled = false; // Conversation search
+        document.getElementById('generalChatBtn').disabled = false;
+        this.renderGeneralChatButton();
         
         // Update pending memories count
         if (window.pendingMemoriesPanel) {
@@ -672,6 +695,7 @@ window.App = {
         
         // Load conversations for this character
         await this.loadConversations();
+        await this.loadGeneralChatPreview();
         
         // Phase 9: Update scene capture button visibility
         this.updateSceneCaptureButton();
@@ -745,13 +769,39 @@ window.App = {
                 this.state.selectedCharacterId,
                 0,
                 100,
-                this.state.conversationSource
+                this.state.conversationSource,
+                'standard'
             );
-            this.state.conversations = conversations;
-            UI.renderConversations(conversations, this.state.selectedConversationId);
+            this.state.conversations = conversations.filter(c => (c.conversation_kind || 'standard') === 'standard');
+            UI.renderConversations(this.state.conversations, this.state.selectedConversationId, {
+                expanded: this.state.conversationListExpanded,
+                limit: 5,
+            });
+            this.updateGeneralChatButtonState();
         } catch (error) {
             console.error('Failed to load conversations:', error);
             UI.showToast('Failed to load conversations', 'error');
+        }
+    },
+
+    async openGeneralChat() {
+        if (!this.state.selectedCharacterId) {
+            UI.showToast('Please select a character first', 'error');
+            return;
+        }
+        try {
+            const resolved = await API.resolveGeneralChat(this.state.selectedCharacterId);
+            const conversationId = resolved?.conversation?.id;
+            if (!conversationId) {
+                throw new Error('General chat resolver returned no conversation');
+            }
+            this.state.generalChatConversationId = conversationId;
+            this.state.generalChatConversation = resolved?.conversation || null;
+            this.renderGeneralChatButton();
+            await this.selectConversation(conversationId);
+        } catch (error) {
+            console.error('Failed to open general chat:', error);
+            UI.showToast('Failed to open general chat', 'error');
         }
     },
     
@@ -790,6 +840,18 @@ window.App = {
         this.state.selectedConversationId = conversationId;
         
         try {
+            const conversation = await API.getConversation(conversationId);
+            this.currentConversation = conversation;
+            this.state.selectedConversationKind = conversation?.conversation_kind || 'standard';
+            if (this.state.selectedConversationKind === 'general_chat') {
+                this.state.generalChatConversationId = conversationId;
+                this.state.generalChatConversation = conversation;
+                this.renderGeneralChatButton();
+            }
+            if (!this.state.conversationListExpanded) {
+                const idx = this.state.conversations.findIndex(c => c.id === conversationId);
+                if (idx >= 5) this.state.conversationListExpanded = true;
+            }
             // Load threads for this conversation
             const threads = await API.listThreads(conversationId);
             this.state.threads = threads;
@@ -805,7 +867,11 @@ window.App = {
             }
             
             // Update conversation list highlighting
-            UI.renderConversations(this.state.conversations, conversationId);
+            UI.renderConversations(this.state.conversations, conversationId, {
+                expanded: this.state.conversationListExpanded,
+                limit: 5,
+            });
+            this.updateGeneralChatButtonState();
             
             // Phase 6: Load TTS status for this conversation
             await this.loadConversationTTS();
@@ -830,6 +896,7 @@ window.App = {
     
     async maybeShowContinuityPreview() {
         if (!this.state.selectedConversationId || !this.state.selectedCharacterId) return;
+        if (this.state.selectedConversationKind === 'general_chat') return;
         if (this.state.messages && this.state.messages.length > 0) return;
         
         try {
@@ -924,6 +991,65 @@ window.App = {
             console.error('Failed to select thread:', error);
             UI.showToast('Failed to load thread', 'error');
         }
+    },
+
+    updateGeneralChatButtonState() {
+        const btn = document.getElementById('generalChatBtn');
+        if (!btn) return;
+        const isActive = this.state.selectedConversationId &&
+            this.state.generalChatConversationId &&
+            this.state.selectedConversationId === this.state.generalChatConversationId;
+        btn.classList.toggle('active', !!isActive);
+    },
+
+    renderGeneralChatButton() {
+        const btn = document.getElementById('generalChatBtn');
+        if (!btn) return;
+        const conv = this.state.generalChatConversation;
+        const dateText = conv && conv.updated_at
+            ? UI.formatDate(conv.updated_at)
+            : 'Not started';
+        btn.innerHTML = `
+            <div class="conversation-title"><i class="bi bi-chat me-1"></i> General Chat</div>
+            <div class="conversation-date">${UI.escapeHtml(dateText)}</div>
+        `;
+        this.updateGeneralChatButtonState();
+    },
+
+    async loadGeneralChatPreview() {
+        if (!this.state.selectedCharacterId) {
+            this.state.generalChatConversation = null;
+            this.state.generalChatConversationId = null;
+            this.renderGeneralChatButton();
+            return;
+        }
+
+        try {
+            const rows = await API.listConversations(
+                this.state.selectedCharacterId,
+                0,
+                1,
+                this.state.conversationSource,
+                'general_chat'
+            );
+            const general = (rows && rows.length > 0) ? rows[0] : null;
+            this.state.generalChatConversation = general;
+            this.state.generalChatConversationId = general ? general.id : null;
+        } catch (error) {
+            console.error('Failed to load general chat preview:', error);
+            this.state.generalChatConversation = null;
+            this.state.generalChatConversationId = null;
+        }
+
+        this.renderGeneralChatButton();
+    },
+
+    toggleConversationListExpanded() {
+        this.state.conversationListExpanded = !this.state.conversationListExpanded;
+        UI.renderConversations(this.state.conversations, this.state.selectedConversationId, {
+            expanded: this.state.conversationListExpanded,
+            limit: 5,
+        });
     },
 
     getConfigDriftFingerprint(drift) {
@@ -2816,6 +2942,9 @@ window.App = {
             this.state.characters = [];
             this.state.selectedCharacterId = null;
             this.state.conversations = [];
+            this.state.conversationListExpanded = false;
+            this.state.generalChatConversationId = null;
+            this.state.generalChatConversation = null;
             this.state.selectedConversationId = null;
             this.state.threads = [];
             this.state.selectedThreadId = null;
@@ -2832,6 +2961,8 @@ window.App = {
             document.getElementById('sendBtn').disabled = true;
             document.getElementById('memoryPanelBtn').disabled = true;
             document.getElementById('momentPinsBtn').disabled = true;
+            document.getElementById('generalChatBtn').disabled = true;
+            this.renderGeneralChatButton();
             document.getElementById('manageWorkflowsBtn').disabled = true;
             document.getElementById('privacyToggle').disabled = true;
             document.getElementById('actionsMenuBtn').disabled = true;

@@ -34,6 +34,7 @@ from chorus_engine.services.conversation_context_retrieval import (
 )
 from chorus_engine.repositories.memory_repository import MemoryRepository as MemRepo
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
+from chorus_engine.repositories.relationship_repository import RelationshipRepository
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
@@ -52,6 +53,8 @@ class PromptComponents:
     token_breakdown: Dict[str, int]
     moment_pins_text: str = ""
     used_moment_pin_ids: List[str] = field(default_factory=list)
+    general_chat_bootstrap_injected: bool = False
+    general_chat_bootstrap_fingerprint: Optional[str] = None
 
 
 class PromptAssemblyService:
@@ -282,6 +285,8 @@ class PromptAssemblyService:
         document_context: Optional[Any] = None,
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
+        conversation_kind: Optional[str] = None,
+        surface_instance_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         include_conversation_context: bool = True,
@@ -320,6 +325,7 @@ class PromptAssemblyService:
             character_config,
             primary_user=primary_user,
             conversation_source=conversation_source,
+            conversation_kind=conversation_kind,
             include_chatbot_guidance=not media_interpretation,
             allowed_media_tools=allowed_media_tools,
             allow_proactive_media_offers=allow_proactive_media_offers,
@@ -377,13 +383,52 @@ class PromptAssemblyService:
                 logger.error(f"Failed to enrich messages with vision observations: {e}")
                 # Continue without vision enrichment if it fails
         
+        general_chat_bootstrap_injected = False
+        general_chat_bootstrap_fingerprint: Optional[str] = None
+
+        # Relationship-first v0: heavy continuity injection-on-change for general chat.
+        # Canonical fingerprint source is continuity_bootstrap_cache.bootstrap_inputs_fingerprint.
+        if conversation_kind == "general_chat" and conversation_id:
+            try:
+                conversation = self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
+                if conversation and conversation.relationship_id:
+                    continuity_repo = ContinuityRepository(self.db)
+                    cache = continuity_repo.get_cache(self.character_id)
+                    if cache and cache.bootstrap_packet_internal:
+                        rel_repo = RelationshipRepository(self.db)
+                        surface_id = str(conversation_source or conversation.source or "web")
+                        surface = rel_repo.get_or_create_surface(
+                            relationship_id=conversation.relationship_id,
+                            surface_id=surface_id,
+                            surface_instance_id=surface_instance_id,
+                        )
+                        current_fingerprint = cache.bootstrap_inputs_fingerprint
+                        seen_fingerprint = surface.last_bootstrap_seen_fingerprint
+                        if current_fingerprint != seen_fingerprint:
+                            system_prompt += f"\n\n{cache.bootstrap_packet_internal}"
+                            general_chat_bootstrap_injected = True
+                            general_chat_bootstrap_fingerprint = current_fingerprint
+                            logger.info(
+                                "[GENERAL_CHAT_BOOTSTRAP] Injected heavy continuity bootstrap "
+                                "conversation_id=%s relationship_id=%s surface_id=%s surface_instance_id=%s "
+                                "seen_fingerprint=%s injected_fingerprint=%s",
+                                conversation.id,
+                                conversation.relationship_id,
+                                surface_id,
+                                str(surface_instance_id or ""),
+                                seen_fingerprint,
+                                current_fingerprint,
+                            )
+            except Exception as e:
+                logger.warning(f"Failed general chat continuity injection check: {e}")
+
         # Continuity bootstrap injection (only before first assistant response)
         has_assistant = any(
             (msg.role == MessageRole.ASSISTANT or str(msg.role) == MessageRole.ASSISTANT.value)
             for msg in messages
         )
         bootstrap_injected = False
-        if messages and not has_assistant and conversation_id:
+        if conversation_kind != "general_chat" and messages and not has_assistant and conversation_id:
             try:
                 continuity_repo = ContinuityRepository(self.db)
                 conversation = self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
@@ -603,6 +648,8 @@ class PromptAssemblyService:
             token_breakdown=token_breakdown,
             moment_pins_text=moment_pins_text,
             used_moment_pin_ids=used_moment_pin_ids,
+            general_chat_bootstrap_injected=general_chat_bootstrap_injected,
+            general_chat_bootstrap_fingerprint=general_chat_bootstrap_fingerprint,
         )
     
     def assemble_prompt_with_summarization(
@@ -614,8 +661,11 @@ class PromptAssemblyService:
         image_prompt_context: Optional[str] = None,
         video_prompt_context: Optional[str] = None,
         document_context: Optional[Any] = None,
+        primary_user: Optional[str] = None,
         user_id: Optional[str] = None,
         conversation_source: Optional[str] = None,
+        conversation_kind: Optional[str] = None,
+        surface_instance_id: Optional[str] = None,
         include_conversation_context: bool = True,
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
@@ -653,6 +703,10 @@ class PromptAssemblyService:
                 include_memories=include_memories,
                 memory_query=memory_query,
                 image_prompt_context=image_prompt_context,
+                primary_user=primary_user,
+                conversation_source=conversation_source,
+                conversation_kind=conversation_kind,
+                surface_instance_id=surface_instance_id,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 include_conversation_context=include_conversation_context,
@@ -673,6 +727,10 @@ class PromptAssemblyService:
                 memory_query=memory_query,
                 image_prompt_context=image_prompt_context,
                 document_context=document_context,
+                primary_user=primary_user,
+                conversation_source=conversation_source,
+                conversation_kind=conversation_kind,
+                surface_instance_id=surface_instance_id,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 include_conversation_context=include_conversation_context,
@@ -695,6 +753,7 @@ class PromptAssemblyService:
             character_config,
             primary_user=primary_user,
             conversation_source=conversation_source,
+            conversation_kind=conversation_kind,
             include_chatbot_guidance=not media_interpretation,
             allowed_media_tools=allowed_media_tools,
             allow_proactive_media_offers=allow_proactive_media_offers,
@@ -828,6 +887,8 @@ class PromptAssemblyService:
             token_breakdown=token_breakdown,
             moment_pins_text="",
             used_moment_pin_ids=[],
+            general_chat_bootstrap_injected=False,
+            general_chat_bootstrap_fingerprint=None,
         )
     
     def _build_selective_context(

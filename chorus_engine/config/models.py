@@ -376,6 +376,10 @@ class StartupConfig(BaseModel):
         default=True,
         description="Sync missing moment pin vectors on startup (self-healing)"
     )
+    auto_repair_unhealthy_vectors: bool = Field(
+        default=True,
+        description="Rebuild unhealthy vector collections detected during startup health checks"
+    )
 
 
 class HeartbeatBackupsConfig(BaseModel):

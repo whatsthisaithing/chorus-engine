@@ -12,6 +12,7 @@ from .audio_repository import AudioRepository
 from .moment_pin_repository import MomentPinRepository
 from .surface_binding_repository import SurfaceBindingRepository
 from .surface_egress_intent_repository import SurfaceEgressIntentRepository
+from .relationship_repository import RelationshipRepository
 
 __all__ = [
     "ConversationRepository",
@@ -26,4 +27,5 @@ __all__ = [
     "MomentPinRepository",
     "SurfaceBindingRepository",
     "SurfaceEgressIntentRepository",
+    "RelationshipRepository",
 ]

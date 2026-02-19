@@ -10,6 +10,7 @@ Phase D.5: Conversation Analysis Task
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
+from sqlalchemy import or_
 
 from chorus_engine.services.heartbeat_service import (
     BackgroundTaskHandler, BackgroundTask, TaskResult, TaskPriority
@@ -355,6 +356,15 @@ class StaleConversationFinder:
             # Filter by character if specified
             if character_id:
                 query = query.filter(Conversation.character_id == character_id)
+
+            # Relationship-first v0: summary analysis excludes general chat.
+            if analysis_kind == "summary":
+                query = query.filter(
+                    or_(
+                        Conversation.conversation_kind.is_(None),
+                        Conversation.conversation_kind != "general_chat",
+                    )
+                )
             
             # Filter out private conversations
             query = query.filter(

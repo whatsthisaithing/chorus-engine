@@ -15,7 +15,9 @@ sys.path.insert(0, str(project_root))
 from chorus_engine.db.database import SessionLocal
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
+from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
 from chorus_engine.services.document_vector_store import DocumentVectorStore
+from chorus_engine.services.embedding_service import EmbeddingService
 from chorus_engine.utils.startup_sync import run_vector_health_checks
 
 
@@ -24,13 +26,22 @@ def main() -> int:
     try:
         vector_store = VectorStore(Path("data/vector_store"))
         summary_store = ConversationSummaryVectorStore(Path("data/vector_store"))
+        moment_pin_store = MomentPinVectorStore(Path("data/vector_store"))
         document_store = DocumentVectorStore("data/vector_store")
+        embedding_service = None
+        try:
+            embedding_service = EmbeddingService()
+        except Exception as e:
+            # Fallback to get/count-only health checks when embeddings are unavailable.
+            print(f"Embedding probe disabled: {e}")
 
         report = run_vector_health_checks(
             db_session=db,
             vector_store=vector_store,
             summary_vector_store=summary_store,
-            document_vector_store=document_store
+            moment_pin_vector_store=moment_pin_store,
+            document_vector_store=document_store,
+            embedding_service=embedding_service,
         )
 
         # Additional drift counters

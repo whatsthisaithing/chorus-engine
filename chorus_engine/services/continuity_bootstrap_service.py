@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Awaitable, Callable
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
@@ -102,7 +102,13 @@ class ContinuityBootstrapService:
         latest_summary = (
             self.db.query(ConversationSummary)
             .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
-            .filter(Conversation.character_id == character_id)
+            .filter(
+                Conversation.character_id == character_id,
+                or_(
+                    Conversation.conversation_kind.is_(None),
+                    Conversation.conversation_kind != "general_chat",
+                ),
+            )
             .order_by(ConversationSummary.created_at.desc())
             .first()
         )
@@ -264,7 +270,13 @@ class ContinuityBootstrapService:
                 func.max(ConversationSummary.created_at).label("max_created_at")
             )
             .join(Conversation, ConversationSummary.conversation_id == Conversation.id)
-            .filter(Conversation.character_id == character_id)
+            .filter(
+                Conversation.character_id == character_id,
+                or_(
+                    Conversation.conversation_kind.is_(None),
+                    Conversation.conversation_kind != "general_chat",
+                ),
+            )
             .group_by(ConversationSummary.conversation_id)
             .subquery()
         )

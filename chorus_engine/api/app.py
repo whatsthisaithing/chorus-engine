@@ -100,6 +100,7 @@ from chorus_engine.services.media_offer_policy import (
     is_offer_allowed,
     record_offer,
 )
+from chorus_engine.services.relationship_resolution_service import RelationshipResolutionService
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import (
@@ -108,6 +109,7 @@ from chorus_engine.utils.startup_sync import (
     sync_moment_pin_vectors,
     sync_document_vectors,
     run_vector_health_checks,
+    repair_unhealthy_vector_collections,
 )
 
 # Phase D: Idle detection for background processing
@@ -741,6 +743,7 @@ async def lifespan(app: FastAPI):
         sync_summary_on_startup = getattr(startup_config, "sync_summary_vectors", True)
         sync_memory_on_startup = getattr(startup_config, "sync_memory_vectors", True)
         sync_pin_on_startup = getattr(startup_config, "sync_moment_pin_vectors", True)
+        auto_repair_unhealthy_vectors = getattr(startup_config, "auto_repair_unhealthy_vectors", True)
 
         # Startup sync: Ensure vectors are in sync with SQL (summaries + memories + moment pins)
         if sync_summary_on_startup and summary_vector_store and embedding_service:
@@ -861,7 +864,8 @@ async def lifespan(app: FastAPI):
                 vector_store=vector_store,
                 summary_vector_store=summary_vector_store,
                 moment_pin_vector_store=moment_pin_vector_store,
-                document_vector_store=document_manager.vector_store
+                document_vector_store=document_manager.vector_store,
+                embedding_service=embedding_service,
             )
             if health_report["ok"]:
                 logger.info(
@@ -871,6 +875,36 @@ async def lifespan(app: FastAPI):
                 logger.error("[VECTOR_HEALTH] STARTUP CHECK FAILED")
                 for issue in health_report["issues"]:
                     logger.error(f"[VECTOR_HEALTH] {issue}")
+                if auto_repair_unhealthy_vectors and embedding_service:
+                    repair_stats = await repair_unhealthy_vector_collections(
+                        db_session=db_session,
+                        vector_store=vector_store,
+                        summary_vector_store=summary_vector_store,
+                        moment_pin_vector_store=moment_pin_vector_store,
+                        embedding_service=embedding_service,
+                        health_report=health_report,
+                    )
+                    logger.info(
+                        "[ENS_AUDIT] startup.vector_health_repair memory=%s summary=%s moment_pins=%s errors=%s",
+                        len(repair_stats.get("memory_rebuilt", [])),
+                        len(repair_stats.get("summary_rebuilt", [])),
+                        len(repair_stats.get("moment_pin_rebuilt", [])),
+                        int(repair_stats.get("errors", 0)),
+                    )
+                    post_repair_report = run_vector_health_checks(
+                        db_session=db_session,
+                        vector_store=vector_store,
+                        summary_vector_store=summary_vector_store,
+                        moment_pin_vector_store=moment_pin_vector_store,
+                        document_vector_store=document_manager.vector_store,
+                        embedding_service=embedding_service,
+                    )
+                    if post_repair_report["ok"]:
+                        logger.info("[VECTOR_HEALTH] Startup repair completed successfully")
+                    else:
+                        logger.error("[VECTOR_HEALTH] Startup repair incomplete; remaining issues:")
+                        for issue in post_repair_report["issues"]:
+                            logger.error(f"[VECTOR_HEALTH] {issue}")
         except Exception as e:
             logger.error(f"[VECTOR_HEALTH] Startup health check crashed: {e}")
 
@@ -1463,6 +1497,8 @@ class ConversationCreate(BaseModel):
     source: Optional[str] = "web"  # "web", "discord", etc.
     image_confirmation_disabled: Optional[bool] = None  # Bypass image generation confirmation dialog
     primary_user: Optional[str] = None
+    conversation_kind: Optional[str] = "standard"
+    relationship_id: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -1470,6 +1506,9 @@ class ConversationResponse(BaseModel):
     id: str
     character_id: str
     title: str
+    source: str
+    conversation_kind: str
+    relationship_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     
@@ -1527,6 +1566,14 @@ class ThreadResponse(BaseModel):
 class ThreadUpdate(BaseModel):
     """Update thread request."""
     title: str
+
+
+class GeneralChatResolveResponse(BaseModel):
+    """General chat resolver response."""
+
+    conversation: ConversationResponse
+    thread: ThreadResponse
+    relationship_id: str
 
 
 # Message models
@@ -3766,10 +3813,13 @@ def _build_surface_envelope_fields(
     conversation_source: Optional[str],
     metadata: Optional[dict],
     speaker_role: str,
-    target_hint_default: str = "general_chat",
+    target_hint_default: Optional[str] = None,
 ) -> Dict[str, Any]:
     meta = metadata or {}
     surface_id = canonicalize_surface_id(conversation_source or "web")
+    target_hint = meta.get("target_hint")
+    if not target_hint and target_hint_default:
+        target_hint = target_hint_default
     return {
         "surface_id": surface_id,
         "surface_instance_id": meta.get("surface_instance_id"),
@@ -3777,7 +3827,7 @@ def _build_surface_envelope_fields(
         "speaker_external_id": meta.get("speaker_external_id") or meta.get("discord_user_id"),
         "speaker_role": speaker_role,
         "relationship_hint": meta.get("relationship_hint"),
-        "target_hint": meta.get("target_hint") or target_hint_default,
+        "target_hint": target_hint,
         "message_external_id": meta.get("external_message_id"),
     }
 
@@ -4042,6 +4092,7 @@ async def _ens_thread_chat(
         conversation_source=conversation_source,
         metadata=request.metadata,
         speaker_role="user",
+        target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
     signal = SignalEnvelope(
         type="user.message",
@@ -4171,6 +4222,7 @@ async def _ens_nonstream_intake_only(
         conversation_source=conversation_source,
         metadata=request.metadata,
         speaker_role="user",
+        target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
     signal = SignalEnvelope(
         type="user.message.nonstream_intake",
@@ -4231,6 +4283,7 @@ async def _ens_history_message_add(
         conversation_source=conversation_source,
         metadata=message_metadata,
         speaker_role="assistant" if message.get("role") == "assistant" else "user",
+        target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
     signal = SignalEnvelope(
         type="external.history.message",
@@ -4906,7 +4959,9 @@ async def create_conversation(
         source=request.source or "web",
         image_confirmation_disabled=request.image_confirmation_disabled,
         primary_user=request.primary_user,
-        continuity_mode="ask"
+        continuity_mode="ask",
+        relationship_id=request.relationship_id,
+        conversation_kind=request.conversation_kind or "standard",
     )
     
     # Create default thread
@@ -4914,6 +4969,47 @@ async def create_conversation(
     thread_repo.create(conversation_id=conversation.id, title="Main Thread")
     
     return conversation
+
+
+@app.post("/characters/{character_id}/general-chat", response_model=GeneralChatResolveResponse)
+async def resolve_general_chat(
+    character_id: str,
+    db: Session = Depends(get_db),
+):
+    """Resolve or create the persistent web general chat for a character."""
+    if character_id not in app_state["characters"]:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+
+    service = RelationshipResolutionService(db)
+    resolved = service.resolve_general_chat(
+        character_id=character_id,
+        owner_user_id=RelationshipResolutionService.OWNER_USER_ID,
+        surface_id="web",
+        surface_instance_id="",
+        source="web",
+    )
+    conversation = resolved["conversation"]
+    thread = resolved["thread"]
+    return GeneralChatResolveResponse(
+        conversation=ConversationResponse(
+            id=conversation.id,
+            character_id=conversation.character_id,
+            title=conversation.title,
+            source=conversation.source,
+            conversation_kind=conversation.conversation_kind,
+            relationship_id=conversation.relationship_id,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        ),
+        thread=ThreadResponse(
+            id=thread.id,
+            conversation_id=thread.conversation_id,
+            title=thread.title,
+            created_at=thread.created_at,
+            updated_at=thread.updated_at,
+        ),
+        relationship_id=resolved["relationship"].id,
+    )
 
 
 class ContinuityChoiceRequest(BaseModel):
@@ -5085,15 +5181,21 @@ async def list_conversations(
     limit: int = Query(100, ge=1, le=500),
     character_id: Optional[str] = None,
     source: Optional[str] = Query("web", description="Filter by source (web, discord, all)"),
+    conversation_kind: Optional[str] = Query("standard", description="Filter by conversation kind (standard, general_chat, all)"),
     db: Session = Depends(get_db)
 ):
     """List all conversations."""
     repo = ConversationRepository(db)
     
     if character_id:
-        conversations = repo.list_by_character(character_id, skip=skip, limit=limit)
+        conversations = repo.list_by_character(
+            character_id,
+            skip=skip,
+            limit=limit,
+            conversation_kind=conversation_kind,
+        )
     else:
-        conversations = repo.list_all(skip=skip, limit=limit)
+        conversations = repo.list_all(skip=skip, limit=limit, conversation_kind=conversation_kind)
     
     # Filter by source (default to 'web' to exclude Discord conversations)
     if source and source != "all":
@@ -5333,6 +5435,7 @@ async def analyze_conversation_now(
     
     # Run analysis synchronously
     try:
+        analysis_kind = "memories" if conversation.conversation_kind == "general_chat" else "both"
         if _ens_slice3_enabled():
             runtime = app_state.get("ens_runtime")
             if not runtime:
@@ -5345,7 +5448,7 @@ async def analyze_conversation_now(
                 payload={
                     "conversation_id": conversation_id,
                     "character_id": conversation.character_id,
-                    "analysis_kind": "both",
+                    "analysis_kind": analysis_kind,
                 },
             )
             outcome = await runtime.ingest(
@@ -5379,11 +5482,18 @@ async def analyze_conversation_now(
                 "current_summary_id": output.get("current_summary_id"),
             }
 
-        analysis = await analysis_service.analyze_conversation(
-            conversation_id=conversation_id,
-            character=character,
-            manual=True  # Mark as manual analysis
-        )
+        if analysis_kind == "memories":
+            analysis = await analysis_service.analyze_memories_only(
+                conversation_id=conversation_id,
+                character=character,
+                manual=True,
+            )
+        else:
+            analysis = await analysis_service.analyze_conversation(
+                conversation_id=conversation_id,
+                character=character,
+                manual=True  # Mark as manual analysis
+            )
         
         if not analysis:
             return {
@@ -5392,12 +5502,23 @@ async def analyze_conversation_now(
             }
         
         # Save analysis to database
-        await analysis_service.save_analysis(
-            conversation_id=conversation_id,
-            character_id=conversation.character_id,
-            analysis=analysis,
-            manual=True
-        )
+        if analysis_kind == "memories":
+            if not (
+                conversation.conversation_kind == "general_chat"
+                and analysis.processed_through_message_id is None
+            ):
+                await analysis_service.save_memories_only(
+                    conversation_id=conversation_id,
+                    character_id=conversation.character_id,
+                    analysis=analysis,
+                )
+        else:
+            await analysis_service.save_analysis(
+                conversation_id=conversation_id,
+                character_id=conversation.character_id,
+                analysis=analysis,
+                manual=True
+            )
         
         # Build memory counts
         memory_counts = {}
@@ -6825,6 +6946,8 @@ async def send_message(
             document_context=doc_context if doc_context and doc_context.has_content() else None,
             primary_user=request.primary_user,
             conversation_source=request.conversation_source or 'web',
+            conversation_kind=conversation.conversation_kind,
+            surface_instance_id=(request.metadata or {}).get("surface_instance_id"),
             conversation_id=conversation.id,
             user_id=user_scope,
             include_conversation_context=True,
@@ -7329,7 +7452,7 @@ async def send_message(
         # Only if title is still auto-generated (not user-set)
         title_service = app_state.get("title_service")
         updated_title = None
-        if title_service and conversation.title_auto_generated:
+        if title_service and conversation.title_auto_generated and conversation.conversation_kind != "general_chat":
             # Count total messages in conversation (across all threads)
             thread_repo = ThreadRepository(db)
             threads = thread_repo.list_by_conversation(conversation.id)
@@ -7713,6 +7836,7 @@ async def send_message_stream(
                 conversation_source=conversation_source,
                 metadata=request.metadata,
                 speaker_role="user",
+                target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
             )
             intake_signal = SignalEnvelope(
                 type="user.message.stream_intake",
@@ -8263,6 +8387,8 @@ async def send_message_stream(
             document_context=doc_context if doc_context and doc_context.has_content() else None,
             primary_user=request.primary_user,
             conversation_source=request.conversation_source or 'web',
+            conversation_kind=conversation.conversation_kind,
+            surface_instance_id=(request.metadata or {}).get("surface_instance_id"),
             conversation_id=conversation.id,
             user_id=_resolve_user_scope(request.metadata, request.primary_user),
             include_conversation_context=True,
@@ -8307,6 +8433,7 @@ async def send_message_stream(
     character_name = character.name
     character_id_for_stream = character.id
     conversation_is_private = conversation.is_private
+    conversation_kind_for_stream = conversation.conversation_kind
     model_for_extraction = model  # Use character's model for background extraction
     character_config_for_stream = character  # Phase 8: Character config for memory profile
     title_auto_generated = conversation.title_auto_generated  # For title generation
@@ -8745,7 +8872,7 @@ async def send_message_stream(
             # Only if title is still auto-generated (not user-set)
             updated_title = None
             title_service = app_state.get("title_service")
-            if title_service and title_auto_generated:
+            if title_service and title_auto_generated and conversation_kind_for_stream != "general_chat":
                 try:
                     # Open new DB session for title generation
                     title_db = next(get_db())
@@ -9431,26 +9558,6 @@ async def create_memory(
 ):
     """Create an explicit memory for a conversation."""
     # Verify conversation exists
-    if _ens_slice4_enabled():
-        outcome = await _ens_config_change(
-            signal_type="config.conversation.change_requested",
-            payload={
-                "operation": "delete_conversation",
-                "conversation_id": conversation_id,
-                "payload": {
-                    "conversation_id": conversation_id,
-                    "delete_memories": bool(delete_memories),
-                    "delete_moment_pins": bool(delete_moment_pins),
-                },
-            },
-        )
-        if outcome.get("reason") == "validation_failed":
-            errors = outcome.get("errors") or []
-            if "Conversation not found" in errors:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-            raise HTTPException(status_code=400, detail=", ".join(errors) or "Validation failed")
-        return outcome
-
     conv_repo = ConversationRepository(db)
     conversation = conv_repo.get_by_id(conversation_id)
     if not conversation:

@@ -12,7 +12,7 @@ import json
 import hashlib
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,8 @@ class ConversationAnalysis:
     emotional_arc: str
     participants: List[str]
     open_questions: List[str]
+    processed_through_message_id: Optional[str] = None
+    processed_through_created_at: Optional[datetime] = None
 
 
 class ConversationAnalysisService:
@@ -291,6 +293,14 @@ class ConversationAnalysisService:
             ConversationAnalysis if successful, None otherwise
         """
         try:
+            conversation = self.conv_repo.get_by_id(conversation_id)
+            if conversation and conversation.conversation_kind == "general_chat":
+                return await self.analyze_memories_only(
+                    conversation_id=conversation_id,
+                    character=character,
+                    manual=manual,
+                )
+
             prep = self._prepare_analysis_context(
                 conversation_id,
                 character,
@@ -543,6 +553,11 @@ class ConversationAnalysisService:
     ) -> Optional[ConversationAnalysis]:
         """Analyze a conversation for summary data only."""
         try:
+            conversation = self.conv_repo.get_by_id(conversation_id)
+            if conversation and conversation.conversation_kind == "general_chat":
+                logger.info("Skipping summary analysis for general chat conversation %s", conversation_id[:8])
+                return None
+
             prep = self._prepare_analysis_context(
                 conversation_id,
                 character,
@@ -643,7 +658,48 @@ class ConversationAnalysisService:
             )
             if not prep:
                 return None
-            _, token_count, conversation_text, summary_model, filter_stats, filtered_messages, name_map = prep
+            conversation, token_count, conversation_text, summary_model, filter_stats, filtered_messages, name_map = prep
+            processed_through_message_id: Optional[str] = None
+            processed_through_created_at: Optional[datetime] = None
+
+            if conversation.conversation_kind == "general_chat":
+                all_messages = self._get_all_messages(conversation_id)
+                if manual:
+                    if any(getattr(msg, "is_private", "false") == "true" for msg in all_messages):
+                        logger.warning(
+                            f"[ANALYSIS] Skipping conversation {conversation_id[:8]}... "
+                            "due to private messages (manual analysis)."
+                        )
+                        return None
+                else:
+                    all_messages = [msg for msg in all_messages if getattr(msg, "is_private", "false") != "true"]
+
+                incremental_window, processed_through_message_id, processed_through_created_at = self._slice_general_chat_incremental_window(
+                    messages=all_messages,
+                    conversation=conversation,
+                    bridge_tail_size=20,
+                )
+                if not incremental_window:
+                    logger.info(
+                        "[ANALYSIS] General chat memories up-to-date for %s",
+                        conversation_id[:8],
+                    )
+                    return ConversationAnalysis(
+                        memories=[],
+                        summary="",
+                        key_topics=[],
+                        tone="",
+                        emotional_arc="",
+                        participants=[],
+                        open_questions=[],
+                        processed_through_message_id=None,
+                        processed_through_created_at=None,
+                    )
+
+                filtered_messages, filter_stats_obj = filter_archivist_messages(incremental_window)
+                filter_stats = filter_stats_obj.to_dict()
+                conversation_text = format_archivist_transcript_json(filtered_messages, name_map=name_map)
+                token_count = self.token_counter.count_tokens(conversation_text)
 
             profile = self.memory_profile_service.get_extraction_profile(character)
             fact_enabled = bool(profile.get("extract_facts", True))
@@ -798,7 +854,9 @@ class ConversationAnalysisService:
                 tone="",
                 emotional_arc="",
                 participants=[],
-                open_questions=[]
+                open_questions=[],
+                processed_through_message_id=processed_through_message_id,
+                processed_through_created_at=processed_through_created_at,
             )
 
             self._write_debug_log(
@@ -942,6 +1000,15 @@ class ConversationAnalysisService:
                 summary=False,
                 memories=True
             )
+            if analysis.processed_through_message_id and analysis.processed_through_created_at:
+                self.db.query(Conversation).filter(Conversation.id == conversation_id).update(
+                    {
+                        "general_chat_memories_processed_through_message_id": analysis.processed_through_message_id,
+                        "general_chat_memories_processed_through_created_at": analysis.processed_through_created_at,
+                    },
+                    synchronize_session=False,
+                )
+                self.db.commit()
 
             logger.info(
                 f"Saved memories for {conversation_id[:8]}... "
@@ -1119,8 +1186,62 @@ class ConversationAnalysisService:
             .order_by(Message.created_at)
             .all()
         )
-        
+
         return messages
+
+    @staticmethod
+    def _message_is_strictly_after(
+        msg: Message,
+        *,
+        cursor_created_at: Optional[datetime],
+        cursor_message_id: Optional[str],
+    ) -> bool:
+        if not cursor_created_at:
+            return True
+        if msg.created_at > cursor_created_at:
+            return True
+        if msg.created_at < cursor_created_at:
+            return False
+        if not cursor_message_id:
+            return True
+        return str(msg.id) > str(cursor_message_id)
+
+    def _slice_general_chat_incremental_window(
+        self,
+        *,
+        messages: List[Message],
+        conversation: Conversation,
+        bridge_tail_size: int = 20,
+    ) -> Tuple[List[Message], Optional[str], Optional[datetime]]:
+        """
+        Build incremental message window for general chat memories.
+
+        Ordering semantics are strict tuple-based:
+        (created_at, message_id) > (cursor_created_at, cursor_message_id)
+        """
+        cursor_created_at = getattr(conversation, "general_chat_memories_processed_through_created_at", None)
+        cursor_message_id = getattr(conversation, "general_chat_memories_processed_through_message_id", None)
+
+        new_messages = [
+            m for m in messages
+            if self._message_is_strictly_after(
+                m,
+                cursor_created_at=cursor_created_at,
+                cursor_message_id=cursor_message_id,
+            )
+        ]
+        if not new_messages:
+            return [], None, None
+
+        first_new = new_messages[0]
+        prior = [
+            m for m in messages
+            if (m.created_at < first_new.created_at) or (m.created_at == first_new.created_at and str(m.id) < str(first_new.id))
+        ]
+        bridge_tail = prior[-bridge_tail_size:] if bridge_tail_size > 0 else []
+        window = bridge_tail + new_messages
+        newest = new_messages[-1]
+        return window, newest.id, newest.created_at
     
     def _count_tokens(self, messages: List[Message]) -> int:
         """Count total tokens in messages."""

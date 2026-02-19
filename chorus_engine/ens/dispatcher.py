@@ -23,6 +23,7 @@ from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
 from chorus_engine.repositories import (
     ConversationRepository,
     MessageRepository,
+    RelationshipRepository,
     SurfaceEgressIntentRepository,
     ThreadRepository,
 )
@@ -351,6 +352,37 @@ class ENSDispatcher:
             metadata=params.get("metadata"),
             is_private=params.get("is_private", False),
         )
+
+        # Relationship-first v0: touch interaction and persist bootstrap-seen checkpoint.
+        try:
+            thread_repo = ThreadRepository(db)
+            conv_repo = ConversationRepository(db)
+            thread = thread_repo.get_by_id(message.thread_id)
+            conversation = conv_repo.get_by_id(thread.conversation_id) if thread else None
+            if (
+                conversation
+                and conversation.relationship_id
+                and conversation.conversation_kind == "general_chat"
+            ):
+                rel_repo = RelationshipRepository(db)
+                metadata = params.get("metadata") or {}
+                surface_id = str(metadata.get("general_chat_surface_id") or conversation.source or "web")
+                surface_instance_id = metadata.get("general_chat_surface_instance_id")
+                rel_repo.touch_interaction(
+                    relationship_id=conversation.relationship_id,
+                    surface_id=surface_id,
+                    surface_instance_id=surface_instance_id,
+                )
+                if role == MessageRole.ASSISTANT and metadata.get("general_chat_bootstrap_injected"):
+                    rel_repo.mark_bootstrap_seen_fingerprint(
+                        relationship_id=conversation.relationship_id,
+                        surface_id=surface_id,
+                        surface_instance_id=surface_instance_id,
+                        fingerprint=metadata.get("general_chat_bootstrap_fingerprint"),
+                    )
+        except Exception as e:
+            logger.warning("Failed relationship-surface post-write updates: %s", e)
+
         return {"message_id": message.id, "thread_id": message.thread_id}
 
     def _link_attachments_to_message(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -681,6 +713,8 @@ class ENSDispatcher:
             include_memories=True,
             primary_user=conversation.primary_user,
             conversation_source=source,
+            conversation_kind=conversation.conversation_kind,
+            surface_instance_id=params.get("surface_instance_id"),
             conversation_id=conversation.id,
             user_id=params.get("user_id"),
             include_conversation_context=True,
@@ -764,6 +798,11 @@ class ENSDispatcher:
             malformed_payload_type = detected_raw_payload_type
             assistant_metadata["malformed_tool_payload_non_sentinel"] = True
             assistant_metadata["malformed_payload_type"] = detected_raw_payload_type
+        if prompt_components.general_chat_bootstrap_injected:
+            assistant_metadata["general_chat_bootstrap_injected"] = True
+            assistant_metadata["general_chat_bootstrap_fingerprint"] = prompt_components.general_chat_bootstrap_fingerprint
+            assistant_metadata["general_chat_surface_id"] = source
+            assistant_metadata["general_chat_surface_instance_id"] = params.get("surface_instance_id")
         pending_tool_calls: List[Dict[str, Any]] = []
         tool_names: List[str] = []
         tool_call_count = 0
@@ -817,6 +856,8 @@ class ENSDispatcher:
             "tool_names": tool_names,
             "pending_tool_calls": pending_tool_calls,
             "assistant_metadata": assistant_metadata,
+            "general_chat_bootstrap_injected": bool(prompt_components.general_chat_bootstrap_injected),
+            "general_chat_bootstrap_fingerprint": prompt_components.general_chat_bootstrap_fingerprint,
             "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
             "malformed_payload_type": malformed_payload_type,
             "current_turn_visual_context_count": (
@@ -842,6 +883,8 @@ class ENSDispatcher:
                 "tool_payload_present": result["tool_payload_present"],
                 "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
                 "malformed_payload_type": malformed_payload_type,
+                "general_chat_bootstrap_injected": result["general_chat_bootstrap_injected"],
+                "general_chat_bootstrap_fingerprint": result["general_chat_bootstrap_fingerprint"],
                 "messages_tail": messages[-6:],
                 "raw_content": raw_content,
                 "display_content": display_text,
@@ -1216,6 +1259,12 @@ class ENSDispatcher:
         character_id = params["character_id"]
         manual = bool(params.get("manual", False))
         analysis_kind = params.get("analysis_kind", "both")
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(conversation_id)
+        if not conversation:
+            raise RuntimeError("Conversation not found")
+        if conversation.conversation_kind == "general_chat" and analysis_kind != "memories":
+            analysis_kind = "memories"
         character = self.app_state["characters"].get(character_id)
         if not character:
             raise RuntimeError(f"Character not found: {character_id}")
@@ -1274,11 +1323,18 @@ class ENSDispatcher:
                 character=character,
                 manual=manual,
             )
-            saved = await analysis_service.save_memories_only(
-                conversation_id=conversation_id,
-                character_id=character_id,
-                analysis=analysis,
-            ) if analysis else False
+            if (
+                analysis
+                and conversation.conversation_kind == "general_chat"
+                and analysis.processed_through_message_id is None
+            ):
+                saved = False
+            else:
+                saved = await analysis_service.save_memories_only(
+                    conversation_id=conversation_id,
+                    character_id=character_id,
+                    analysis=analysis,
+                ) if analysis else False
         else:
             analysis = await analysis_service.analyze_conversation(
                 conversation_id=conversation_id,
@@ -1304,8 +1360,6 @@ class ENSDispatcher:
                 "summary_length": 0,
             }
 
-        conv_repo = ConversationRepository(db)
-        conversation = conv_repo.get_by_id(conversation_id)
         memory_counts: Dict[str, int] = {}
         memory_payload: List[Dict[str, Any]] = []
         for memory in analysis.memories or []:
@@ -2808,6 +2862,8 @@ class ENSDispatcher:
         conversation = conv_repo.get_by_id(thread.conversation_id)
         if not conversation:
             return {"updated": False, "reason": "conversation_not_found"}
+        if getattr(conversation, "conversation_kind", "standard") == "general_chat":
+            return {"updated": False, "reason": "general_chat_title_locked"}
         if not bool(getattr(conversation, "title_auto_generated", False)):
             return {"updated": False, "reason": "title_already_user_managed"}
 

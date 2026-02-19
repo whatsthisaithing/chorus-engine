@@ -19,6 +19,7 @@ from chorus_engine.ens.llm_invocation_service import LLMInvocationService
 from chorus_engine.ens.llm_invocation_service import in_invoker_context
 from chorus_engine.ens.llm_control_plane_service import in_control_plane_context
 from chorus_engine.models.conversation import Conversation, Thread
+from chorus_engine.models.relationship import Relationship, RelationshipSurface
 from chorus_engine.llm.base import LLMResponse
 
 

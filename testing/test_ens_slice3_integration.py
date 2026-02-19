@@ -41,6 +41,42 @@ def test_slice3_explicit_memory_client_id_idempotent(client, db, helpers):
     assert len(rows) == 1
 
 
+def test_explicit_memory_create_not_routed_through_slice4_conversation_delete_path(client, db, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=False,
+        nonstream_intake_only=True,
+        streaming_intake_only=True,
+        slice3_continuity_writes_ownership=False,
+        slice4_config_ownership=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+
+    resp = client.post(
+        f"/conversations/{conversation_id}/memories",
+        json={
+            "content": "Remember this explicit fact",
+            "thread_id": thread_id,
+            "tags": ["explicit"],
+            "priority": 70,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["memory_type"] == "explicit"
+
+    rows = (
+        db.query(Memory)
+        .filter(
+            Memory.conversation_id == conversation_id,
+            Memory.memory_type == MemoryType.EXPLICIT,
+            Memory.content == "Remember this explicit fact",
+        )
+        .all()
+    )
+    assert len(rows) == 1
+
+
 def test_slice3_continuity_refresh_routes_through_ens(client, db, helpers):
     class _FakeContinuityService:
         async def generate_and_save(self, character, conversation_id=None, force=False):

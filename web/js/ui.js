@@ -137,17 +137,22 @@ const UI = {
     /**
      * Render conversation list
      */
-    renderConversations(conversations, activeId = null) {
+    renderConversations(conversations, activeId = null, options = {}) {
         const container = document.getElementById('conversationList');
+        const showMoreBtn = document.getElementById('conversationShowMoreBtn');
+        const limit = Number.isInteger(options.limit) ? options.limit : 5;
+        const expanded = !!options.expanded;
         
         if (conversations.length === 0) {
             container.innerHTML = '<p class="text-muted small">No conversations yet</p>';
+            if (showMoreBtn) showMoreBtn.style.display = 'none';
             return;
         }
         
         container.innerHTML = '';
-        
-        conversations.forEach(conv => {
+        const visible = expanded ? conversations : conversations.slice(0, limit);
+
+        visible.forEach(conv => {
             const item = document.createElement('div');
             item.className = 'conversation-item';
             item.setAttribute('data-conversation-id', conv.id);
@@ -166,6 +171,15 @@ const UI = {
             
             container.appendChild(item);
         });
+
+        if (showMoreBtn) {
+            if (conversations.length > limit) {
+                showMoreBtn.style.display = 'block';
+                showMoreBtn.textContent = expanded ? 'Show less' : `Show more (${conversations.length - limit})`;
+            } else {
+                showMoreBtn.style.display = 'none';
+            }
+        }
     },
     
     /**

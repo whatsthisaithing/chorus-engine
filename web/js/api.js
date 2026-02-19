@@ -118,8 +118,15 @@ class API {
                 character_id: characterId,
                 title: title,
                 source: source,
-                primary_user: primaryUser
+                primary_user: primaryUser,
+                conversation_kind: 'standard',
             }),
+        });
+    }
+
+    static async resolveGeneralChat(characterId) {
+        return this.request(`/characters/${characterId}/general-chat`, {
+            method: 'POST',
         });
     }
 
@@ -148,12 +155,13 @@ class API {
         });
     }
     
-    static async listConversations(characterId = null, skip = 0, limit = 100, source = 'web') {
+    static async listConversations(characterId = null, skip = 0, limit = 100, source = 'web', conversationKind = 'standard') {
         const params = new URLSearchParams();
         if (characterId) params.append('character_id', characterId);
         if (skip) params.append('skip', skip);
         if (limit) params.append('limit', limit);
         if (source) params.append('source', source);  // Filter by source (web, discord, all)
+        if (conversationKind) params.append('conversation_kind', conversationKind);
         
         return this.request(`/conversations?${params}`);
     }

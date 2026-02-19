@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.repositories import ConversationRepository, SurfaceBindingRepository, ThreadRepository
+from chorus_engine.services.relationship_resolution_service import RelationshipResolutionService
 
 
 @dataclass
@@ -63,6 +64,33 @@ class SurfaceRouter:
                 thread_id=touched.thread_id,
                 relationship_id=touched.relationship_id,
                 binding_id=touched.id,
+                ignored_target_hint=ignored_target_hint,
+            )
+
+        if normalized_target_hint == "general_chat":
+            resolver = RelationshipResolutionService(self.db)
+            resolved_gc = resolver.resolve_general_chat(
+                character_id=assistant_id,
+                surface_id=surface,
+                surface_instance_id=surface_instance_id,
+                source=surface,
+            )
+            conversation_id = resolved_gc["conversation"].id
+            thread_id = resolved_gc["thread"].id
+            relationship_id = resolved_gc["relationship"].id
+            binding = self.binding_repo.create_with_retry(
+                surface_id=surface,
+                surface_instance_id=surface_instance_id,
+                external_thread_id=ext_thread,
+                relationship_id=relationship_id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+            )
+            return ResolvedTarget(
+                conversation_id=binding.conversation_id,
+                thread_id=binding.thread_id,
+                relationship_id=binding.relationship_id,
+                binding_id=binding.id,
                 ignored_target_hint=ignored_target_hint,
             )
 

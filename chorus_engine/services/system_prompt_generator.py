@@ -23,6 +23,7 @@ class SystemPromptGenerator:
         include_notice: bool = True,
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
+        conversation_kind: Optional[str] = None,
         include_chatbot_guidance: bool = True,
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
@@ -80,6 +81,11 @@ class SystemPromptGenerator:
             if pacing_guidance:
                 parts.append("")
                 parts.append(pacing_guidance)
+
+        # Relationship-first v0: General chat stance modifier.
+        if conversation_kind == "general_chat":
+            parts.append("")
+            parts.append(self._generate_general_chat_modifier())
         
         # 4. Add immersion-level-specific guidance (skip in custom system prompt mode)
         if not (hasattr(character, 'custom_system_prompt') and character.custom_system_prompt):
@@ -120,6 +126,15 @@ class SystemPromptGenerator:
             parts.append(structured_contract)
         
         return "\n\n".join(parts)
+
+    def _generate_general_chat_modifier(self) -> str:
+        parts = ["**General Chat Conversation Stance:**"]
+        parts.append("- Prioritize replying to the user's most recent message, even when the topic shifts.")
+        parts.append("- Do not steer back to earlier topics unless the user explicitly asks.")
+        parts.append("- Treat arcs and relationship state as background context, not directives.")
+        parts.append("- Brief, playful, or non-goal-oriented turns are allowed.")
+        parts.append("- If asked what you were discussing, offer a short recap or ask what to resume.")
+        return "\n".join(parts)
     
     def _generate_identity_context(self, primary_name: str, aliases: list) -> str:
         """

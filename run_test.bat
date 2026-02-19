@@ -33,23 +33,28 @@ if exist ".pytest_tmp" (
 )
 
 echo.
-if "%~1"=="" goto :smoke
-if /i "%~1"=="all" goto :full
+if "%~1"=="" goto :full
+if /i "%~1"=="all" goto :full_shifted
 goto :custom
 
-:smoke
-echo Running: %PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py testing\test_ens_slice4_config_integration.py testing\test_ens_slice5_integration.py testing\test_ens_slice6_integration.py testing\test_ens_slice65_egress_integration.py testing\test_ens_slice7_unified_llm_invocation_integration.py testing\test_ens_slice75_control_plane_integration.py
-%PYTHON_CMD% -m pytest -q testing\test_ens_slice01_integration.py testing\test_ens_slice2_integration.py testing\test_ens_slice2_media_refinements_integration.py testing\test_ens_slice25_media_gating_integration.py testing\test_ens_slice3_integration.py testing\test_ens_slice4_config_integration.py testing\test_ens_slice5_integration.py testing\test_ens_slice6_integration.py testing\test_ens_slice65_egress_integration.py testing\test_ens_slice7_unified_llm_invocation_integration.py testing\test_ens_slice75_control_plane_integration.py
+:full
+if "%~1"=="" (
+    echo Running: %PYTHON_CMD% -m pytest -q
+    %PYTHON_CMD% -m pytest -q
+) else (
+    echo Running: %PYTHON_CMD% -m pytest -q %*
+    %PYTHON_CMD% -m pytest -q %*
+)
 goto :done
 
-:full
+:full_shifted
 shift
 if "%~1"=="" (
     echo Running: %PYTHON_CMD% -m pytest -q
     %PYTHON_CMD% -m pytest -q
 ) else (
-    echo Running: %PYTHON_CMD% -m pytest %*
-    %PYTHON_CMD% -m pytest %*
+    echo Running: %PYTHON_CMD% -m pytest -q %*
+    %PYTHON_CMD% -m pytest -q %*
 )
 goto :done
 

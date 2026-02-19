@@ -20,7 +20,9 @@ class ConversationRepository:
         source: str = "web",
         image_confirmation_disabled: Optional[bool] = None,
         primary_user: Optional[str] = None,
-        continuity_mode: Optional[str] = None
+        continuity_mode: Optional[str] = None,
+        relationship_id: Optional[str] = None,
+        conversation_kind: str = "standard",
     ) -> Conversation:
         """
         Create a new conversation.
@@ -40,7 +42,9 @@ class ConversationRepository:
         conversation = Conversation(
             character_id=character_id,
             title=title,
-            source=source
+            source=source,
+            relationship_id=relationship_id,
+            conversation_kind=conversation_kind or "standard",
         )
         if primary_user:
             conversation.primary_user = primary_user
@@ -68,7 +72,12 @@ class ConversationRepository:
         """
         return self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
     
-    def list_all(self, skip: int = 0, limit: int = 100) -> List[Conversation]:
+    def list_all(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        conversation_kind: Optional[str] = None,
+    ) -> List[Conversation]:
         """
         List all conversations.
         
@@ -79,15 +88,18 @@ class ConversationRepository:
         Returns:
             List of conversations
         """
-        return (
-            self.db.query(Conversation)
-            .order_by(Conversation.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
+        query = self.db.query(Conversation)
+        if conversation_kind and conversation_kind != "all":
+            query = query.filter(Conversation.conversation_kind == conversation_kind)
+        return query.order_by(Conversation.created_at.desc()).offset(skip).limit(limit).all()
     
-    def list_by_character(self, character_id: str, skip: int = 0, limit: int = 100) -> List[Conversation]:
+    def list_by_character(
+        self,
+        character_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        conversation_kind: Optional[str] = None,
+    ) -> List[Conversation]:
         """
         List conversations for a specific character.
         
@@ -99,14 +111,10 @@ class ConversationRepository:
         Returns:
             List of conversations
         """
-        return (
-            self.db.query(Conversation)
-            .filter(Conversation.character_id == character_id)
-            .order_by(Conversation.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
+        query = self.db.query(Conversation).filter(Conversation.character_id == character_id)
+        if conversation_kind and conversation_kind != "all":
+            query = query.filter(Conversation.conversation_kind == conversation_kind)
+        return query.order_by(Conversation.created_at.desc()).offset(skip).limit(limit).all()
     
     def update(self, conversation_id: str, title: Optional[str] = None) -> Optional[Conversation]:
         """
