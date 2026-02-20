@@ -50,6 +50,36 @@ class _ColdRecallProbeLLMClient:
         )
 
 
+class _MediaRepairLLMClient:
+    base_url = "http://test-llm"
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def health_check(self):
+        return True
+
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        _ = (temperature, max_tokens, model)
+        self.call_count += 1
+        last_user = ""
+        for m in reversed(messages or []):
+            if isinstance(m, dict) and m.get("role") == "user":
+                last_user = str(m.get("content") or "")
+                break
+        if "did not include a valid media tool payload" in last_user:
+            return _ToolPayloadResponse(
+                "<assistant_response><speech>Sending one now.</speech></assistant_response>\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"tool_calls":[{"id":"img-repair-1","tool":"image.generate","requires_approval":true,"args":{"prompt":"A cozy portrait in window light."}}]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+        return _ToolPayloadResponse(
+            "<assistant_response><speech>I can craft that image.</speech></assistant_response>\n"
+            "A cozy portrait in window light."
+        )
+
+
 def test_slice2_parsing_returns_pending_and_persists_tool_call(client, db, helpers):
     helpers.app_module.app_state["llm_client"] = _ToolPayloadLLMClient(
         "Here is that image.\n"
@@ -341,3 +371,33 @@ def test_slice2_cold_recall_request_executes_archival_rerun(client, db, helpers,
     output = adjudication.output_json or {}
     assert output.get("cold_recall_requested") is True
     assert output.get("cold_recall_executed") is True
+
+
+def test_slice2_explicit_media_request_repair_recovers_missing_payload(client, db, helpers):
+    llm = _MediaRepairLLMClient()
+    helpers.app_module.app_state["llm_client"] = llm
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+    _conversation_id, thread_id = helpers.create_conversation_thread()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "Please send an image of you in cozy window light.", "metadata": {"client_message_id": "slice2-repair-1"}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert llm.call_count == 2
+    assert len(body["pending_tool_calls"]) == 1
+    pending = body["pending_tool_calls"][0]
+    assert pending["tool"] == "image.generate"
+
+    tool_rows = db.query(ENSToolCallRequest).all()
+    assert len(tool_rows) == 1
+    assert tool_rows[0].tool_name == "image.generate"

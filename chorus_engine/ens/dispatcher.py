@@ -117,6 +117,10 @@ def _attempt_media_payload_repair_prompt(
     )
 
 
+def _count_allowed_tool_calls(validated_tool_calls, allowed_tools: set[str]) -> int:
+    return sum(1 for call in (validated_tool_calls or []) if getattr(call, "tool", None) in allowed_tools)
+
+
 class ENSDispatcher:
     """Executes ENS actions with idempotency safeguards."""
 
@@ -867,6 +871,7 @@ class ENSDispatcher:
         raw_content = invocation.get("output_text") or ""
         payload_extraction = extract_tool_payload(raw_content)
         payload_obj = parse_tool_payload(payload_extraction.payload_text)
+        validated_tool_calls = validate_tool_payload(payload_obj)
         display_text = payload_extraction.display_text
         cold_recall_requested = False
         cold_recall_executed = False
@@ -942,6 +947,7 @@ class ENSDispatcher:
                                 raw_content = rerun_invocation.get("output_text") or ""
                                 payload_extraction = extract_tool_payload(raw_content)
                                 payload_obj = parse_tool_payload(payload_extraction.payload_text)
+                                validated_tool_calls = validate_tool_payload(payload_obj)
                                 display_text = payload_extraction.display_text
                                 logger.info(
                                     "[MOMENT PIN] cold_recall_rerun_executed",
@@ -969,6 +975,89 @@ class ENSDispatcher:
                             cold_recall_rejected_reason,
                             extra={"thread_id": thread_id, "pin_id": cold_recall_call.pin_id},
                         )
+
+        allowed_tools_set = set(media_gate_snapshot.get("allowed_tools_final") or [])
+        requires_explicit_payload = bool(
+            media_gate_snapshot.get("media_tool_calls_allowed")
+            and (
+                bool(media_gate_snapshot.get("explicit_allowed"))
+                or bool(media_gate_snapshot.get("is_iteration_request"))
+            )
+        )
+        if requires_explicit_payload and _count_allowed_tool_calls(validated_tool_calls, allowed_tools_set) == 0:
+            logger.info(
+                "[MEDIA TOOLING] retry_payload_repair_attempted",
+                extra={
+                    "thread_id": thread_id,
+                    "requested_media_type": media_gate_snapshot.get("requested_media_type"),
+                    "is_iteration_request": bool(media_gate_snapshot.get("is_iteration_request")),
+                },
+            )
+            repair_prompt = _attempt_media_payload_repair_prompt(
+                allowed_tools=list(media_gate_snapshot.get("allowed_tools_final") or []),
+                requested_media_type=str(media_gate_snapshot.get("requested_media_type") or "none"),
+                is_iteration_request=bool(media_gate_snapshot.get("is_iteration_request")),
+            )
+            repair_messages = list(messages) + [
+                {"role": "assistant", "content": raw_content or ""},
+                {"role": "user", "content": repair_prompt},
+            ]
+            repair_request = InvocationRequest(
+                invocation_kind="chat",
+                idempotency_key=f"{request.idempotency_key}:payload_repair",
+                model_id=effective.model_id,
+                provider=effective.provider,
+                engine=effective.engine,
+                session_id=params.get("session_id"),
+                conversation_id=conversation.id,
+                thread_id=thread_id,
+                surface_id=source,
+                character_id=character_id,
+                messages=repair_messages,
+                temperature=effective.temperature,
+                max_tokens=effective.max_tokens,
+                metadata={
+                    "conversation_source": source,
+                    "media_gate_snapshot": media_gate_snapshot,
+                    "repair_attempt": "missing_required_media_payload",
+                },
+            )
+            repair_invocation = await self.llm_invoker.invoke(repair_request)
+            if repair_invocation.get("status") == "success":
+                repaired_raw = repair_invocation.get("output_text") or ""
+                repaired_extraction = extract_tool_payload(repaired_raw)
+                repaired_payload_obj = parse_tool_payload(repaired_extraction.payload_text)
+                repaired_validated = validate_tool_payload(repaired_payload_obj)
+                if _count_allowed_tool_calls(repaired_validated, allowed_tools_set) > 0:
+                    logger.info(
+                        "[MEDIA TOOLING] retry_payload_repair_succeeded",
+                        extra={"thread_id": thread_id},
+                    )
+                    invocation = repair_invocation
+                    raw_content = repaired_raw
+                    payload_extraction = repaired_extraction
+                    payload_obj = repaired_payload_obj
+                    validated_tool_calls = repaired_validated
+                    display_text = repaired_extraction.display_text
+                else:
+                    logger.warning(
+                        "[MEDIA TOOLING] retry_payload_repair_failed",
+                        extra={"thread_id": thread_id},
+                    )
+                    logger.warning(
+                        "[MEDIA TOOLING] blocked_tool_payload_reason="
+                        + (
+                            "iteration_request_missing_tool_payload"
+                            if bool(media_gate_snapshot.get("is_iteration_request"))
+                            else "explicit_request_missing_tool_payload"
+                        ),
+                        extra={"thread_id": thread_id},
+                    )
+            else:
+                logger.warning(
+                    "[MEDIA TOOLING] retry_payload_repair_failed reason=invocation_failed",
+                    extra={"thread_id": thread_id, "error": (repair_invocation.get("error") or {}).get("message")},
+                )
 
         malformed_tool_payload_non_sentinel = False
         malformed_payload_type: Optional[str] = None
@@ -1022,7 +1111,7 @@ class ENSDispatcher:
         tool_names: List[str] = []
         tool_call_count = 0
         if bool(params.get("slice2_tool_parsing_ownership")) and not media_gate_snapshot:
-            legacy_calls = validate_tool_payload(payload_obj)
+            legacy_calls = validated_tool_calls
             if isinstance(payload_obj, dict):
                 raw_calls = payload_obj.get("tool_calls") or []
                 has_cold = any(
@@ -1221,6 +1310,14 @@ class ENSDispatcher:
                     ),
                     "confidence": float(call.confidence),
                 }
+            )
+
+        requires_explicit_payload = bool(media_tool_calls_allowed and (explicit_allowed or is_iteration_request))
+        if requires_explicit_payload and len(accepted) == 0:
+            blocked_reasons.append(
+                "iteration_request_missing_tool_payload"
+                if is_iteration_request
+                else "explicit_request_missing_tool_payload"
             )
 
         if accepted:
