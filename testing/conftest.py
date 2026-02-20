@@ -118,6 +118,7 @@ class AppHelper:
         slice65_egress_outbox_ownership: bool = False,
         slice7_unified_llm_invocation: bool = False,
         slice75_llm_control_plane_ownership: bool = False,
+        debug_capture_full_prompt: bool = False,
     ):
         self.app_module.app_state["system_config"].ens = ENSConfig(
             enabled=enabled,
@@ -136,6 +137,7 @@ class AppHelper:
             slice65_egress_outbox_ownership=slice65_egress_outbox_ownership,
             slice7_unified_llm_invocation=slice7_unified_llm_invocation,
             slice75_llm_control_plane_ownership=slice75_llm_control_plane_ownership,
+            debug_capture_full_prompt=debug_capture_full_prompt,
         )
 
     def create_conversation_thread(self) -> tuple[str, str]:

@@ -1,8 +1,8 @@
 @echo off
-REM Helper script to run test scripts with correct Python environment
+REM Helper script to run Python scripts with the correct environment
 REM
-REM Usage: run_test.bat testing\test_chatterbox.py
-REM    or: run_test.bat testing\test_chatterbox.py --verbose
+REM Usage: run_script.bat testing\test_chatterbox.py
+REM    or: run_script.bat utilities\vector_lookup_probe\vector_lookup_probe.py --character nova_custom
 
 setlocal
 
@@ -25,12 +25,13 @@ if exist python_embeded\python.exe (
 REM Check if arguments provided
 if "%~1"=="" (
     echo.
-    echo Usage: run_test.bat ^<script_path^> [args...]
+    echo Usage: run_script.bat ^<script_path^> [args...]
     echo.
     echo Examples:
-    echo   run_test.bat testing\test_chatterbox.py
-    echo   run_test.bat testing\check_memories.py
-    echo   run_test.bat view_debug_log.py
+    echo   run_script.bat testing\test_chatterbox.py
+    echo   run_script.bat testing\check_memories.py
+    echo   run_script.bat utilities\vector_lookup_probe\vector_lookup_probe.py --character nova_custom
+    echo   run_script.bat view_debug_log.py
     echo.
     exit /b 1
 )

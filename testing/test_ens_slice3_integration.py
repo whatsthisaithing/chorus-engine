@@ -620,6 +620,14 @@ def test_slice3_ens_chat_processes_vision_attachments_and_exposes_visual_context
     assert refreshed.character_id == "test_char"
     assert refreshed.vision_processed == "true"
     assert refreshed.vision_observation
+    user_row = db.query(Message).filter(Message.id == user_message_id).first()
+    assert user_row is not None
+    assert "[VISUAL CONTEXT:" not in (user_row.content or "")
+    user_meta = user_row.meta_data if isinstance(user_row.meta_data, dict) else {}
+    snapshots = user_meta.get("visual_context_snapshots_v1") or []
+    assert isinstance(snapshots, list)
+    assert len(snapshots) >= 1
+    assert "summary" in snapshots[0]
 
     mem_count = (
         db.query(Memory)

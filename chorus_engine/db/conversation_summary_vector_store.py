@@ -11,6 +11,7 @@ one summary per conversation with rich metadata (themes, tone, participants, etc
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -72,17 +73,35 @@ class ConversationSummaryVectorStore:
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         normalize_collection_configs(self.persist_directory)
         
-        # Initialize ChromaDB client with persistence
-        # Uses same directory as memory vector store - collections are separate
-        self.client = chromadb.PersistentClient(
+        self._client_lock = threading.Lock()
+        self.client = self._build_client()
+        
+        logger.info(f"ConversationSummaryVectorStore initialized at {persist_directory}")
+
+    def _build_client(self):
+        # Uses same directory as memory vector store - collections are separate.
+        return chromadb.PersistentClient(
             path=str(self.persist_directory),
             settings=Settings(
                 anonymized_telemetry=False,
                 allow_reset=True
             )
         )
-        
-        logger.info(f"ConversationSummaryVectorStore initialized at {persist_directory}")
+
+    def _reset_client(self) -> None:
+        with self._client_lock:
+            self.client = self._build_client()
+            logger.warning("[VECTOR_HEALTH] Reset summary vector store client for runtime self-heal")
+
+    def _force_normalize_and_reset_client(self) -> int:
+        updates = normalize_collection_configs(self.persist_directory, force=True)
+        self._reset_client()
+        if updates > 0:
+            logger.warning(
+                "[VECTOR_HEALTH] Forced Chroma collection config normalization during summary self-heal: %s",
+                updates,
+            )
+        return updates
     
     def _collection_name(self, character_id: str) -> str:
         """Generate collection name for a character."""
@@ -226,8 +245,18 @@ class ConversationSummaryVectorStore:
         
         attempts = 1 + max(0, int(transient_retry_attempts))
         delay = max(0.0, float(transient_retry_delay_seconds))
+        self_heal_reset_done = False
         for attempt_index in range(attempts):
             try:
+                collection = self.get_collection(character_id)
+                if collection is None:
+                    logger.debug(f"No summary collection found for character '{character_id}'")
+                    return {
+                        'ids': [[]],
+                        'distances': [[]],
+                        'documents': [[]],
+                        'metadatas': [[]]
+                    }
                 results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=n_results,
@@ -243,10 +272,35 @@ class ConversationSummaryVectorStore:
                 
                 return results
             except Exception as e:
+                if _is_transient_hnsw_reader_error(e) and not self_heal_reset_done:
+                    self_heal_reset_done = True
+                    self._reset_client()
+                    logger.warning(
+                        "[VECTOR_HEALTH] summary query transient for '%s'; forced client reset and retry: %s",
+                        character_id,
+                        e,
+                    )
+                    try:
+                        collection = self.get_collection(character_id)
+                        if collection is not None:
+                            results = collection.query(
+                                query_embeddings=[query_embedding],
+                                n_results=n_results,
+                                where=where
+                            )
+                            if results.get('metadatas') and results['metadatas'][0]:
+                                results['metadatas'][0] = [
+                                    self._process_metadata_from_storage(meta)
+                                    for meta in results['metadatas'][0]
+                                ]
+                            return results
+                    except Exception as retry_error:
+                        e = retry_error
                 should_retry = (
                     attempt_index < attempts - 1 and _is_transient_hnsw_reader_error(e)
                 )
                 if should_retry:
+                    self._reset_client()
                     logger.debug(
                         "[VECTOR_HEALTH] transient summary query error for '%s' (attempt %s/%s): %s",
                         character_id,
@@ -257,6 +311,28 @@ class ConversationSummaryVectorStore:
                     if delay > 0:
                         time.sleep(delay)
                     continue
+                if _is_transient_hnsw_reader_error(e):
+                    try:
+                        self._force_normalize_and_reset_client()
+                        collection = self.get_collection(character_id)
+                        if collection is not None:
+                            results = collection.query(
+                                query_embeddings=[query_embedding],
+                                n_results=n_results,
+                                where=where
+                            )
+                            if results.get('metadatas') and results['metadatas'][0]:
+                                results['metadatas'][0] = [
+                                    self._process_metadata_from_storage(meta)
+                                    for meta in results['metadatas'][0]
+                                ]
+                            logger.warning(
+                                "[VECTOR_HEALTH] summary query for '%s' recovered after forced normalize/reset",
+                                character_id,
+                            )
+                            return results
+                    except Exception as post_normalize_error:
+                        e = post_normalize_error
                 logger.error(
                     f"[VECTOR_HEALTH][SUMMARY_QUERY_ERROR] Failed to search conversation summaries "
                     f"for '{character_id}': {e}"
@@ -354,6 +430,68 @@ class ConversationSummaryVectorStore:
                 'embedding': embedding
             }
         except Exception as e:
+            if _is_transient_hnsw_reader_error(e):
+                try:
+                    self._reset_client()
+                    collection = self.get_collection(character_id)
+                    if collection is None:
+                        return None
+                    results = collection.get(
+                        ids=[conversation_id],
+                        include=["documents", "metadatas", "embeddings"]
+                    )
+                    if not results.get('ids') or len(results['ids']) == 0:
+                        return None
+                    metadata = {}
+                    if results.get('metadatas') and len(results['metadatas']) > 0:
+                        metadata = results['metadatas'][0]
+                    summary_text = ''
+                    if results.get('documents') and len(results['documents']) > 0:
+                        summary_text = results['documents'][0]
+                    embedding = None
+                    if 'embeddings' in results and results['embeddings'] is not None:
+                        embeddings_list = results['embeddings']
+                        if len(embeddings_list) > 0:
+                            embedding = embeddings_list[0]
+                    return {
+                        'conversation_id': conversation_id,
+                        'summary': summary_text,
+                        'metadata': self._process_metadata_from_storage(metadata),
+                        'embedding': embedding
+                    }
+                except Exception as retry_error:
+                    logger.error(f"Failed to get summary after client reset: {retry_error}")
+                    if _is_transient_hnsw_reader_error(retry_error):
+                        try:
+                            self._force_normalize_and_reset_client()
+                            collection = self.get_collection(character_id)
+                            if collection is None:
+                                return None
+                            results = collection.get(
+                                ids=[conversation_id],
+                                include=["documents", "metadatas", "embeddings"]
+                            )
+                            if not results.get('ids') or len(results['ids']) == 0:
+                                return None
+                            metadata = {}
+                            if results.get('metadatas') and len(results['metadatas']) > 0:
+                                metadata = results['metadatas'][0]
+                            summary_text = ''
+                            if results.get('documents') and len(results['documents']) > 0:
+                                summary_text = results['documents'][0]
+                            embedding = None
+                            if 'embeddings' in results and results['embeddings'] is not None:
+                                embeddings_list = results['embeddings']
+                                if len(embeddings_list) > 0:
+                                    embedding = embeddings_list[0]
+                            return {
+                                'conversation_id': conversation_id,
+                                'summary': summary_text,
+                                'metadata': self._process_metadata_from_storage(metadata),
+                                'embedding': embedding
+                            }
+                        except Exception as post_normalize_error:
+                            logger.error(f"Failed to get summary after forced normalize/reset: {post_normalize_error}")
             logger.error(f"Failed to get summary: {e}")
             return None
     

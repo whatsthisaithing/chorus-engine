@@ -12,6 +12,7 @@ for intelligent memory selection.
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -357,6 +358,7 @@ class PromptAssemblyService:
         # The character's ONLY job is to describe the pre-generated prompt, not respond to conversation
         # Step 1 (prompt generation) already used full context, Step 2 (interpretation) needs NONE
         skip_history_for_media_interpretation = bool(image_prompt_context or video_prompt_context)
+        message_content_overrides: Dict[str, str] = {}
         
         # Get conversation history (unless we're just interpreting a media prompt)
         if skip_history_for_media_interpretation:
@@ -368,7 +370,8 @@ class PromptAssemblyService:
                 limit=max_history_messages
             )
             
-            # Task 1.8: Enrich user messages with vision observations from attached images
+            # Task 1.8: Enrich user messages with vision observations from attached images.
+            # Keep enrichments ephemeral for this prompt only; never mutate persisted message rows.
             try:
                 from chorus_engine.models.conversation import ImageAttachment
                 
@@ -390,11 +393,14 @@ class PromptAssemblyService:
                                     )
                             
                             if vision_contexts:
-                                # Append vision context to message content
-                                message.content += "\n\n" + "\n\n".join(vision_contexts)
+                                base_content = self._strip_visual_context_blocks(message.content or "")
+                                message_content_overrides[str(message.id)] = (
+                                    f"{base_content}\n\n" + "\n\n".join(vision_contexts)
+                                ).strip()
             except Exception as e:
                 logger.error(f"Failed to enrich messages with vision observations: {e}")
                 # Continue without vision enrichment if it fails
+                message_content_overrides = {}
         
         general_chat_bootstrap_injected = False
         general_chat_bootstrap_fingerprint: Optional[str] = None
@@ -621,7 +627,8 @@ class PromptAssemblyService:
         # Truncate history to fit budget
         history_dicts = self._format_messages_for_llm(
             messages,
-            conversation_source=conversation_source
+            conversation_source=conversation_source,
+            content_overrides=message_content_overrides,
         )
         history_dicts = self._truncate_history(history_dicts, history_budget)
         
@@ -1131,7 +1138,8 @@ class PromptAssemblyService:
     def _format_messages_for_llm(
         self,
         messages: List[Message],
-        conversation_source: Optional[str] = None
+        conversation_source: Optional[str] = None,
+        content_overrides: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, str]]:
         """
         Format database messages for LLM API.
@@ -1139,8 +1147,10 @@ class PromptAssemblyService:
         For multi-user contexts (Discord, Slack, etc.), includes username
         in message content to show who said what.
         
-        Filters out SCENE_CAPTURE messages as they're just anchor points
-        for images and not actual conversation content.
+        Filters out SCENE_CAPTURE and SYSTEM messages:
+        - SCENE_CAPTURE rows are anchor points for media, not dialogue.
+        - SYSTEM rows should never be replayed as transcript history because
+          the canonical system instruction is injected once via format_for_api().
         
         Args:
             messages: Database message objects
@@ -1153,11 +1163,12 @@ class PromptAssemblyService:
         is_multi_user = conversation_source and conversation_source != 'web'
         
         for msg in messages:
-            # Skip scene capture messages - they're not part of the conversation
-            if msg.role == MessageRole.SCENE_CAPTURE:
+            # Skip non-dialogue/system rows from history replay.
+            if msg.role in (MessageRole.SCENE_CAPTURE, MessageRole.SYSTEM):
                 continue
             
-            content = msg.content
+            content = (content_overrides or {}).get(str(msg.id), msg.content)
+            content = self._strip_visual_context_blocks(content or "")
             
             # Filter out error messages from assistant responses to prevent LLM pattern learning
             # Error messages like "Sorry, I encountered an error..." were being echoed by the LLM
@@ -1203,6 +1214,12 @@ class PromptAssemblyService:
                 if username:
                     platform_display = conversation_source.capitalize() if conversation_source else 'Platform'
                     content = f"{username} ({platform_display}): {content}"
+
+            # Inject one persisted visual-context snapshot per image-bearing user message.
+            if msg.role == MessageRole.USER:
+                visual_snapshot = self._build_visual_context_snapshot_block(msg)
+                if visual_snapshot:
+                    content = f"{content}\n\n{visual_snapshot}".strip() if content else visual_snapshot
             
             # Only add message if it has content after error filtering
             if content.strip():
@@ -1212,6 +1229,80 @@ class PromptAssemblyService:
                 })
         
         return formatted
+
+    @staticmethod
+    def _strip_visual_context_blocks(content: str) -> str:
+        text = content or ""
+        marker = "[VISUAL CONTEXT:"
+        parts: List[str] = []
+        idx = 0
+
+        while True:
+            start = text.find(marker, idx)
+            if start == -1:
+                parts.append(text[idx:])
+                break
+
+            parts.append(text[idx:start])
+
+            depth = 0
+            end = None
+            for i in range(start, len(text)):
+                ch = text[i]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+
+            if end is None:
+                # Unclosed block: treat remainder as visual-context payload.
+                idx = len(text)
+                break
+
+            idx = end
+
+        cleaned = "".join(parts)
+
+        # Repair known legacy orphan tails left by earlier regex-based stripping.
+        orphan_markers = [
+            '\n,\n  "people": {',
+            '\n,\n  "text_content":',
+            '\n,\n  "spatial_layout":',
+        ]
+        orphan_positions = [cleaned.find(m) for m in orphan_markers if cleaned.find(m) != -1]
+        if orphan_positions:
+            cut = min(orphan_positions)
+            tail = cleaned[cut:]
+            if '"people"' in tail and '"spatial_layout"' in tail:
+                cleaned = cleaned[:cut]
+
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _build_visual_context_snapshot_block(message: Message) -> str:
+        metadata = message.meta_data if isinstance(message.meta_data, dict) else {}
+        snapshots = metadata.get("visual_context_snapshots_v1") or []
+        if not isinstance(snapshots, list) or not snapshots:
+            return ""
+
+        parts: List[str] = []
+        for row in snapshots:
+            if not isinstance(row, dict):
+                continue
+            summary = " ".join(str(row.get("summary") or "").split()).strip()
+            if summary:
+                parts.append(summary)
+        if not parts:
+            return ""
+
+        # Keep prompt payload compact while retaining per-image semantic context.
+        joined = " | ".join(parts)
+        joined = joined[:1200]
+        return f"[VISUAL CONTEXT: {joined}]"
     
     def _truncate_history(
         self,

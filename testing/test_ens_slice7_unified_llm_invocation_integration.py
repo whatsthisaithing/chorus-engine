@@ -1,7 +1,10 @@
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 import asyncio
+import json
 import pytest
 import io
+from datetime import datetime
+from pathlib import Path
 from PIL import Image
 from chorus_engine.services.vision_service import VisionService
 from chorus_engine.models import ImageAttachment, Memory
@@ -193,3 +196,40 @@ def test_slice7_vision_attachment_uses_unified_invoker_and_is_idempotent(client,
         .all()
     )
     assert len(vision_memories_after) == 1
+
+
+def test_slice7_debug_capture_full_prompt_writes_prompt_payload_to_ens_log(client, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice7_unified_llm_invocation=True,
+        debug_capture_full_prompt=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={
+            "message": "capture full prompt please",
+            "metadata": {"client_message_id": "slice7-prompt-capture-001"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    log_file = Path("data/debug_logs/conversations") / conversation_id / f"ens_conversation_{today}.jsonl"
+    assert log_file.exists()
+
+    rows = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    turn_rows = [row for row in rows if row.get("type") == "ens_llm_turn"]
+    assert turn_rows
+    latest = turn_rows[-1]
+    capture = latest.get("prompt_capture") or {}
+    assert capture.get("enabled") is True
+    assert isinstance(capture.get("system_prompt"), str)
+    assert capture.get("system_prompt")
+    assert isinstance(capture.get("messages_for_llm"), list)
+    assert len(capture.get("messages_for_llm")) >= 2
+    assert isinstance(capture.get("token_breakdown"), dict)

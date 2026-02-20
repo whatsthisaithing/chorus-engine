@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_NORMALIZED_PATHS: set[str] = set()
+_NORMALIZE_LOCK = threading.Lock()
 
 
 def _default_collection_config(space: str = "l2") -> str:
@@ -28,14 +31,22 @@ def _default_collection_config(space: str = "l2") -> str:
     return json.dumps(payload)
 
 
-def normalize_collection_configs(persist_directory: Path) -> int:
+def normalize_collection_configs(persist_directory: Path, *, force: bool = False) -> int:
     """
     Normalize malformed collection config JSON rows in Chroma sqlite sysdb.
 
     Returns number of rows updated.
     """
+    resolved = str(persist_directory.resolve())
+    if not force:
+        with _NORMALIZE_LOCK:
+            if resolved in _NORMALIZED_PATHS:
+                return 0
+
     db_path = persist_directory / "chroma.sqlite3"
     if not db_path.exists():
+        with _NORMALIZE_LOCK:
+            _NORMALIZED_PATHS.add(resolved)
         return 0
 
     updated = 0
@@ -90,6 +101,8 @@ def normalize_collection_configs(persist_directory: Path) -> int:
             logger.warning(
                 f"[VECTOR_HEALTH] Normalized malformed Chroma collection configs: {updated}"
             )
+        with _NORMALIZE_LOCK:
+            _NORMALIZED_PATHS.add(resolved)
     finally:
         conn.close()
 

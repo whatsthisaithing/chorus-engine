@@ -7,6 +7,7 @@ Phase 8 - Day 10: Export functionality for conversation preservation
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
@@ -317,14 +318,14 @@ class ConversationExportService:
 
     def _format_content_markdown(self, message: Message) -> str:
         """Format message content for markdown export with structured segments."""
-        raw = (message.content or "").strip()
+        raw = self._strip_visual_context_blocks(message.content or "")
         raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
         
         parsed = parse_structured_response(raw)
         if not parsed.segments:
-            return raw
+            return self._append_visual_context_snapshot(raw, message)
         
         lines: List[str] = []
         for seg in parsed.segments:
@@ -340,18 +341,19 @@ class ConversationExportService:
                 lines.append(f"`{seg.text}`")
             else:
                 lines.append(seg.text)
-        return "\n\n".join([line for line in lines if line])
+        body = "\n\n".join([line for line in lines if line])
+        return self._append_visual_context_snapshot(body, message)
 
     def _format_content_text(self, message: Message) -> str:
         """Format message content for plain text export with structured segments."""
-        raw = (message.content or "").strip()
+        raw = self._strip_visual_context_blocks(message.content or "")
         raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
         
         parsed = parse_structured_response(raw)
         if not parsed.segments:
-            return raw
+            return self._append_visual_context_snapshot(raw, message)
         
         lines: List[str] = []
         for seg in parsed.segments:
@@ -367,7 +369,8 @@ class ConversationExportService:
                 lines.append(f"[stage] {seg.text}")
             else:
                 lines.append(seg.text)
-        return "\n\n".join([line for line in lines if line])
+        body = "\n\n".join([line for line in lines if line])
+        return self._append_visual_context_snapshot(body, message)
     
     def _format_datetime(self, dt: datetime) -> str:
         """Format datetime for display."""
@@ -393,3 +396,75 @@ class ConversationExportService:
         title = title.strip().rstrip('_')
         
         return title or "conversation"
+
+    @staticmethod
+    def _strip_visual_context_blocks(content: str) -> str:
+        text = content or ""
+        marker = "[VISUAL CONTEXT:"
+        parts: List[str] = []
+        idx = 0
+
+        while True:
+            start = text.find(marker, idx)
+            if start == -1:
+                parts.append(text[idx:])
+                break
+
+            parts.append(text[idx:start])
+
+            depth = 0
+            end = None
+            for i in range(start, len(text)):
+                ch = text[i]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+
+            if end is None:
+                idx = len(text)
+                break
+
+            idx = end
+
+        cleaned = "".join(parts)
+
+        orphan_markers = [
+            '\n,\n  "people": {',
+            '\n,\n  "text_content":',
+            '\n,\n  "spatial_layout":',
+        ]
+        orphan_positions = [cleaned.find(m) for m in orphan_markers if cleaned.find(m) != -1]
+        if orphan_positions:
+            cut = min(orphan_positions)
+            tail = cleaned[cut:]
+            if '"people"' in tail and '"spatial_layout"' in tail:
+                cleaned = cleaned[:cut]
+
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _append_visual_context_snapshot(content: str, message: Message) -> str:
+        if message.role != MessageRole.USER:
+            return content
+        metadata = message.meta_data if isinstance(message.meta_data, dict) else {}
+        snapshots = metadata.get("visual_context_snapshots_v1") or []
+        if not isinstance(snapshots, list) or not snapshots:
+            return content
+
+        parts: List[str] = []
+        for row in snapshots:
+            if not isinstance(row, dict):
+                continue
+            summary = " ".join(str(row.get("summary") or "").split()).strip()
+            if summary:
+                parts.append(summary)
+        if not parts:
+            return content
+
+        block = f"[VISUAL CONTEXT: {' | '.join(parts)[:1200]}]"
+        return f"{content}\n\n{block}".strip() if content else block

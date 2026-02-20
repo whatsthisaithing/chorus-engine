@@ -437,6 +437,7 @@ async def sync_moment_pin_vectors(
     stats = {
         "synced": 0,
         "deleted_orphans": 0,
+        "rebuilt_collections": 0,
         "errors": 0,
         "characters": [],
     }
@@ -467,9 +468,39 @@ async def sync_moment_pin_vectors(
                     results = collection.get(include=[])
                     existing_ids = set(results.get("ids") or [])
                 except Exception as e:
-                    logger.warning(f"Could not read moment pin IDs for '{char_id}': {e}")
-                    stats["errors"] += 1
-                    continue
+                    logger.warning(
+                        f"Could not read moment pin IDs for '{char_id}' on first attempt: {e}. Retrying once."
+                    )
+                    try:
+                        time.sleep(0.25)
+                        collection = moment_pin_vector_store.get_collection(char_id)
+                        if collection is None:
+                            existing_ids = set()
+                        else:
+                            retry_results = collection.get(include=[])
+                            existing_ids = set(retry_results.get("ids") or [])
+                    except Exception as retry_error:
+                        logger.warning(
+                            f"Could not read moment pin IDs for '{char_id}' after retry: {retry_error}. "
+                            "Rebuilding collection from SQL."
+                        )
+                        try:
+                            rebuilt = _rebuild_moment_pin_collection(
+                                db_session=db_session,
+                                moment_pin_vector_store=moment_pin_vector_store,
+                                embedding_service=embedding_service,
+                                character_id=char_id,
+                            )
+                            stats["rebuilt_collections"] += 1
+                            stats["synced"] += int(rebuilt)
+                            if char_id not in stats["characters"]:
+                                stats["characters"].append(char_id)
+                        except Exception as rebuild_error:
+                            logger.warning(
+                                f"Failed rebuilding moment pin collection for '{char_id}': {rebuild_error}"
+                            )
+                            stats["errors"] += 1
+                        continue
 
             sql_ids = {pin.id for pin in char_pins}
             orphan_ids = existing_ids - sql_ids
@@ -849,7 +880,7 @@ def _rebuild_moment_pin_collection(
     moment_pin_vector_store: MomentPinVectorStore,
     embedding_service: EmbeddingService,
     character_id: str,
-) -> None:
+) -> int:
     pins = (
         db_session.query(MomentPin)
         .filter(
@@ -893,6 +924,7 @@ def _rebuild_moment_pin_collection(
     logger.info(
         f"[VECTOR_HEALTH] Rebuilt moment pin collection for '{character_id}' with {rebuilt} vectors"
     )
+    return rebuilt
 
 
 async def _rebuild_document_collection(

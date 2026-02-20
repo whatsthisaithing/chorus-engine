@@ -6061,7 +6061,7 @@ async def create_moment_pin(
         raise HTTPException(status_code=400, detail="selected_message_ids is required")
 
     model = app_state["system_config"].llm.archivist_model or character.preferred_llm.model or app_state["system_config"].llm.model
-    user_id = conversation.primary_user or "User"
+    user_id = _resolve_user_scope(None, conversation.primary_user)
     if _ens_slice3_enabled():
         runtime = app_state.get("ens_runtime")
         if not runtime:
@@ -6487,7 +6487,7 @@ def _resolve_user_scope(
     Priority:
     1) primary_user
     2) metadata.username
-    3) "User"
+    3) canonical owner id
     """
     if primary_user and str(primary_user).strip():
         return str(primary_user).strip()
@@ -6495,7 +6495,7 @@ def _resolve_user_scope(
         username = metadata.get("username")
         if username and str(username).strip():
             return str(username).strip()
-    return "User"
+    return RelationshipResolutionService.OWNER_USER_ID
 
 
 # === Message Management Endpoints ===

@@ -279,7 +279,7 @@ const UI = {
         // Phase 6: Auto-generation enabled - no manual button needed
         
         // Add text content if present
-        const content = (message.content || '').trim();
+        const content = this.stripVisualContextBlocks((message.content || '').trim());
         if (content) {
             // For assistant messages, convert username references to @ format
             // LLM generates <username> which gets treated as HTML tags
@@ -773,6 +773,64 @@ const UI = {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    },
+
+    /**
+     * Remove inline visual-context payloads from rendered transcript text.
+     */
+    stripVisualContextBlocks(text) {
+        if (!text) return '';
+        const marker = '[VISUAL CONTEXT:';
+        let result = '';
+        let idx = 0;
+
+        while (idx < text.length) {
+            const start = text.indexOf(marker, idx);
+            if (start === -1) {
+                result += text.slice(idx);
+                break;
+            }
+
+            result += text.slice(idx, start);
+
+            let depth = 0;
+            let end = -1;
+            for (let i = start; i < text.length; i++) {
+                const ch = text[i];
+                if (ch === '[') depth += 1;
+                else if (ch === ']') {
+                    depth -= 1;
+                    if (depth === 0) {
+                        end = i + 1;
+                        break;
+                    }
+                }
+            }
+
+            if (end === -1) {
+                idx = text.length;
+                break;
+            }
+            idx = end;
+        }
+
+        const orphanCandidates = [
+            '\n,\n  "people": {',
+            '\n,\n  "text_content":',
+            '\n,\n  "spatial_layout":'
+        ];
+        const orphanPositions = orphanCandidates
+            .map(m => result.indexOf(m))
+            .filter(p => p !== -1);
+        if (orphanPositions.length > 0) {
+            const cut = Math.min(...orphanPositions);
+            const tail = result.slice(cut);
+            if (tail.includes('"people"') && tail.includes('"spatial_layout"')) {
+                result = result.slice(0, cut);
+            }
+        }
+
+        return result.replace(/\n{3,}/g, '\n\n').trim();
     },
     
     /**

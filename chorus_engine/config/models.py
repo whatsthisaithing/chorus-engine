@@ -573,6 +573,10 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS owns LLM control-plane operations (health/load/unload/reload/switch)",
     )
+    debug_capture_full_prompt: bool = Field(
+        default=False,
+        description="Debug-only: include full assembled system prompt and message payload in ENS conversation logs",
+    )
 
 
 class SystemConfig(BaseModel):

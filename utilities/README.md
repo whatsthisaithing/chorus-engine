@@ -115,6 +115,22 @@ python utilities/archivist_model_harness/archivist_harness.py --run-folder <PATH
 - CSV/JSONL results plus a run manifest and copies of run inputs
  - Optional metrics: run `utilities/archivist_model_harness/compute_metrics.py`
 
+### `vector_lookup_probe/`
+
+Interactive retrieval debugger for:
+- conversation summary lookup
+- memory lookup
+- moment pin lookup
+
+Writes terminal output and timestamped session files in `data/vector_lookup_tests/`.
+
+**Usage:**
+```bash
+run_script.bat utilities/vector_lookup_probe/vector_lookup_probe.py --character <character_id> [--conversation-id <conversation_id>]
+```
+
+See `utilities/vector_lookup_probe/README.md` for full options.
+
 ---
 
 ## Future Scripts

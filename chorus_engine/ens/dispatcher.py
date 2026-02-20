@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from chorus_engine.models.conversation import MessageRole
+from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
 from chorus_engine.repositories import (
     ConversationRepository,
@@ -446,12 +446,19 @@ class ENSDispatcher:
         conversation_id = params.get("conversation_id")
         thread_id = params.get("thread_id")
         attachment_invocations: List[Dict[str, Any]] = []
+        visual_snapshots: List[Dict[str, str]] = []
 
         for attachment_id in attachment_ids:
             attachment = db.query(ImageAttachment).filter(ImageAttachment.id == attachment_id).first()
             if not attachment:
                 continue
             if attachment.vision_processed == "true":
+                if attachment.vision_observation:
+                    summary = self._summarize_vision_observation(attachment.vision_observation)
+                    if summary:
+                        visual_snapshots.append(
+                            {"attachment_id": str(attachment.id), "summary": summary}
+                        )
                 already_processed_count += 1
                 continue
             try:
@@ -480,6 +487,11 @@ class ENSDispatcher:
                 attachment.vision_observation = result.observation
                 attachment.vision_confidence = result.confidence
                 attachment.vision_tags = json.dumps(result.tags) if result.tags else None
+                snapshot_summary = self._summarize_vision_observation(result.observation)
+                if snapshot_summary:
+                    visual_snapshots.append(
+                        {"attachment_id": str(attachment.id), "summary": snapshot_summary}
+                    )
                 llm_invocation = getattr(result, "llm_invocation", None)
                 if llm_invocation:
                     attachment_invocations.append(
@@ -543,6 +555,13 @@ class ENSDispatcher:
                 attachment.vision_skipped = "true"
                 attachment.vision_skip_reason = f"analysis_failed: {str(e)[:80]}"
 
+        if visual_snapshots:
+            self._persist_visual_context_snapshots(
+                db,
+                message_id=str(message_id),
+                snapshots=visual_snapshots,
+            )
+
         db.commit()
         current_turn_visual_context_count = (
             db.query(ImageAttachment)
@@ -559,6 +578,80 @@ class ENSDispatcher:
             "current_turn_visual_context_count": current_turn_visual_context_count,
             "llm_invocations": attachment_invocations,
         }
+
+    @staticmethod
+    def _summarize_vision_observation(observation: Any) -> str:
+        text = ""
+        if observation is None:
+            return text
+        if isinstance(observation, dict):
+            description = observation.get("description")
+            if description:
+                text = str(description)
+            else:
+                parts: List[str] = []
+                main_subject = observation.get("main_subject")
+                if main_subject:
+                    parts.append(f"Main subject: {main_subject}.")
+                objects = observation.get("objects")
+                if isinstance(objects, list) and objects:
+                    parts.append(f"Objects: {', '.join([str(o) for o in objects[:5]])}.")
+                text_content = observation.get("text_content")
+                if text_content:
+                    parts.append(f"Text visible: {text_content}.")
+                mood = observation.get("mood")
+                if mood:
+                    parts.append(f"Mood: {mood}.")
+                text = " ".join(parts)
+        else:
+            try:
+                parsed = json.loads(observation) if isinstance(observation, str) else None
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                return ENSDispatcher._summarize_vision_observation(parsed)
+            text = str(observation)
+
+        text = " ".join(text.split()).strip()
+        if not text:
+            return ""
+        return text[:600]
+
+    def _persist_visual_context_snapshots(
+        self,
+        db: Session,
+        *,
+        message_id: str,
+        snapshots: List[Dict[str, str]],
+    ) -> None:
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            return
+
+        existing_meta = dict(message.meta_data or {})
+        existing = existing_meta.get("visual_context_snapshots_v1") or []
+        merged: Dict[str, str] = {}
+        for row in existing:
+            if not isinstance(row, dict):
+                continue
+            aid = str(row.get("attachment_id") or "").strip()
+            summary = str(row.get("summary") or "").strip()
+            if aid and summary:
+                merged[aid] = summary
+        for row in snapshots:
+            aid = str(row.get("attachment_id") or "").strip()
+            summary = str(row.get("summary") or "").strip()
+            if aid and summary:
+                merged[aid] = summary
+        if not merged:
+            return
+
+        existing_meta["visual_context_snapshots_v1"] = [
+            {"attachment_id": aid, "summary": merged[aid]}
+            for aid in sorted(merged.keys())
+        ]
+        existing_meta["visual_context_snapshot_updated_at"] = datetime.utcnow().isoformat()
+        message.meta_data = existing_meta
 
     def _evaluate_media_gating(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         thread_id = params["thread_id"]
@@ -818,6 +911,7 @@ class ENSDispatcher:
             assistant_metadata["general_chat_bootstrap_fingerprint"] = prompt_components.general_chat_bootstrap_fingerprint
             assistant_metadata["general_chat_surface_id"] = source
             assistant_metadata["general_chat_surface_instance_id"] = params.get("surface_instance_id")
+        assistant_metadata["used_moment_pin_ids"] = list(prompt_components.used_moment_pin_ids or [])
         pending_tool_calls: List[Dict[str, Any]] = []
         tool_names: List[str] = []
         tool_call_count = 0
@@ -889,27 +983,37 @@ class ENSDispatcher:
                 else 0
             ),
         }
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        capture_full_prompt = bool(ens_cfg and getattr(ens_cfg, "debug_capture_full_prompt", False))
+        log_event = {
+            "type": "ens_llm_turn",
+            "thread_id": thread_id,
+            "character_id": character_id,
+            "user_content_excerpt": (user_content or "")[:240],
+            "media_gate_snapshot": media_gate_snapshot,
+            "tool_parse_status": result["tool_parse_status"],
+            "tool_payload_present": result["tool_payload_present"],
+            "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
+            "malformed_payload_type": malformed_payload_type,
+            "general_chat_bootstrap_injected": result["general_chat_bootstrap_injected"],
+            "general_chat_bootstrap_fingerprint": result["general_chat_bootstrap_fingerprint"],
+            "messages_tail": messages[-6:],
+            "raw_content": raw_content,
+            "display_content": display_text,
+            "finish_reason": result.get("finish_reason"),
+            "output_empty": result.get("output_empty"),
+            "completion_flags": result.get("completion_flags"),
+        }
+        if capture_full_prompt:
+            log_event["prompt_capture"] = {
+                "enabled": True,
+                "system_prompt": prompt_components.system_prompt,
+                "messages_for_llm": messages,
+                "token_breakdown": prompt_components.token_breakdown,
+            }
         self._append_conversation_ens_debug_log(
             conversation.id,
-            {
-                "type": "ens_llm_turn",
-                "thread_id": thread_id,
-                "character_id": character_id,
-                "user_content_excerpt": (user_content or "")[:240],
-                "media_gate_snapshot": media_gate_snapshot,
-                "tool_parse_status": result["tool_parse_status"],
-                "tool_payload_present": result["tool_payload_present"],
-                "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
-                "malformed_payload_type": malformed_payload_type,
-                "general_chat_bootstrap_injected": result["general_chat_bootstrap_injected"],
-                "general_chat_bootstrap_fingerprint": result["general_chat_bootstrap_fingerprint"],
-                "messages_tail": messages[-6:],
-                "raw_content": raw_content,
-                "display_content": display_text,
-                "finish_reason": result.get("finish_reason"),
-                "output_empty": result.get("output_empty"),
-                "completion_flags": result.get("completion_flags"),
-            },
+            log_event,
         )
         return result
 
@@ -1516,7 +1620,7 @@ class ENSDispatcher:
         selected_message_ids = params["selected_message_ids"]
         character_id = params["character_id"]
         model = params["model"]
-        user_id = params.get("user_id") or "User"
+        user_id = params.get("user_id") or "user:local:owner"
         selection_fingerprint = hashlib.sha256(
             "|".join(selected_message_ids).encode("utf-8")
         ).hexdigest()
