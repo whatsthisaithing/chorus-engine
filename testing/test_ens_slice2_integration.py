@@ -1,5 +1,5 @@
-from chorus_engine.models.ens import ENSToolCallRequest
-from chorus_engine.models.conversation import Conversation
+from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
+from chorus_engine.models.conversation import Conversation, MomentPin
 
 
 class _ToolPayloadResponse:
@@ -18,6 +18,36 @@ class _ToolPayloadLLMClient:
 
     async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
         return _ToolPayloadResponse(self.payload_text)
+
+
+class _ColdRecallProbeLLMClient:
+    base_url = "http://test-llm"
+
+    def __init__(self):
+        self.call_count = 0
+        self.archival_rerun_calls = 0
+
+    async def health_check(self):
+        return True
+
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        self.call_count += 1
+        has_archival_transcript = any(
+            isinstance(m, dict)
+            and m.get("role") == "system"
+            and "ARCHIVAL TRANSCRIPT" in str(m.get("content") or "")
+            for m in (messages or [])
+        )
+        if has_archival_transcript:
+            self.archival_rerun_calls += 1
+            return _ToolPayloadResponse("RERUN: exact quote from archival transcript.")
+
+        return _ToolPayloadResponse(
+            "Need exact wording.\n"
+            "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+            '{"version":1,"tool_calls":[{"id":"cold1","tool":"moment_pin.cold_recall","requires_approval":false,"args":{"pin_id":"pin-123","reason":"Need exact quote"}}]}\n'
+            "---CHORUS_TOOL_PAYLOAD_END---"
+        )
 
 
 def test_slice2_parsing_returns_pending_and_persists_tool_call(client, db, helpers):
@@ -233,3 +263,81 @@ def test_slice2_disable_confirmation_flag_propagates_through_ens_tool_execution(
     conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     assert conversation is not None
     assert conversation.image_confirmation_disabled == "true"
+
+
+def test_slice2_cold_recall_request_executes_archival_rerun(client, db, helpers, monkeypatch):
+    llm = _ColdRecallProbeLLMClient()
+    helpers.app_module.app_state["llm_client"] = llm
+
+    class _PromptComponentsStub:
+        def __init__(self):
+            self.system_prompt = "test system"
+            self.messages = [{"role": "user", "content": "quote that exactly"}]
+            self.token_breakdown = {"system": 1, "memories": 0, "history": 1}
+            self.moment_pins_text = "stub"
+            self.used_moment_pin_ids = ["pin-123"]
+            self.general_chat_bootstrap_injected = False
+            self.general_chat_bootstrap_fingerprint = None
+
+    class _PromptAssemblerStub:
+        def __init__(self, **kwargs):
+            _ = kwargs
+
+        def assemble_prompt(self, **kwargs):
+            _ = kwargs
+            return _PromptComponentsStub()
+
+        def format_for_api(self, components):
+            _ = components
+            return [{"role": "user", "content": "quote that exactly"}]
+
+    import chorus_engine.ens.dispatcher as ens_dispatcher
+
+    monkeypatch.setattr(ens_dispatcher, "PromptAssemblyService", _PromptAssemblerStub, raising=True)
+
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    pin = MomentPin(
+        id="pin-123",
+        user_id="user:local:owner",
+        character_id="test_char",
+        conversation_id=conversation_id,
+        selected_message_ids=[],
+        transcript_snapshot="assistant: here's the exact archived quote",
+        what_happened="Stub moment",
+        why_model="Needed for quote precision",
+        archived=0,
+    )
+    db.add(pin)
+    db.commit()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "quote that exactly", "metadata": {"client_message_id": "slice2-cold-recall-1"}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["assistant_message"]["content"].strip() == "RERUN: exact quote from archival transcript."
+    assert llm.call_count == 2
+    assert llm.archival_rerun_calls == 1
+
+    adjudication = (
+        db.query(ENSActionResult)
+        .filter(ENSActionResult.kind == "tool_payload.adjudicate")
+        .order_by(ENSActionResult.created_at.desc())
+        .first()
+    )
+    assert adjudication is not None
+    output = adjudication.output_json or {}
+    assert output.get("cold_recall_requested") is True
+    assert output.get("cold_recall_executed") is True
