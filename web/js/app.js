@@ -224,6 +224,9 @@ window.App = {
         document.getElementById('pinSelectedMessagesBtn').addEventListener('click', () => {
             this.pinSelectedMessages();
         });
+        document.getElementById('branchSelectedMessagesBtn').addEventListener('click', () => {
+            this.branchSelectedMessages();
+        });
         document.getElementById('momentPinsBtn').addEventListener('click', () => {
             if (!this.state.selectedCharacterId) {
                 UI.showToast('Select a character to view moment pins.', 'warning');
@@ -1265,6 +1268,7 @@ window.App = {
         const countEl = document.getElementById('deleteSelectedCount');
         const pinCountEl = document.getElementById('pinSelectedCount');
         const pinBtn = document.getElementById('pinSelectedMessagesBtn');
+        const branchBtn = document.getElementById('branchSelectedMessagesBtn');
         const count = this.state.selectedMessageIds.size;
         
         if (count > 0) {
@@ -1275,6 +1279,11 @@ window.App = {
                 pinBtn.disabled = count > 20;
                 pinBtn.title = count > 20 ? 'Maximum 20 messages can be pinned' : '';
             }
+            if (branchBtn) {
+                const isGeneralChat = (this.state.selectedConversationKind || 'standard') === 'general_chat';
+                branchBtn.disabled = !isGeneralChat;
+                branchBtn.title = isGeneralChat ? '' : 'Branching is only available in General Chat';
+            }
         } else {
             bar.style.display = 'none';
             countEl.textContent = '0';
@@ -1282,6 +1291,10 @@ window.App = {
             if (pinBtn) {
                 pinBtn.disabled = true;
                 pinBtn.title = '';
+            }
+            if (branchBtn) {
+                branchBtn.disabled = true;
+                branchBtn.title = '';
             }
         }
     },
@@ -1722,6 +1735,31 @@ window.App = {
             input.disabled = false;
             document.getElementById('sendBtn').disabled = false;
             input.focus();
+        }
+    },
+
+    async branchSelectedMessages() {
+        if (!this.state.selectedConversationId || this.state.selectedMessageIds.size === 0) return;
+        if ((this.state.selectedConversationKind || 'standard') !== 'general_chat') {
+            UI.showToast('Branching is only available in General Chat.', 'warning');
+            return;
+        }
+        const messageIds = Array.from(this.state.selectedMessageIds);
+        try {
+            const result = await API.branchConversation(this.state.selectedConversationId, messageIds);
+            const conversationId = result?.new_conversation_id;
+            if (!conversationId) {
+                throw new Error('Branching returned no conversation id');
+            }
+            this.clearMessageSelection();
+            await this.loadConversations();
+            await this.selectConversation(conversationId);
+            const input = document.getElementById('messageInput');
+            if (input) input.focus();
+            UI.showToast('Branched into new conversation.', 'success');
+        } catch (error) {
+            console.error('Failed to branch conversation:', error);
+            UI.showToast(error.message || 'Failed to branch conversation', 'error');
         }
     },
 

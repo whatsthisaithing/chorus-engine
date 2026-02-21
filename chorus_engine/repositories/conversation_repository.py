@@ -23,6 +23,11 @@ class ConversationRepository:
         continuity_mode: Optional[str] = None,
         relationship_id: Optional[str] = None,
         conversation_kind: str = "standard",
+        origin_conversation_id: Optional[str] = None,
+        origin_mode: Optional[str] = None,
+        origin_segment_id: Optional[str] = None,
+        origin_segment_ids_json: Optional[List[str]] = None,
+        branch_created_at: Optional[datetime] = None,
     ) -> Conversation:
         """
         Create a new conversation.
@@ -45,6 +50,11 @@ class ConversationRepository:
             source=source,
             relationship_id=relationship_id,
             conversation_kind=conversation_kind or "standard",
+            origin_conversation_id=origin_conversation_id,
+            origin_mode=origin_mode,
+            origin_segment_id=origin_segment_id,
+            origin_segment_ids_json=origin_segment_ids_json,
+            branch_created_at=branch_created_at,
         )
         if primary_user:
             conversation.primary_user = primary_user
@@ -56,6 +66,20 @@ class ConversationRepository:
             conversation.image_confirmation_disabled = "true" if image_confirmation_disabled else "false"
         
         self.db.add(conversation)
+        self.db.commit()
+        self.db.refresh(conversation)
+        return conversation
+
+    def mark_branch_origin_recap_injected(
+        self,
+        conversation_id: str,
+        at: Optional[datetime] = None,
+    ) -> Optional[Conversation]:
+        conversation = self.get_by_id(conversation_id)
+        if not conversation:
+            return None
+        conversation.branch_origin_recap_injected_at = at or datetime.utcnow()
+        conversation.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(conversation)
         return conversation

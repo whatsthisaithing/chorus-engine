@@ -114,6 +114,12 @@ class Conversation(Base):
     conversation_kind = Column(String(30), nullable=False, default="standard", index=True)
     general_chat_memories_processed_through_message_id = Column(String(36), nullable=True, default=None)
     general_chat_memories_processed_through_created_at = Column(DateTime, nullable=True, default=None)
+    origin_conversation_id = Column(String(36), nullable=True, index=True)
+    origin_mode = Column(String(20), nullable=True, index=True)
+    origin_segment_id = Column(String(36), nullable=True, index=True)
+    origin_segment_ids_json = Column(JSON, nullable=True)
+    branch_created_at = Column(DateTime, nullable=True, default=None, index=True)
+    branch_origin_recap_injected_at = Column(DateTime, nullable=True, default=None)
     
     # Relationships
     threads = relationship("Thread", back_populates="conversation", cascade="all, delete-orphan")
@@ -225,6 +231,9 @@ class Message(Base):
     
     # Soft delete timestamp (NULL = active)
     deleted_at = Column(DateTime, nullable=True, default=None)
+    imported_from_conversation_id = Column(String(36), nullable=True, index=True)
+    imported_from_message_id = Column(String(36), nullable=True, index=True)
+    imported_from_segment_id = Column(String(36), nullable=True, index=True)
     
     # Relationships
     thread = relationship("Thread", back_populates="messages")

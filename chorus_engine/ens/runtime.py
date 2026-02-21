@@ -774,6 +774,24 @@ class ENSRuntime:
                 )
             ]
 
+        if signal.type == "conversation.branch_requested":
+            selected_message_ids = [
+                str(mid).strip()
+                for mid in (signal.payload.get("selected_message_ids") or [])
+                if str(mid).strip()
+            ]
+            canonical_ids = sorted(set(selected_message_ids))
+            selection_fingerprint = hashlib.sha256("|".join(canonical_ids).encode("utf-8")).hexdigest()
+            return [
+                ENSAction(
+                    kind="conversation.branch_from_general_chat",
+                    idempotency_key=(
+                        f"branch:{signal.payload.get('source_conversation_id')}:{selection_fingerprint}:v2"
+                    ),
+                    params={**dict(signal.payload), "selected_message_ids": canonical_ids},
+                )
+            ]
+
         if signal.type == "pin.update_requested":
             update_digest = hashlib.sha256(json.dumps(signal.payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
             return [
@@ -1194,6 +1212,12 @@ class ENSRuntime:
         elif signal.type == "pin.create_requested":
             pin_create = next((r for r in action_results if r.get("kind") == "pin.create"), None)
             response_payload = dict((pin_create or {}).get("output") or {})
+        elif signal.type == "conversation.branch_requested":
+            branch_result = next(
+                (r for r in action_results if r.get("kind") == "conversation.branch_from_general_chat"),
+                None,
+            )
+            response_payload = dict((branch_result or {}).get("output") or {})
         elif signal.type == "pin.update_requested":
             pin_update = next((r for r in action_results if r.get("kind") == "pin.update"), None)
             response_payload = dict((pin_update or {}).get("output") or {})

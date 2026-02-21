@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from chorus_engine.models.conversation import ConversationSegment
+from chorus_engine.models.conversation import ConversationSegment, Message
 
 
 class ConversationSegmentRepository:
@@ -183,4 +183,47 @@ class ConversationSegmentRepository:
         for candidate in candidates:
             if candidate.ended_at and candidate.ended_at.timestamp() >= cutoff:
                 return candidate
+        return None
+
+    def list_by_ids(self, segment_ids: List[str]) -> List[ConversationSegment]:
+        if not segment_ids:
+            return []
+        return (
+            self.db.query(ConversationSegment)
+            .filter(ConversationSegment.id.in_(segment_ids))
+            .all()
+        )
+
+    def resolve_segment_id_for_message(
+        self,
+        *,
+        conversation_id: str,
+        message: Message,
+    ) -> Optional[str]:
+        """
+        Resolve a message to a segment boundary by timestamp ranges.
+
+        Returns None if no deterministic mapping exists.
+        """
+        if not message:
+            return None
+
+        closed = (
+            self.db.query(ConversationSegment)
+            .filter(
+                ConversationSegment.conversation_id == conversation_id,
+                ConversationSegment.state == "closed",
+                ConversationSegment.started_at <= message.created_at,
+                ConversationSegment.ended_at.isnot(None),
+                ConversationSegment.ended_at >= message.created_at,
+            )
+            .order_by(ConversationSegment.started_at.desc(), ConversationSegment.id.desc())
+            .first()
+        )
+        if closed:
+            return closed.id
+
+        open_segment = self.get_open_segment(conversation_id)
+        if open_segment and open_segment.started_at <= message.created_at:
+            return open_segment.id
         return None

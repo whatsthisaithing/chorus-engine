@@ -500,6 +500,13 @@ class API {
 
     // === Moment Pins ===
 
+    static async branchConversation(conversationId, selectedMessageIds) {
+        return this.request(`/conversations/${conversationId}/branch`, {
+            method: 'POST',
+            body: JSON.stringify({ selected_message_ids: selectedMessageIds }),
+        });
+    }
+
     static async createMomentPin(conversationId, selectedMessageIds) {
         return this.request(`/conversations/${conversationId}/moment-pins`, {
             method: 'POST',

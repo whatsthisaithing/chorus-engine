@@ -34,6 +34,7 @@ from chorus_engine.repositories.continuity_repository import ContinuityRepositor
 from chorus_engine.ens.models import ENSAction
 from chorus_engine.models.conversation import MemoryType
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
+from chorus_engine.services.conversation_branching_service import ConversationBranchingService
 from chorus_engine.services.conversation_segmentation_service import ConversationSegmentationService
 from chorus_engine.db.conversation_segment_vector_store import ConversationSegmentVectorStore
 from chorus_engine.services.moment_pin_extraction_service import MomentPinExtractionService
@@ -224,6 +225,8 @@ class ENSDispatcher:
                 output = self._write_explicit_vision_memory(db, action.params)
             elif action.kind == "pin.create":
                 output = await self._create_moment_pin(db, action.params)
+            elif action.kind == "conversation.branch_from_general_chat":
+                output = await self._branch_from_general_chat(db, action.params)
             elif action.kind == "pin.update":
                 output = self._update_moment_pin(db, action.params)
             elif action.kind == "pin.delete":
@@ -370,13 +373,17 @@ class ENSDispatcher:
             conv_repo = ConversationRepository(db)
             thread = thread_repo.get_by_id(message.thread_id)
             conversation = conv_repo.get_by_id(thread.conversation_id) if thread else None
+            metadata = params.get("metadata") or {}
+
+            if role == MessageRole.ASSISTANT and metadata.get("branch_origin_recap_injected") and conversation:
+                conv_repo.mark_branch_origin_recap_injected(conversation.id)
+
             if (
                 conversation
                 and conversation.relationship_id
                 and conversation.conversation_kind == "general_chat"
             ):
                 rel_repo = RelationshipRepository(db)
-                metadata = params.get("metadata") or {}
                 surface_id = str(metadata.get("general_chat_surface_id") or conversation.source or "web")
                 surface_instance_id = metadata.get("general_chat_surface_instance_id")
                 rel_repo.touch_interaction(
@@ -1325,11 +1332,20 @@ class ENSDispatcher:
         active_segment_id = getattr(prompt_components, "active_segment_id", None)
         segment_recap_injected = bool(getattr(prompt_components, "segment_recap_injected", False))
         segment_recap_source_segment_id = getattr(prompt_components, "segment_recap_source_segment_id", None)
+        branch_origin_recap_injected = bool(getattr(prompt_components, "branch_origin_recap_injected", False))
+        branch_origin_recap_source_segment_id = getattr(
+            prompt_components,
+            "branch_origin_recap_source_segment_id",
+            None,
+        )
         if active_segment_id:
             assistant_metadata["active_segment_id"] = active_segment_id
         if segment_recap_injected:
             assistant_metadata["segment_recap_injected"] = True
             assistant_metadata["segment_recap_source_segment_id"] = segment_recap_source_segment_id
+        if branch_origin_recap_injected:
+            assistant_metadata["branch_origin_recap_injected"] = True
+            assistant_metadata["branch_origin_recap_source_segment_id"] = branch_origin_recap_source_segment_id
         assistant_metadata["used_moment_pin_ids"] = list(prompt_components.used_moment_pin_ids or [])
         assistant_metadata["moment_pin_cold_recall_requested"] = cold_recall_requested
         assistant_metadata["moment_pin_cold_recall_executed"] = cold_recall_executed
@@ -1395,6 +1411,8 @@ class ENSDispatcher:
             "general_chat_bootstrap_fingerprint": prompt_components.general_chat_bootstrap_fingerprint,
             "segment_recap_injected": segment_recap_injected,
             "segment_recap_source_segment_id": segment_recap_source_segment_id,
+            "branch_origin_recap_injected": branch_origin_recap_injected,
+            "branch_origin_recap_source_segment_id": branch_origin_recap_source_segment_id,
             "active_segment_id": active_segment_id,
             "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
             "malformed_payload_type": malformed_payload_type,
@@ -2190,6 +2208,31 @@ class ENSDispatcher:
                 pin = pin_repo.get_by_id(pin.id) or pin
 
         return {"pin_id": pin.id, "replayed": False}
+
+    async def _branch_from_general_chat(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        source_conversation_id = params["source_conversation_id"]
+        selected_message_ids = list(params.get("selected_message_ids") or [])
+        user_id = params.get("user_id")
+        character_id = params.get("character_id")
+
+        service = ConversationBranchingService(db=db, app_state=self.app_state)
+        result = await service.branch_from_general_chat(
+            source_conversation_id=source_conversation_id,
+            selected_message_ids=selected_message_ids,
+            user_id=user_id,
+            character_id_hint=character_id,
+        )
+        return {
+            "new_conversation_id": result.new_conversation_id,
+            "new_thread_id": result.new_thread_id,
+            "origin_mode": result.origin_mode,
+            "closed_segment_id": result.closed_segment_id,
+            "selected_segment_ids": result.selected_segment_ids,
+            "recap_source_segment_id": result.recap_source_segment_id,
+            "imported_message_count": result.imported_message_count,
+            "segment_summary_generated": result.segment_summary_generated,
+            "segment_summary_usefulness": result.segment_summary_usefulness,
+        }
 
     def _update_moment_pin(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         pin_repo = MomentPinRepository(db)

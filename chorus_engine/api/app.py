@@ -1661,6 +1661,11 @@ class ConversationResponse(BaseModel):
     source: str
     conversation_kind: str
     relationship_id: Optional[str] = None
+    origin_conversation_id: Optional[str] = None
+    origin_mode: Optional[str] = None
+    origin_segment_id: Optional[str] = None
+    origin_segment_ids_json: Optional[List[str]] = None
+    branch_created_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     
@@ -1967,6 +1972,26 @@ class MomentPinCreateRequest(BaseModel):
     """Create a moment pin from selected message IDs."""
 
     selected_message_ids: List[str]
+
+
+class BranchConversationRequest(BaseModel):
+    """Create a branched conversation from selected general-chat messages."""
+
+    selected_message_ids: List[str]
+
+
+class BranchConversationResponse(BaseModel):
+    """Response for explicit branch creation."""
+
+    new_conversation_id: str
+    new_thread_id: str
+    origin_mode: str
+    closed_segment_id: Optional[str] = None
+    selected_segment_ids: List[str] = Field(default_factory=list)
+    recap_source_segment_id: Optional[str] = None
+    imported_message_count: int = 0
+    segment_summary_generated: bool = False
+    segment_summary_usefulness: Optional[str] = None
 
 
 class MomentPinUpdateRequest(BaseModel):
@@ -5237,6 +5262,7 @@ async def create_conversation(
         continuity_mode="ask",
         relationship_id=request.relationship_id,
         conversation_kind=request.conversation_kind or "standard",
+        origin_conversation_id=request.origin_conversation_id,
     )
     
     # Create default thread
@@ -6121,6 +6147,68 @@ async def delete_conversation(
 
 
 # === Moment Pin Endpoints ===
+
+@app.post("/conversations/{conversation_id}/branch", response_model=BranchConversationResponse)
+async def branch_conversation(
+    conversation_id: str,
+    request: BranchConversationRequest,
+    db: Session = Depends(get_db),
+):
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.conversation_kind != "general_chat":
+        raise HTTPException(status_code=409, detail="Branching is only supported from general chat")
+    if not request.selected_message_ids:
+        raise HTTPException(status_code=400, detail="selected_message_ids is required")
+
+    thread_repo = ThreadRepository(db)
+    source_threads = thread_repo.list_by_conversation(conversation_id)
+    if not source_threads:
+        raise HTTPException(status_code=409, detail="Source conversation has no thread")
+    source_thread_id = source_threads[0].id
+
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    signal = SignalEnvelope(
+        type="conversation.branch_requested",
+        scope="SESSION",
+        source=conversation.source or "web",
+        assistant_id=conversation.character_id,
+        payload={
+            "source_conversation_id": conversation_id,
+            "selected_message_ids": request.selected_message_ids,
+            "character_id": conversation.character_id,
+            # Server-derived thread ID; never trusted from client payload.
+            "thread_id": source_thread_id,
+            "user_id": _resolve_user_scope(None, conversation.primary_user),
+            "surface_id": conversation.source or "web",
+            "surface_instance_id": "",
+        },
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(
+            app_state=app_state,
+            surface=conversation.source or "web",
+            source=conversation.source or "web",
+        ),
+    )
+    payload = dict(outcome.response_payload or {})
+    if not payload.get("new_conversation_id"):
+        failed = next((r for r in (outcome.action_results or []) if r.get("status") == "failure"), None)
+        failure_message = (failed or {}).get("error_message") or "Failed to create branched conversation"
+        if any(
+            marker in failure_message.lower()
+            for marker in ("selected", "conversation not found", "only user/assistant", "character mismatch")
+        ):
+            raise HTTPException(status_code=400, detail=failure_message)
+        raise HTTPException(status_code=500, detail=failure_message)
+    return BranchConversationResponse(**payload)
+
 
 @app.post("/conversations/{conversation_id}/moment-pins", response_model=MomentPinResponse)
 async def create_moment_pin(

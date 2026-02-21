@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
 from chorus_engine.models.conversation import Message, MessageRole
+from chorus_engine.models.conversation import Thread
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +206,29 @@ class MessageRepository:
             self.db.commit()
         
         return deleted_ids, skipped_ids
+
+    def list_selected_for_conversation(
+        self,
+        *,
+        conversation_id: str,
+        selected_message_ids: List[str],
+        include_deleted: bool = False,
+    ) -> List[Message]:
+        """
+        Fetch selected messages constrained to one conversation and return in
+        chronological order (created_at, id).
+        """
+        if not selected_message_ids:
+            return []
+        query = (
+            self.db.query(Message)
+            .join(Thread, Message.thread_id == Thread.id)
+            .filter(
+                Thread.conversation_id == conversation_id,
+                Message.id.in_(selected_message_ids),
+            )
+        )
+        if not include_deleted:
+            query = query.filter(Message.deleted_at.is_(None))
+        rows = query.order_by(Message.created_at.asc(), Message.id.asc()).all()
+        return rows

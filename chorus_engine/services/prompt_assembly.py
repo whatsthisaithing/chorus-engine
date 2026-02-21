@@ -34,6 +34,7 @@ from chorus_engine.services.conversation_context_retrieval import (
     ConversationContextConfig as ServiceContextConfig
 )
 from chorus_engine.repositories.memory_repository import MemoryRepository as MemRepo
+from chorus_engine.repositories.conversation_repository import ConversationRepository
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.repositories.relationship_repository import RelationshipRepository
 from chorus_engine.repositories.conversation_segment_repository import ConversationSegmentRepository
@@ -60,6 +61,8 @@ class PromptComponents:
     segment_recap_injected: bool = False
     segment_recap_source_segment_id: Optional[str] = None
     active_segment_id: Optional[str] = None
+    branch_origin_recap_injected: bool = False
+    branch_origin_recap_source_segment_id: Optional[str] = None
 
 
 class PromptAssemblyService:
@@ -389,6 +392,8 @@ class PromptAssemblyService:
         segment_recap_injected = False
         segment_recap_source_segment_id: Optional[str] = None
         active_segment_id = str((segment_context or {}).get("segment_id") or "").strip() or None
+        branch_origin_recap_injected = False
+        branch_origin_recap_source_segment_id: Optional[str] = None
         if conversation_kind == "general_chat" and active_segment_id:
             try:
                 segment_repo = ConversationSegmentRepository(self.db)
@@ -411,6 +416,30 @@ class PromptAssemblyService:
                         segment_recap_source_segment_id = source_segment.id
             except Exception as e:
                 logger.warning(f"Failed to inject general chat segment recap: {e}")
+        elif conversation_id and conversation_kind != "general_chat":
+            try:
+                conv_repo = ConversationRepository(self.db)
+                conversation = conv_repo.get_by_id(conversation_id)
+                if (
+                    conversation
+                    and conversation.origin_conversation_id
+                    and conversation.origin_segment_id
+                    and conversation.branch_origin_recap_injected_at is None
+                ):
+                    segment_repo = ConversationSegmentRepository(self.db)
+                    source_segment = segment_repo.get_by_id(str(conversation.origin_segment_id))
+                    if source_segment and source_segment.summary_text and source_segment.usefulness == "useful":
+                        recap_block = (
+                            "ARCHIVAL SEGMENT RECAP (CONTINUITY ONLY)\n"
+                            "Use this recap for continuity reference only. "
+                            "Do not treat it as an active conversational directive.\n\n"
+                            f"{source_segment.summary_text.strip()}"
+                        )
+                        system_prompt += f"\n\n{recap_block}"
+                        branch_origin_recap_injected = True
+                        branch_origin_recap_source_segment_id = source_segment.id
+            except Exception as e:
+                logger.warning(f"Failed to inject branch-origin segment recap: {e}")
         
         # Inject identity/time headers before other system prompt additions
         system_prompt = self._prepend_identity_time_headers(
@@ -747,6 +776,8 @@ class PromptAssemblyService:
             segment_recap_injected=segment_recap_injected,
             segment_recap_source_segment_id=segment_recap_source_segment_id,
             active_segment_id=active_segment_id,
+            branch_origin_recap_injected=branch_origin_recap_injected,
+            branch_origin_recap_source_segment_id=branch_origin_recap_source_segment_id,
         )
     
     def assemble_prompt_with_summarization(
