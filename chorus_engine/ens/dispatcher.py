@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
 from chorus_engine.repositories import (
+    ConversationSegmentRepository,
     ConversationRepository,
     MessageRepository,
     RelationshipRepository,
@@ -33,6 +34,8 @@ from chorus_engine.repositories.continuity_repository import ContinuityRepositor
 from chorus_engine.ens.models import ENSAction
 from chorus_engine.models.conversation import MemoryType
 from chorus_engine.services.conversation_analysis_service import ConversationAnalysisService
+from chorus_engine.services.conversation_segmentation_service import ConversationSegmentationService
+from chorus_engine.db.conversation_segment_vector_store import ConversationSegmentVectorStore
 from chorus_engine.services.moment_pin_extraction_service import MomentPinExtractionService
 from chorus_engine.services.prompt_assembly import PromptAssemblyService
 from chorus_engine.services.media_turn_classifier import classify_media_turn
@@ -185,6 +188,8 @@ class ENSDispatcher:
                 output = self._write_message(db, action.params, role=MessageRole.USER)
             elif action.kind == "message.write_assistant":
                 output = self._write_message(db, action.params, role=MessageRole.ASSISTANT)
+            elif action.kind == "segment.ensure_for_turn":
+                output = await self._ensure_segment_for_turn(db, action.params)
             elif action.kind == "attachments.link_to_message":
                 output = self._link_attachments_to_message(db, action.params)
             elif action.kind == "attachments.process_vision":
@@ -386,10 +391,207 @@ class ENSDispatcher:
                         surface_instance_id=surface_instance_id,
                         fingerprint=metadata.get("general_chat_bootstrap_fingerprint"),
                     )
+                if role == MessageRole.ASSISTANT and metadata.get("segment_recap_injected"):
+                    segment_id = metadata.get("active_segment_id")
+                    if segment_id:
+                        seg_repo = ConversationSegmentRepository(db)
+                        seg_repo.mark_resume_recap_injected(str(segment_id))
         except Exception as e:
             logger.warning("Failed relationship-surface post-write updates: %s", e)
 
         return {"message_id": message.id, "thread_id": message.thread_id}
+
+    async def _ensure_segment_for_turn(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        conv_repo = ConversationRepository(db)
+        conversation = conv_repo.get_by_id(params.get("conversation_id"))
+        if not conversation:
+            return {
+                "segment_id": None,
+                "transitioned": False,
+                "transition_reason": "none",
+                "resume_source_segment_id": None,
+                "resume_recap_pending": False,
+                "_ens_action_status": "skipped",
+                "reason": "conversation_not_found",
+            }
+        cfg = getattr(self.app_state.get("system_config"), "general_chat_segmentation", None)
+        if cfg is None:
+            return {
+                "segment_id": None,
+                "transitioned": False,
+                "transition_reason": "none",
+                "resume_source_segment_id": None,
+                "resume_recap_pending": False,
+                "_ens_action_status": "skipped",
+                "reason": "segment_config_missing",
+            }
+
+        svc = ConversationSegmentationService(db, cfg)
+        result = svc.ensure_segment_for_turn(
+            conversation=conversation,
+            thread_id=params["thread_id"],
+            user_message_id=params["user_message_id"],
+            surface_id=params.get("surface_id"),
+            surface_instance_id=params.get("surface_instance_id"),
+        )
+
+        summary_status = "not_needed"
+        if result.closed_segment_id:
+            if result.should_summarize_inline:
+                summary_status = await self._summarize_closed_segment(
+                    db=db,
+                    conversation=conversation,
+                    character_id=params.get("character_id") or conversation.character_id,
+                    segment_id=result.closed_segment_id,
+                    max_tokens=int(getattr(cfg, "summary_max_tokens", 1200)),
+                    model_override=getattr(cfg, "summary_model_override", None),
+                )
+            else:
+                # v1: close paths other than idle-break do not block current turn.
+                summary_status = "deferred"
+
+        # If we summarized the just-closed segment inline and it is useful, prefer it
+        # as the recap source for the newly opened segment.
+        if (
+            result.should_summarize_inline
+            and result.segment_id
+            and result.closed_segment_id
+            and summary_status in ("generated", "already_present")
+        ):
+            try:
+                seg_repo = ConversationSegmentRepository(db)
+                closed_segment = seg_repo.get_by_id(result.closed_segment_id)
+                if (
+                    closed_segment
+                    and closed_segment.summary_text
+                    and closed_segment.usefulness == "useful"
+                ):
+                    seg_repo.set_resume_source_segment(
+                        segment_id=result.segment_id,
+                        resume_source_segment_id=closed_segment.id,
+                    )
+                    result.resume_source_segment_id = closed_segment.id
+                    result.resume_recap_pending = True
+            except Exception as exc:
+                logger.warning("Failed to promote closed segment as recap source: %s", exc)
+
+        return {
+            "segment_id": result.segment_id,
+            "transitioned": result.transitioned,
+            "transition_reason": result.transition_reason,
+            "resume_source_segment_id": result.resume_source_segment_id,
+            "resume_recap_pending": result.resume_recap_pending,
+            "closed_segment_id": result.closed_segment_id,
+            "should_summarize_inline": result.should_summarize_inline,
+            "summary_status": summary_status,
+        }
+
+    async def _summarize_closed_segment(
+        self,
+        *,
+        db: Session,
+        conversation,
+        character_id: str,
+        segment_id: str,
+        max_tokens: int,
+        model_override: Optional[str],
+    ) -> str:
+        segment_repo = ConversationSegmentRepository(db)
+        segment = segment_repo.get_by_id(segment_id)
+        if not segment or segment.summary_text:
+            return "already_present"
+        if not segment.start_message_id or not segment.end_message_id:
+            return "range_missing"
+
+        from chorus_engine.models.conversation import Message
+
+        start_msg = db.query(Message).filter(Message.id == segment.start_message_id).first()
+        end_msg = db.query(Message).filter(Message.id == segment.end_message_id).first()
+        if not start_msg or not end_msg:
+            return "range_messages_missing"
+
+        messages = (
+            db.query(Message)
+            .filter(
+                Message.thread_id == start_msg.thread_id,
+                Message.deleted_at.is_(None),
+                Message.created_at >= start_msg.created_at,
+                Message.created_at <= end_msg.created_at,
+            )
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        transcript_payload = [
+            {
+                "role": (m.role.value if hasattr(m.role, "value") else str(m.role)),
+                "content": m.content,
+            }
+            for m in messages
+        ]
+        transcript_json = json.dumps(transcript_payload, ensure_ascii=False)
+        analysis_service: ConversationAnalysisService = self.app_state.get("analysis_service")
+        if not analysis_service:
+            return "analysis_service_missing"
+        character = self.app_state.get("characters", {}).get(character_id)
+        if not character:
+            return "character_missing"
+        token_count = analysis_service.token_counter.count_tokens(transcript_json)
+        analysis = await analysis_service.analyze_segment_summary_only(
+            conversation_id=conversation.id,
+            character=character,
+            transcript_json=transcript_json,
+            token_count=token_count,
+            summary_model=model_override,
+            max_tokens=max_tokens,
+        )
+        if not analysis:
+            return "analysis_failed"
+
+        summary_vector_id = None
+        try:
+            embedder = self.app_state.get("embedding_service")
+            if embedder is None:
+                from chorus_engine.services.embedding_service import EmbeddingService
+
+                embedder = EmbeddingService()
+            vector_store = self.app_state.get("segment_summary_vector_store")
+            if vector_store is None:
+                vector_store = ConversationSegmentVectorStore(Path("data/vector_store"))
+            embedding = embedder.embed(analysis.summary)
+            if vector_store.upsert_segment_summary(
+                character_id=character_id,
+                segment_id=segment_id,
+                summary_text=analysis.summary,
+                embedding=embedding,
+                metadata={
+                    "conversation_id": conversation.id,
+                    "segment_kind": segment.segment_kind,
+                    "usefulness": analysis.usefulness,
+                },
+            ):
+                summary_vector_id = segment_id
+        except Exception as exc:
+            logger.warning("Segment summary vector upsert failed for %s: %s", segment_id, exc)
+
+        segment_repo.upsert_segment_summary(
+            segment_id,
+            summary_text=analysis.summary,
+            usefulness=analysis.usefulness,
+            key_events=analysis.key_events,
+            open_threads=analysis.open_threads,
+            participants=analysis.participants,
+            summary_model=(
+                model_override
+                or analysis_service.archivist_model
+                or getattr(getattr(self.app_state.get("system_config"), "llm", None), "model", None)
+            ),
+            summary_prompt_version=analysis.summary_prompt_version,
+            summary_input_hash=analysis.summary_input_hash,
+            summary_created_at=datetime.utcnow(),
+            summary_vector_id=summary_vector_id,
+            embedding_model=getattr(getattr(self.app_state.get("system_config"), "llm", None), "embedding_model", None),
+        )
+        return "generated"
 
     def _link_attachments_to_message(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         from chorus_engine.models.conversation import ImageAttachment
@@ -699,8 +901,9 @@ class ENSDispatcher:
         current_message_count = msg_repo.count_thread_messages(thread_id)
         source = (params.get("conversation_source") or conversation.source or "web")
         messages_for_media_type = msg_repo.get_thread_history_objects(thread_id)
+        recent_media_window = messages_for_media_type[-5:] if len(messages_for_media_type) > 5 else messages_for_media_type
         preferred_iteration_media_type = "none"
-        for msg in reversed(messages_for_media_type):
+        for msg in reversed(recent_media_window):
             if msg.role != MessageRole.ASSISTANT:
                 continue
             meta = msg.meta_data or {}
@@ -748,7 +951,11 @@ class ENSDispatcher:
                 "video_enabled": bool(getattr(character, "video_generation", None) and character.video_generation.enabled),
             },
             "source_restrictions": {"source": source},
-            "iteration_state": {"preferred_iteration_media_type": preferred_iteration_media_type},
+            "iteration_state": {
+                "preferred_iteration_media_type": preferred_iteration_media_type,
+                "recent_window_messages": len(recent_media_window),
+                "recent_media_context": preferred_iteration_media_type in {"image", "video"},
+            },
             "cooldown_state": {
                 "time_active": media_permissions.cooldown_time_active,
                 "message_active": media_permissions.cooldown_message_active,
@@ -838,6 +1045,7 @@ class ENSDispatcher:
                 "requested_media_type": media_gate_snapshot.get("requested_media_type") or "none",
                 "is_iteration_request": bool(media_gate_snapshot.get("is_iteration_request")),
             },
+            segment_context=params.get("segment_context"),
         )
         messages = prompt_assembler.format_for_api(prompt_components)
 
@@ -1091,6 +1299,18 @@ class ENSDispatcher:
                 "template": template,
                 "raw_response": raw_content,
             }
+            if parsed.unknown_tags or parsed.trailing_text_dropped:
+                assistant_metadata["structured_response"]["invalid_output"] = {
+                    "unknown_tags": parsed.unknown_tags,
+                    "trailing_text": bool(parsed.trailing_text_dropped),
+                    "action": "dropped",
+                }
+                logger.warning(
+                    "structured_response.invalid_output: unknown_tags=%s trailing_text=%s action=dropped thread_id=%s",
+                    parsed.unknown_tags,
+                    bool(parsed.trailing_text_dropped),
+                    thread_id,
+                )
         detected_raw_malformed, detected_raw_payload_type = detect_malformed_tool_payload_block(raw_content)
         if detected_raw_malformed and not malformed_tool_payload_non_sentinel:
             malformed_tool_payload_non_sentinel = True
@@ -1102,6 +1322,14 @@ class ENSDispatcher:
             assistant_metadata["general_chat_bootstrap_fingerprint"] = prompt_components.general_chat_bootstrap_fingerprint
             assistant_metadata["general_chat_surface_id"] = source
             assistant_metadata["general_chat_surface_instance_id"] = params.get("surface_instance_id")
+        active_segment_id = getattr(prompt_components, "active_segment_id", None)
+        segment_recap_injected = bool(getattr(prompt_components, "segment_recap_injected", False))
+        segment_recap_source_segment_id = getattr(prompt_components, "segment_recap_source_segment_id", None)
+        if active_segment_id:
+            assistant_metadata["active_segment_id"] = active_segment_id
+        if segment_recap_injected:
+            assistant_metadata["segment_recap_injected"] = True
+            assistant_metadata["segment_recap_source_segment_id"] = segment_recap_source_segment_id
         assistant_metadata["used_moment_pin_ids"] = list(prompt_components.used_moment_pin_ids or [])
         assistant_metadata["moment_pin_cold_recall_requested"] = cold_recall_requested
         assistant_metadata["moment_pin_cold_recall_executed"] = cold_recall_executed
@@ -1165,6 +1393,9 @@ class ENSDispatcher:
             "assistant_metadata": assistant_metadata,
             "general_chat_bootstrap_injected": bool(prompt_components.general_chat_bootstrap_injected),
             "general_chat_bootstrap_fingerprint": prompt_components.general_chat_bootstrap_fingerprint,
+            "segment_recap_injected": segment_recap_injected,
+            "segment_recap_source_segment_id": segment_recap_source_segment_id,
+            "active_segment_id": active_segment_id,
             "malformed_tool_payload_non_sentinel": malformed_tool_payload_non_sentinel,
             "malformed_payload_type": malformed_payload_type,
             "cold_recall_requested": cold_recall_requested,

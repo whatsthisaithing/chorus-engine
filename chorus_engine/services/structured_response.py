@@ -7,7 +7,7 @@ Parses and normalizes the XML-like structured response format:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 import re
 
@@ -26,6 +26,8 @@ class StructuredResponse:
     is_fallback: bool = False
     parse_error: Optional[str] = None
     had_untagged: bool = False
+    unknown_tags: List[str] = field(default_factory=list)
+    trailing_text_dropped: bool = False
 
 
 ALLOWED_CHANNELS_ALL = {"speech", "physicalaction", "innerthought", "narration", "action"}
@@ -63,6 +65,27 @@ def parse_structured_response(
         )
 
     source = raw
+    unknown_tags: set[str] = set()
+    trailing_text_dropped = False
+
+    # Enforce root boundary when present: anything outside assistant_response is dropped.
+    root_match = re.search(r"<assistant_response>([\s\S]*?)</assistant_response>", source)
+    if root_match:
+        root_start, root_end = root_match.span()
+        raw_prefix = source[:root_start]
+        raw_suffix = source[root_end:]
+
+        if raw_prefix.strip():
+            tail_is_malformed_tool, _payload_type = detect_malformed_tool_payload_block(raw_prefix)
+            if not tail_is_malformed_tool:
+                trailing_text_dropped = True
+        if raw_suffix.strip():
+            tail_is_malformed_tool, _payload_type = detect_malformed_tool_payload_block(raw_suffix)
+            if not tail_is_malformed_tool:
+                trailing_text_dropped = True
+
+        source = root_match.group(1)
+
     # Lenient normalization:
     # - Scan for known tags in order
     # - Any text outside known tags becomes <speech>
@@ -70,7 +93,7 @@ def parse_structured_response(
     cursor = 0
     had_untagged = False
     parse_error: Optional[str] = None
-    pattern = re.compile(r"<([a-z]+)>([\s\S]*?)</\1>")
+    pattern = re.compile(r"<([a-z][a-z0-9_]*)>([\s\S]*?)</\1>")
     def add_segment(channel: str, text: str) -> None:
         cleaned = text.strip()
         if cleaned:
@@ -91,8 +114,8 @@ def parse_structured_response(
         else:
             had_untagged = True
             parse_error = parse_error or f"unknown_channel:{channel}"
-            raw_full = source[start:end]
-            add_segment("speech", _strip_tags(raw_full))
+            unknown_tags.add(channel)
+            # Unknown tags are dropped.
         
         cursor = end
     
@@ -107,7 +130,11 @@ def parse_structured_response(
 
     if not segments:
         had_untagged = True
-        segments = [StructuredSegment(channel="speech", text=_strip_tags(source).strip())]
+        if root_match:
+            parse_error = parse_error or "no_valid_segments"
+            segments = [StructuredSegment(channel="speech", text="")]
+        else:
+            segments = [StructuredSegment(channel="speech", text=_strip_tags(source).strip())]
     
     # Ensure required channels exist (note only for diagnostics)
     present = {s.channel for s in segments}
@@ -120,7 +147,9 @@ def parse_structured_response(
         segments=segments,
         is_fallback=had_untagged or (parse_error is not None),
         parse_error=parse_error,
-        had_untagged=had_untagged
+        had_untagged=had_untagged,
+        unknown_tags=sorted(unknown_tags),
+        trailing_text_dropped=trailing_text_dropped,
     )
 
 

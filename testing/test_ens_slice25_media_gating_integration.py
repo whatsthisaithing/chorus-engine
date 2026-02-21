@@ -136,6 +136,51 @@ def test_ens_normalizes_speech_only_response_to_structured_content(client, db, h
     assert content.strip().endswith("</assistant_response>")
 
 
+def test_ens_drops_unknown_structured_tags_and_trailing_text(client, db, helpers):
+    helpers.app_module.app_state["llm_client"] = _LLMClientWithPayload(
+        "<assistant_response><speech>Hello there.</speech><system_notes>drop me</system_notes></assistant_response>\n"
+        "---\n"
+        "<system_notes>drop this too</system_notes>"
+    )
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+    _conversation_id, thread_id = helpers.create_conversation_thread()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "hello", "metadata": {"client_message_id": "slice25-structured-drop-1"}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assistant_id = body["assistant_message"]["id"]
+
+    assistant_row = (
+        db.query(Message)
+        .filter(Message.id == assistant_id, Message.role == MessageRole.ASSISTANT)
+        .first()
+    )
+    assert assistant_row is not None
+    content = assistant_row.content or ""
+    assert "<assistant_response>" in content
+    assert "<speech>Hello there.</speech>" in content
+    assert "<system_notes>" not in content
+    assert "drop this too" not in content
+
+    metadata = assistant_row.meta_data or {}
+    structured = metadata.get("structured_response") or {}
+    invalid_output = structured.get("invalid_output") or {}
+    assert invalid_output.get("action") == "dropped"
+    assert invalid_output.get("trailing_text") is True
+    assert "system_notes" in (invalid_output.get("unknown_tags") or [])
+
+
 def test_slice25_explicit_image_request_respects_disable_confirmation_setting(client, db, helpers):
     helpers.app_module.app_state["llm_client"] = _LLMClientWithPayload(
         "Sure.\n"
@@ -238,3 +283,67 @@ def test_slice25_malformed_non_sentinel_payload_is_stripped_and_not_accepted(cli
     assert output.get("tool_call_count") == 0
     assert output.get("malformed_tool_payload_non_sentinel") is True
     assert output.get("tool_parse_status") == "malformed_non_sentinel"
+
+
+def test_slice25_iteration_not_triggered_by_generic_another_without_recent_media_context(client, db, helpers):
+    helpers.app_module.app_state["llm_client"] = _LLMClientWithPayload(
+        "<assistant_response><speech>Copy that.</speech></assistant_response>"
+    )
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+    _conversation_id, thread_id = helpers.create_conversation_thread()
+
+    # Old media turn (outside recent window of 5 messages)
+    old_assistant = Message(
+        thread_id=thread_id,
+        role=MessageRole.ASSISTANT,
+        content="<assistant_response><speech>old media turn</speech></assistant_response>",
+        meta_data={"image_id": "old-image-1"},
+    )
+    db.add(old_assistant)
+    db.commit()
+
+    # Push old media out of recent window.
+    fillers = []
+    for i in range(6):
+        role = MessageRole.USER if i % 2 == 0 else MessageRole.ASSISTANT
+        fillers.append(
+            Message(
+                thread_id=thread_id,
+                role=role,
+                content=f"filler {i}",
+            )
+        )
+    db.add_all(fillers)
+    db.commit()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "I noticed another bug and fixed it.", "metadata": {"client_message_id": "slice25-another-bug-1"}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("pending_tool_calls") == []
+
+    decision = _latest_decision(db)
+    assert decision is not None
+    media_gate = (
+        db.query(ENSActionResult)
+        .filter(
+            ENSActionResult.decision_id == decision.decision_id,
+            ENSActionResult.kind == "media.gating.evaluate",
+        )
+        .first()
+    )
+    assert media_gate is not None
+    snapshot = (media_gate.output_json or {}).get("media_gate_snapshot") or {}
+    assert snapshot.get("turn_classification") != "iterate_media"
+    assert snapshot.get("is_iteration_request") is False
+    assert snapshot.get("requested_media_type") == "none"

@@ -10,6 +10,7 @@ from .image_repository import ImageRepository
 from .voice_sample_repository import VoiceSampleRepository
 from .audio_repository import AudioRepository
 from .moment_pin_repository import MomentPinRepository
+from .conversation_segment_repository import ConversationSegmentRepository
 from .surface_binding_repository import SurfaceBindingRepository
 from .surface_egress_intent_repository import SurfaceEgressIntentRepository
 from .relationship_repository import RelationshipRepository
@@ -25,6 +26,7 @@ __all__ = [
     "VoiceSampleRepository",
     "AudioRepository",
     "MomentPinRepository",
+    "ConversationSegmentRepository",
     "SurfaceBindingRepository",
     "SurfaceEgressIntentRepository",
     "RelationshipRepository",

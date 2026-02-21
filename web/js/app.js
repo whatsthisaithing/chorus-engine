@@ -18,6 +18,7 @@ window.App = {
         threads: [],
         selectedThreadId: null,
         messages: [],
+        conversationSegments: [],
         selectedMessageIds: new Set(),
         lastUsedMomentPinIds: [],
         momentPins: [],
@@ -643,6 +644,7 @@ window.App = {
         this.state.selectedThreadId = null;
         this.state.currentThread = null;
         this.state.messages = [];
+        this.state.conversationSegments = [];
         this.state.threads = [];
         
         // Clear all conversation UI components
@@ -870,6 +872,7 @@ window.App = {
                 // No threads, clear messages
                 UI.renderMessages([]);
                 this.state.messages = [];
+                this.state.conversationSegments = [];
                 this.clearMessageSelection();
             }
             
@@ -977,6 +980,15 @@ window.App = {
             // Load messages
             const messages = await API.listMessages(threadId);
             this.state.messages = messages;
+            let segments = [];
+            try {
+                if (this.state.selectedConversationId) {
+                    segments = await API.listConversationSegments(this.state.selectedConversationId);
+                }
+            } catch (segmentError) {
+                console.warn('Failed to load conversation segments:', segmentError);
+            }
+            this.state.conversationSegments = segments || [];
             
             // Update UI
             const conversation = await API.getConversation(this.state.selectedConversationId);
@@ -984,7 +996,7 @@ window.App = {
             
             UI.updateHeader(conversation.title, character ? character.name : '');
             UI.renderThreads(this.state.threads, threadId);
-            UI.renderMessages(messages);
+            UI.renderMessages(messages, this.state.conversationSegments);
             this.clearMessageSelection();
             this.state.lastUsedMomentPinIds = [];
             
@@ -997,6 +1009,22 @@ window.App = {
         } catch (error) {
             console.error('Failed to select thread:', error);
             UI.showToast('Failed to load thread', 'error');
+        }
+    },
+
+    async refreshConversationSegments(options = {}) {
+        const rerender = !!options.rerender;
+        if (!this.state.selectedConversationId) return;
+        try {
+            const segments = await API.listConversationSegments(this.state.selectedConversationId);
+            this.state.conversationSegments = segments || [];
+            if (rerender) {
+                UI.renderMessages(this.state.messages, this.state.conversationSegments);
+                this.clearMessageSelection();
+                setTimeout(() => UI.scrollToBottom(), 0);
+            }
+        } catch (error) {
+            console.warn('Failed to refresh conversation segments:', error);
         }
     },
 
@@ -1683,6 +1711,7 @@ window.App = {
             
             // Start polling for new implicit memories
             this.startMemoryPolling();
+            await this.refreshConversationSegments({ rerender: true });
             
         } catch (error) {
             console.error('Failed to send message:', error);
@@ -1979,6 +2008,7 @@ window.App = {
             this.state.selectedConversationId = null;
             this.state.selectedThreadId = null;
             this.state.messages = [];
+            this.state.conversationSegments = [];
             
             // Reload conversations
             await this.loadConversations();
@@ -1987,6 +2017,7 @@ window.App = {
             UI.updateHeader('Select a conversation', '');
             UI.renderThreads([], null);
             UI.renderMessages([]);
+            this.state.conversationSegments = [];
             UI.showEmptyState(true);
             UI.setInputEnabled(false);
             this.clearMessageSelection();
@@ -2108,7 +2139,7 @@ window.App = {
             if (this.state.selectedThreadId) {
                 const messages = await API.listMessages(this.state.selectedThreadId);
                 this.state.messages = messages;
-                UI.renderMessages(messages);
+                UI.renderMessages(messages, this.state.conversationSegments);
                 this.clearMessageSelection();
             }
         } catch (error) {
@@ -2956,6 +2987,7 @@ window.App = {
             this.state.threads = [];
             this.state.selectedThreadId = null;
             this.state.messages = [];
+            this.state.conversationSegments = [];
             
             // Clear UI
             UI.renderMessages([]);

@@ -362,6 +362,60 @@ class MomentPin(Base):
         return f"<MomentPin(id={self.id}, char={self.character_id}, user={self.user_id}, archived={bool(self.archived)}, what={preview})>"
 
 
+class ConversationSegment(Base):
+    """
+    Episodic segment boundaries and recap artifacts for conversation continuity.
+
+    v1 scope:
+    - used by general_chat lifecycle
+    - stores bounded segment recap and usefulness classification
+    """
+    __tablename__ = "conversation_segments"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    conversation_id = Column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    relationship_id = Column(String(36), nullable=True, index=True)
+    surface_id = Column(String(20), nullable=True, index=True)
+    surface_instance_id = Column(String(100), nullable=False, default="")
+
+    segment_kind = Column(String(20), nullable=False, default="manual_break", index=True)
+    state = Column(String(20), nullable=False, default="open", index=True)
+
+    start_message_id = Column(String(36), nullable=True, index=True)
+    end_message_id = Column(String(36), nullable=True, index=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    ended_at = Column(DateTime, nullable=True, default=None, index=True)
+
+    usefulness = Column(String(20), nullable=False, default="unknown", index=True)
+    summary_text = Column(Text, nullable=True)
+    key_events = Column(JSON, nullable=True)
+    open_threads = Column(JSON, nullable=True)
+    participants = Column(JSON, nullable=True)
+    summary_model = Column(String(120), nullable=True)
+    summary_prompt_version = Column(String(80), nullable=True, index=True)
+    summary_input_hash = Column(String(64), nullable=True, index=True)
+    summary_created_at = Column(DateTime, nullable=True, default=None)
+    summary_vector_id = Column(String(64), nullable=True, index=True)
+    embedding_model = Column(String(100), nullable=True)
+
+    resume_source_segment_id = Column(String(36), nullable=True)
+    resume_recap_injected_at = Column(DateTime, nullable=True, default=None)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return (
+            f"<ConversationSegment(id={self.id}, conv={self.conversation_id}, "
+            f"kind={self.segment_kind}, state={self.state}, usefulness={self.usefulness})>"
+        )
+
+
 class GeneratedImage(Base):
     """
     A generated image represents an AI-generated image from ComfyUI.

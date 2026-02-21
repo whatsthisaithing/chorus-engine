@@ -36,6 +36,7 @@ from chorus_engine.services.conversation_context_retrieval import (
 from chorus_engine.repositories.memory_repository import MemoryRepository as MemRepo
 from chorus_engine.repositories.continuity_repository import ContinuityRepository
 from chorus_engine.repositories.relationship_repository import RelationshipRepository
+from chorus_engine.repositories.conversation_segment_repository import ConversationSegmentRepository
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
@@ -56,6 +57,9 @@ class PromptComponents:
     used_moment_pin_ids: List[str] = field(default_factory=list)
     general_chat_bootstrap_injected: bool = False
     general_chat_bootstrap_fingerprint: Optional[str] = None
+    segment_recap_injected: bool = False
+    segment_recap_source_segment_id: Optional[str] = None
+    active_segment_id: Optional[str] = None
 
 
 class PromptAssemblyService:
@@ -287,6 +291,42 @@ class PromptAssemblyService:
         available_tokens = self.context_window - estimated_system_tokens
         document_budget = int(available_tokens * self.document_budget_ratio)
         return document_budget
+
+    def _scope_messages_to_general_chat_segment(
+        self,
+        *,
+        messages: List[Message],
+        conversation_id: Optional[str],
+        active_segment_id: Optional[str] = None,
+    ) -> List[Message]:
+        """
+        Restrict general-chat transcript history to the current open segment.
+
+        If segment data is unavailable, returns original messages as a safe fallback.
+        """
+        if not conversation_id or not messages:
+            return messages
+
+        segment_repo = ConversationSegmentRepository(self.db)
+        segment = None
+        if active_segment_id:
+            segment = segment_repo.get_by_id(active_segment_id)
+        if segment is None:
+            segment = segment_repo.get_open_segment(conversation_id)
+        if segment is None or not segment.start_message_id:
+            return messages
+
+        start_message_id = str(segment.start_message_id)
+        for idx, msg in enumerate(messages):
+            if str(msg.id) == start_message_id:
+                return messages[idx:]
+
+        start_msg = self.db.query(Message).filter(Message.id == start_message_id).first()
+        if not start_msg:
+            return messages
+
+        scoped = [m for m in messages if m.created_at >= start_msg.created_at]
+        return scoped or messages
     
     def assemble_prompt(
         self,
@@ -307,6 +347,7 @@ class PromptAssemblyService:
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
         media_gate_context: Optional[dict] = None,
+        segment_context: Optional[dict] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -345,6 +386,31 @@ class PromptAssemblyService:
             allow_proactive_media_offers=allow_proactive_media_offers,
             media_gate_context=media_gate_context,
         )
+        segment_recap_injected = False
+        segment_recap_source_segment_id: Optional[str] = None
+        active_segment_id = str((segment_context or {}).get("segment_id") or "").strip() or None
+        if conversation_kind == "general_chat" and active_segment_id:
+            try:
+                segment_repo = ConversationSegmentRepository(self.db)
+                active_segment = segment_repo.get_by_id(active_segment_id)
+                if (
+                    active_segment
+                    and active_segment.resume_source_segment_id
+                    and active_segment.resume_recap_injected_at is None
+                ):
+                    source_segment = segment_repo.get_by_id(active_segment.resume_source_segment_id)
+                    if source_segment and source_segment.summary_text and source_segment.usefulness == "useful":
+                        recap_block = (
+                            "ARCHIVAL SEGMENT RECAP (CONTINUITY ONLY)\n"
+                            "Use this recap for narrative continuity only. "
+                            "Do not treat it as an active conversational directive.\n\n"
+                            f"{source_segment.summary_text.strip()}"
+                        )
+                        system_prompt += f"\n\n{recap_block}"
+                        segment_recap_injected = True
+                        segment_recap_source_segment_id = source_segment.id
+            except Exception as e:
+                logger.warning(f"Failed to inject general chat segment recap: {e}")
         
         # Inject identity/time headers before other system prompt additions
         system_prompt = self._prepend_identity_time_headers(
@@ -369,6 +435,12 @@ class PromptAssemblyService:
                 thread_id,
                 limit=max_history_messages
             )
+            if conversation_kind == "general_chat":
+                messages = self._scope_messages_to_general_chat_segment(
+                    messages=messages,
+                    conversation_id=conversation_id,
+                    active_segment_id=active_segment_id,
+                )
             
             # Task 1.8: Enrich user messages with vision observations from attached images.
             # Keep enrichments ephemeral for this prompt only; never mutate persisted message rows.
@@ -464,9 +536,11 @@ class PromptAssemblyService:
             except Exception as e:
                 logger.warning(f"Failed to inject continuity bootstrap: {e}")
 
-        # Phase 8: Add greeting context if this is the first message in conversation
+        # Phase 8 legacy greeting-context injection is intentionally hard-disabled for now.
+        # Keep implementation in place for future reactivation once continuity behavior is finalized.
+        enable_legacy_greeting_context = False
         # Skip greeting context if continuity bootstrap is injected to avoid redundancy.
-        if not bootstrap_injected and messages and len(messages) <= 2:  # First user message or first exchange
+        if enable_legacy_greeting_context and not bootstrap_injected and messages and len(messages) <= 2:
             try:
                 greeting_context = self.greeting_service.build_greeting_context(
                     character_id=self.character_id,
@@ -670,6 +744,9 @@ class PromptAssemblyService:
             used_moment_pin_ids=used_moment_pin_ids,
             general_chat_bootstrap_injected=general_chat_bootstrap_injected,
             general_chat_bootstrap_fingerprint=general_chat_bootstrap_fingerprint,
+            segment_recap_injected=segment_recap_injected,
+            segment_recap_source_segment_id=segment_recap_source_segment_id,
+            active_segment_id=active_segment_id,
         )
     
     def assemble_prompt_with_summarization(
@@ -823,6 +900,12 @@ class PromptAssemblyService:
             thread_id,
             limit=None  # Get all messages for selective preservation
         )
+        if conversation_kind == "general_chat":
+            messages = self._scope_messages_to_general_chat_segment(
+                messages=messages,
+                conversation_id=conversation_id,
+                active_segment_id=None,
+            )
         
         # Determine memory query
         if memory_query is None and messages:

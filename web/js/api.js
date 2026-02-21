@@ -180,6 +180,13 @@ class API {
     static async getConversation(conversationId) {
         return this.request(`/conversations/${conversationId}`);
     }
+
+    static async listConversationSegments(conversationId, skip = 0, limit = 500) {
+        const params = new URLSearchParams();
+        if (skip) params.append('skip', skip);
+        if (limit) params.append('limit', limit);
+        return this.request(`/conversations/${conversationId}/segments?${params}`);
+    }
     
     static async updateConversation(conversationId, title) {
         return this.request(`/conversations/${conversationId}`, {

@@ -131,6 +131,22 @@ run_script.bat utilities/vector_lookup_probe/vector_lookup_probe.py --character 
 
 See `utilities/vector_lookup_probe/README.md` for full options.
 
+### `general_chat_segmentation_backfill/`
+
+Offline utility to backfill relationship v1 segment boundaries and segment summaries for existing `general_chat` conversations.
+
+**Usage:**
+```bash
+run_script.bat utilities/general_chat_segmentation_backfill/run_backfill.py --apply
+```
+
+Segment reset (DB + vectors, optional rebuild):
+```bash
+run_script.bat utilities/general_chat_segmentation_backfill/run_segment_reset.py --apply --rebuild --character-id <character_id>
+```
+
+See `utilities/general_chat_segmentation_backfill/README.md` for filters, dry-run mode, and reset details.
+
 ---
 
 ## Future Scripts

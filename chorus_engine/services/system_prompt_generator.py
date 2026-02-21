@@ -599,6 +599,7 @@ Only one tool call is recommended."""
             "- Exception for tool payload placement: if (and only if) you emit a tool call, you may place exactly one sentinel tool payload block immediately after </assistant_response>.",
             "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block.",
             "- Only allowed child tags may be used",
+            "- Do not create any other tags or sections. Never append notes, state updates, metadata, or commentary.",
             "- Do NOT include any text outside the tags",
             "- Tags must NOT include attributes",
             "- Tags must NOT be nested",

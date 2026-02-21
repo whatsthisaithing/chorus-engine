@@ -41,6 +41,11 @@ ITERATION_PATTERNS = (
     r"\b(try|do)\s+(another|again)\b",
 )
 
+MEDIA_ANCHOR_PATTERNS = (
+    r"\b(image|photo|picture|pic|selfie|video|clip|animation|render|frame|shot)\b",
+    r"\b(that|this|last|previous)\s+(image|photo|picture|pic|selfie|video|clip|animation|render)\b",
+)
+
 
 @dataclass
 class MediaTurnSignals:
@@ -94,13 +99,14 @@ def classify_media_turn(
         lexical_image = any(re.search(pattern, text) for pattern in IMAGE_LEXICAL_PATTERNS)
         lexical_video = any(re.search(pattern, text) for pattern in VIDEO_LEXICAL_PATTERNS)
         lexical_iteration = any(re.search(pattern, text) for pattern in ITERATION_PATTERNS)
+        lexical_media_anchor = any(re.search(pattern, text) for pattern in MEDIA_ANCHOR_PATTERNS)
         if lexical_image:
             explicit_image = True
             image_conf = max(image_conf, explicit_image_threshold)
         if lexical_video:
             explicit_video = True
             video_conf = max(video_conf, explicit_video_threshold)
-        if lexical_iteration:
+        if lexical_iteration and (lexical_media_anchor or lexical_image or lexical_video):
             is_iteration_request = True
 
     # Deterministic short acknowledgement block applies only when SID has no

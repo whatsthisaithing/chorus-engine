@@ -214,7 +214,7 @@ const UI = {
     /**
      * Render messages
      */
-    renderMessages(messages) {
+    renderMessages(messages, segments = []) {
         const container = document.getElementById('messagesContainer');
         
         // Clear only message rows, not the empty state
@@ -227,7 +227,34 @@ const UI = {
         // Show/hide empty state based on message count
         this.showEmptyState(messages.length === 0);
         
+        const boundariesByStartId = new Map();
+        (segments || []).forEach((seg) => {
+            if (!seg || !seg.start_message_id) return;
+            const started = seg.started_at ? new Date(seg.started_at) : null;
+            const label = seg.segment_kind === 'idle_break'
+                ? 'Idle break'
+                : (seg.segment_kind === 'branch_break' ? 'Branched conversation' : 'New session');
+            boundariesByStartId.set(seg.start_message_id, {
+                label,
+                started,
+            });
+        });
+
         messages.forEach(msg => {
+            const boundary = boundariesByStartId.get(msg.id);
+            if (boundary) {
+                const sep = document.createElement('div');
+                sep.className = 'message-row segment-separator-row';
+                const ts = boundary.started ? this.formatDate(boundary.started.toISOString()) : '';
+                sep.innerHTML = `
+                    <div class="segment-separator">
+                        <span class="segment-separator-line"></span>
+                        <span class="segment-separator-label">${this.escapeHtml(boundary.label)}${ts ? ` - ${this.escapeHtml(ts)}` : ''}</span>
+                        <span class="segment-separator-line"></span>
+                    </div>
+                `;
+                container.appendChild(sep);
+            }
             this.appendMessage(msg);
         });
         

@@ -2619,3 +2619,29 @@ audio::-webkit-media-controls-time-remaining-display {
 .assistant-message .assistant-segment--speech {
     color: #212529;
 }
+
+.segment-separator-row {
+    justify-content: center;
+    margin: 0.35rem 0;
+}
+
+.segment-separator {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.segment-separator-line {
+    flex: 1;
+    height: 1px;
+    background: color-mix(in srgb, var(--text-secondary) 30%, transparent);
+}
+
+.segment-separator-label {
+    white-space: nowrap;
+}

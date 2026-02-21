@@ -56,6 +56,7 @@ class ENSRuntime:
             action_results: List[Dict[str, Any]] = []
             for action in actions:
                 if action.kind in (
+                    "segment.ensure_for_turn",
                     "attachments.link_to_message",
                     "attachments.process_vision",
                     "media.gating.evaluate",
@@ -85,9 +86,26 @@ class ENSRuntime:
                         action.params["message_id"] = user_message_id
                     if action.kind == "media.gating.evaluate" and user_message_id:
                         action.idempotency_key = f"gate:media:{resolved_signal.session_id}:{user_message_id}"
+                    if action.kind == "segment.ensure_for_turn" and user_message_id:
+                        action.idempotency_key = (
+                            f"segment:ensure:{resolved_signal.payload.get('conversation_id')}:"
+                            f"{resolved_signal.payload.get('thread_id')}:{user_message_id}:v1"
+                        )
+                        action.params["user_message_id"] = user_message_id
+                        action.params["surface_id"] = resolved_signal.payload.get("surface_id")
+                        action.params["surface_instance_id"] = resolved_signal.payload.get("surface_instance_id")
                     if action.kind == "llm.invoke.chat" and user_message_id:
                         action.idempotency_key = f"llm:chat:{resolved_signal.session_id}:{user_message_id}"
                         action.params["user_message_id"] = user_message_id
+                        segment_result = next(
+                            (
+                                r
+                                for r in action_results
+                                if r.get("kind") == "segment.ensure_for_turn" and r.get("status") in ("success", "skipped")
+                            ),
+                            None,
+                        )
+                        action.params["segment_context"] = (segment_result or {}).get("output", {})
                         media_gate = next(
                             (
                                 r
@@ -496,6 +514,14 @@ class ENSRuntime:
                         "content": content,
                         "metadata": metadata,
                         "is_private": is_private,
+                    },
+                ),
+                ENSAction(
+                    kind="segment.ensure_for_turn",
+                    params={
+                        "conversation_id": signal.payload.get("conversation_id"),
+                        "thread_id": thread_id,
+                        "character_id": signal.assistant_id,
                     },
                 ),
                 ENSAction(

@@ -527,6 +527,25 @@ class HeartbeatConfig(BaseModel):
     backups: HeartbeatBackupsConfig = Field(default_factory=HeartbeatBackupsConfig)
 
 
+class GeneralChatSegmentationConfig(BaseModel):
+    """Config for general-chat episodic segmentation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(default=True, description="Enable general-chat segmentation lifecycle")
+    idle_soft_minutes: int = Field(default=30, ge=1, le=1440, description="Soft idle threshold for possible split")
+    idle_hard_minutes: int = Field(default=120, ge=1, le=1440, description="Hard idle threshold for definite split")
+    sleep_break_minutes: int = Field(default=360, ge=1, le=10080, description="Sleep heuristic threshold for definite split")
+    density_window_messages: int = Field(default=8, ge=1, le=100, description="Trailing messages to inspect for activity density")
+    density_low_turn_count_max: int = Field(default=4, ge=1, le=100, description="Low-density max trailing turn count")
+    density_low_avg_chars_max: int = Field(default=180, ge=1, le=2000, description="Low-density max trailing average characters")
+    pending_question_tail_messages: int = Field(default=2, ge=0, le=20, description="Trailing assistant messages scanned for unresolved questions")
+    resume_recent_useful_segments: int = Field(default=3, ge=1, le=20, description="Max recent useful segments considered for recap source")
+    resume_max_age_hours: int = Field(default=72, ge=1, le=720, description="Max age of segment recap candidate")
+    summary_max_tokens: int = Field(default=1200, ge=128, le=8192, description="Max tokens for segment summary generation")
+    summary_model_override: Optional[str] = Field(default=None, description="Optional model override for segment summary generation")
+
+
 class ENSConfig(BaseModel):
     """ENS feature flags for incremental rollout."""
 
@@ -594,6 +613,7 @@ class SystemConfig(BaseModel):
     document_analysis: SystemDocumentAnalysisConfig = Field(default_factory=SystemDocumentAnalysisConfig)
     conversation_context: ConversationContextConfig = Field(default_factory=ConversationContextConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    general_chat_segmentation: GeneralChatSegmentationConfig = Field(default_factory=GeneralChatSegmentationConfig)
     ens: ENSConfig = Field(default_factory=ENSConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

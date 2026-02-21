@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Fo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from chorus_engine.config import ConfigLoader, SystemConfig, CharacterConfig, UserIdentityConfig
@@ -28,6 +28,7 @@ from chorus_engine.db import get_db, init_db
 from chorus_engine.models import Conversation, Thread, Message, Memory, MessageRole, MemoryType, ConversationSummary, MomentPin, ENSToolCallRequest
 from chorus_engine.models.continuity import CharacterBackupState
 from chorus_engine.repositories import (
+    ConversationSegmentRepository,
     ConversationRepository,
     ThreadRepository,
     MessageRepository,
@@ -44,6 +45,7 @@ from chorus_engine.services.memory_extraction import MemoryExtractionService
 from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
+from chorus_engine.db.conversation_segment_vector_store import ConversationSegmentVectorStore
 from pathlib import Path
 
 # Phase 5 imports
@@ -205,20 +207,28 @@ def _apply_media_prefix(segments: list[StructuredSegment], media_prefix: str) ->
 def _infer_last_generated_media_type(db: Session, conversation_id: str) -> str:
     """Infer latest generated media type for iteration-style requests."""
     try:
-        image_repo = ImageRepository(db)
-        video_repo = VideoRepository(db)
-        latest_images = image_repo.get_by_conversation(conversation_id, limit=1)
-        latest_videos = video_repo.list_videos_for_conversation(conversation_id, limit=1)
-        latest_image = latest_images[0] if latest_images else None
-        latest_video = latest_videos[0] if latest_videos else None
-        if latest_image and latest_video:
-            if latest_image.created_at and latest_video.created_at:
-                return "image" if latest_image.created_at >= latest_video.created_at else "video"
-            return "image"
-        if latest_image:
-            return "image"
-        if latest_video:
-            return "video"
+        from chorus_engine.models.conversation import Message, MessageRole, Thread
+
+        # Keep iteration inference local: only consider recent context window.
+        recent_messages = (
+            db.query(Message)
+            .join(Thread, Message.thread_id == Thread.id)
+            .filter(
+                Thread.conversation_id == conversation_id,
+                Message.deleted_at.is_(None),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(5)
+            .all()
+        )
+        for msg in recent_messages:
+            if msg.role != MessageRole.ASSISTANT:
+                continue
+            meta = msg.meta_data or {}
+            if isinstance(meta, dict) and meta.get("video_id"):
+                return "video"
+            if isinstance(meta, dict) and meta.get("image_id"):
+                return "image"
     except Exception as e:
         logger.warning(f"[MEDIA TOOLING] Failed inferring last generated media type: {e}")
     return "none"
@@ -328,6 +338,7 @@ app_state = {
     "llm_client": None,
     "vector_store": None,
     "moment_pin_vector_store": None,
+    "segment_summary_vector_store": None,
     "embedding_service": None,
     "extraction_service": None,  # Phase 4.1
     # "extraction_manager": None,  # Phase 4.1 - REMOVED in Phase 7
@@ -608,6 +619,8 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Conversation summary vector store initialized")
         moment_pin_vector_store = MomentPinVectorStore(Path("data/vector_store"))
         logger.info("✓ Moment pin vector store initialized")
+        segment_summary_vector_store = ConversationSegmentVectorStore(Path("data/vector_store"))
+        logger.info("? Conversation segment summary vector store initialized")
         
         # Phase 7.5: Fast keyword-based intent detection (no VRAM overhead)
         from chorus_engine.services.keyword_intent_detection import KeywordIntentDetector
@@ -809,6 +822,7 @@ async def lifespan(app: FastAPI):
         app_state["vector_store"] = vector_store
         app_state["summary_vector_store"] = summary_vector_store  # Conversation summary search
         app_state["moment_pin_vector_store"] = moment_pin_vector_store
+        app_state["segment_summary_vector_store"] = segment_summary_vector_store
         app_state["embedding_service"] = embedding_service
         app_state["extraction_service"] = extraction_service
         app_state["keyword_detector"] = keyword_detector  # Phase 7.5: Keyword-based intent detection
@@ -1636,6 +1650,7 @@ class ConversationCreate(BaseModel):
     primary_user: Optional[str] = None
     conversation_kind: Optional[str] = "standard"
     relationship_id: Optional[str] = None
+    origin_conversation_id: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -1649,6 +1664,31 @@ class ConversationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    class Config:
+        from_attributes = True
+
+
+class ConversationSegmentResponse(BaseModel):
+    id: str
+    conversation_id: str
+    relationship_id: Optional[str] = None
+    surface_id: Optional[str] = None
+    surface_instance_id: Optional[str] = None
+    segment_kind: str
+    state: str
+    start_message_id: Optional[str] = None
+    end_message_id: Optional[str] = None
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    usefulness: str
+    summary_text: Optional[str] = None
+    key_events: List[str] = Field(default_factory=list)
+    open_threads: List[str] = Field(default_factory=list)
+    participants: List[str] = Field(default_factory=list)
+    summary_created_at: Optional[datetime] = None
+    resume_source_segment_id: Optional[str] = None
+    resume_recap_injected_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 
@@ -5546,6 +5586,46 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     
     return conversation
+
+
+@app.get("/conversations/{conversation_id}/segments", response_model=List[ConversationSegmentResponse])
+async def list_conversation_segments(
+    conversation_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+):
+    """List episodic segments for a conversation."""
+    conv_repo = ConversationRepository(db)
+    conversation = conv_repo.get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    seg_repo = ConversationSegmentRepository(db)
+    segments = seg_repo.list_segments(conversation_id=conversation_id, skip=skip, limit=limit)
+    return [
+        ConversationSegmentResponse(
+            id=seg.id,
+            conversation_id=seg.conversation_id,
+            relationship_id=seg.relationship_id,
+            surface_id=seg.surface_id,
+            surface_instance_id=seg.surface_instance_id,
+            segment_kind=seg.segment_kind,
+            state=seg.state,
+            start_message_id=seg.start_message_id,
+            end_message_id=seg.end_message_id,
+            started_at=seg.started_at,
+            ended_at=seg.ended_at,
+            usefulness=seg.usefulness,
+            summary_text=seg.summary_text,
+            key_events=list(seg.key_events or []),
+            open_threads=list(seg.open_threads or []),
+            participants=list(seg.participants or []),
+            summary_created_at=seg.summary_created_at,
+            resume_source_segment_id=seg.resume_source_segment_id,
+            resume_recap_injected_at=seg.resume_recap_injected_at,
+        )
+        for seg in segments
+    ]
 
 
 @app.get("/conversations/{conversation_id}/export")

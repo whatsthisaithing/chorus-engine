@@ -232,6 +232,21 @@ heartbeat:
     skip_if_unchanged: true          # Skip if manifest fingerprint unchanged since last success
     verify_archive: true             # Validate archive integrity with zipfile test
 
+# General Chat episodic segmentation (Relationship v1)
+general_chat_segmentation:
+  enabled: true
+  idle_soft_minutes: 30             # Soft threshold: split only when trailing activity density is low
+  idle_hard_minutes: 120            # Hard threshold: always split
+  sleep_break_minutes: 360          # Sleep heuristic: always split
+  density_window_messages: 8        # Trailing message window for density checks
+  density_low_turn_count_max: 4     # Low-density max turn count in trailing window
+  density_low_avg_chars_max: 180    # Low-density max average chars in trailing window
+  pending_question_tail_messages: 2 # Avoid splitting if unresolved assistant question is very recent
+  resume_recent_useful_segments: 3  # Recap source search depth
+  resume_max_age_hours: 72          # Recap source recency bound
+  summary_max_tokens: 1200          # Segment summary generation cap
+  summary_model_override: null      # Optional override model id
+
 # Executive Nervous System (ENS) rollout flags
 ens:
   enabled: false
