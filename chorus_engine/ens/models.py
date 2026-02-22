@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import uuid
 
+from chorus_engine.ens.time_utils import next_created_at_us
+
 
 def _id() -> str:
     return str(uuid.uuid4())
@@ -35,6 +37,7 @@ class SignalEnvelope:
     tags: List[str] = field(default_factory=list)
     signal_id: str = field(default_factory=_id)
     trace_id: str = field(default_factory=_id)
+    created_at_us: int = field(default_factory=next_created_at_us)
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     schema_version: str = "ens.v2"
 

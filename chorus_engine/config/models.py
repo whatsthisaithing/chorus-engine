@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Literal, Dict, List
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import AliasChoices, BaseModel, Field, field_validator, ConfigDict
 
 
 class LLMConfig(BaseModel):
@@ -591,6 +591,62 @@ class ENSConfig(BaseModel):
     slice75_llm_control_plane_ownership: bool = Field(
         default=False,
         description="ENS owns LLM control-plane operations (health/load/unload/reload/switch)",
+    )
+    v3_scheduler_enabled: bool = Field(
+        default=False,
+        description="ENS v3: route runnable work through scheduler/queue boundary",
+    )
+    v3_arbitration_enabled: bool = Field(
+        default=False,
+        description="ENS v3: enable arbitration and deterministic scheduler selection rules",
+    )
+    v3_loop_sessions_enabled: bool = Field(
+        default=False,
+        description="ENS v3: enable loop sessions as signal producers",
+    )
+    v3_structured_control_enabled: bool = Field(
+        default=False,
+        description="ENS v3: accept loop control only from structured control channel",
+    )
+    v3_assistant_result_enabled: bool = Field(
+        default=False,
+        description="ENS v3: enable canonical AssistantResult normalization path",
+    )
+    v3_context_compression_enabled: bool = Field(
+        default=False,
+        description="ENS v3: enable deterministic context compression hooks",
+    )
+    v3_sentinel_fallback_enabled: bool = Field(
+        default=False,
+        description="ENS v3: keep sentinel payload parsing fallback enabled",
+    )
+    scheduler_sync_ticks_per_ingress: int = Field(
+        default=1,
+        ge=0,
+        le=10,
+        validation_alias=AliasChoices("scheduler_sync_ticks_per_ingress", "v3_sync_ticks_per_ingress"),
+        description="ENS scheduler: maximum synchronous scheduler ticks per ingress",
+    )
+    scheduler_drain_interval_ms: int = Field(
+        default=250,
+        ge=250,
+        le=500,
+        validation_alias=AliasChoices("scheduler_drain_interval_ms", "v3_background_drain_interval_ms"),
+        description="ENS scheduler: periodic scheduler drain interval in milliseconds",
+    )
+    scheduler_max_ticks_per_drain: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices("scheduler_max_ticks_per_drain", "v3_max_ticks_per_drain"),
+        description="ENS scheduler: maximum ticks per background drain cycle",
+    )
+    scheduler_max_wall_ms_per_drain: int = Field(
+        default=50,
+        ge=1,
+        le=5000,
+        validation_alias=AliasChoices("scheduler_max_wall_ms_per_drain", "v3_max_wall_ms_per_drain"),
+        description="ENS scheduler: maximum wall-clock milliseconds per background drain cycle",
     )
     debug_capture_full_prompt: bool = Field(
         default=False,

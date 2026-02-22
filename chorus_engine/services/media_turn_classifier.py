@@ -14,6 +14,11 @@ from typing import Iterable
 ACKNOWLEDGEMENT_PATTERNS = (
     r"^\s*(perfect|lovely|nice|great|awesome|beautiful)\W*\s*$",
     r"^\s*(love it|that's nice|looks good)\W*\s*$",
+    r"\b(very\s+nice|so\s+nice|really\s+nice)\b",
+    r"\b(looks\s+amazing|that'?s?\s+amazing|fantastic|excellent)\b",
+)
+STRONG_ACKNOWLEDGEMENT_PATTERNS = (
+    r"\b(that'?s?\s+my\s+kind\s+of\s+place|my\s+kind\s+of\s+place)\b",
 )
 
 ACK_MAX_WORDS = 6
@@ -113,8 +118,10 @@ def classify_media_turn(
     # explicit media request and no iteration intent.
     is_short_ack = (len(text.split()) <= ACK_MAX_WORDS) or (len(text) <= ACK_MAX_CHARS)
     is_acknowledgement = bool(
-        is_short_ack
-        and any(re.search(pattern, text) for pattern in ACKNOWLEDGEMENT_PATTERNS)
+        (
+            (is_short_ack and any(re.search(pattern, text) for pattern in ACKNOWLEDGEMENT_PATTERNS))
+            or any(re.search(pattern, text) for pattern in STRONG_ACKNOWLEDGEMENT_PATTERNS)
+        )
         and not explicit_image
         and not explicit_video
         and not is_iteration_request

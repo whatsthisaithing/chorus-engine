@@ -49,12 +49,11 @@ from chorus_engine.services.media_offer_policy import (
 from chorus_engine.services.tool_payload import (
     MOMENT_PIN_COLD_RECALL_TOOL,
     detect_malformed_tool_payload_block,
-    extract_tool_payload,
-    parse_tool_payload,
     strip_malformed_tool_payload_block,
     validate_cold_recall_payload,
     validate_tool_payload,
 )
+from chorus_engine.ens.assistant_result import AssistantResult, ControlDirective, ToolRequest, normalize_assistant_result
 from chorus_engine.services.structured_response import (
     parse_structured_response,
     serialize_structured_response,
@@ -159,6 +158,47 @@ class ENSDispatcher:
     def _slice7_enabled(self) -> bool:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         return bool(ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice7_unified_llm_invocation", False))
+
+    @staticmethod
+    def _assistant_result_from_invocation(raw_content: str, invocation: Dict[str, Any]) -> AssistantResult:
+        """Use canonical invocation-normalized AssistantResult when present."""
+        normalized = invocation.get("assistant_result")
+        if isinstance(normalized, dict):
+            control_obj = normalized.get("control")
+            control = None
+            if isinstance(control_obj, dict) and isinstance(control_obj.get("action"), str):
+                args = control_obj.get("args")
+                control = ControlDirective(
+                    action=control_obj["action"].strip().upper(),
+                    args=dict(args) if isinstance(args, dict) else {},
+                )
+            tool_requests: List[ToolRequest] = []
+            for item in normalized.get("tool_requests") or []:
+                if not isinstance(item, dict):
+                    continue
+                tool_name = item.get("tool_name")
+                if not isinstance(tool_name, str) or not tool_name.strip():
+                    continue
+                payload = item.get("payload")
+                tool_requests.append(
+                    ToolRequest(
+                        tool_name=tool_name.strip(),
+                        payload=dict(payload) if isinstance(payload, dict) else {},
+                        request_id=item.get("request_id") if isinstance(item.get("request_id"), str) else None,
+                    )
+                )
+            payload_obj = normalized.get("payload_obj")
+            return AssistantResult(
+                raw_content=raw_content,
+                display_text=str(normalized.get("display_text") or ""),
+                control=control,
+                tool_requests=tool_requests,
+                payload_present=bool(normalized.get("payload_present")),
+                payload_parseable=bool(normalized.get("payload_parseable")),
+                payload_obj=dict(payload_obj) if isinstance(payload_obj, dict) else None,
+                provider_raw=None,
+            )
+        return normalize_assistant_result(raw_content=raw_content)
 
     async def execute(
         self,
@@ -1084,10 +1124,10 @@ class ENSDispatcher:
             error = (invocation.get("error") or {}).get("message") or "LLM invocation failed"
             raise RuntimeError(error)
         raw_content = invocation.get("output_text") or ""
-        payload_extraction = extract_tool_payload(raw_content)
-        payload_obj = parse_tool_payload(payload_extraction.payload_text)
+        assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
+        payload_obj = assistant_result.payload_obj
         validated_tool_calls = validate_tool_payload(payload_obj)
-        display_text = payload_extraction.display_text
+        display_text = assistant_result.display_text
         cold_recall_requested = False
         cold_recall_executed = False
         cold_recall_rejected_reason: Optional[str] = None
@@ -1160,10 +1200,10 @@ class ENSDispatcher:
                                 cold_recall_executed = True
                                 invocation = rerun_invocation
                                 raw_content = rerun_invocation.get("output_text") or ""
-                                payload_extraction = extract_tool_payload(raw_content)
-                                payload_obj = parse_tool_payload(payload_extraction.payload_text)
+                                assistant_result = self._assistant_result_from_invocation(raw_content, rerun_invocation)
+                                payload_obj = assistant_result.payload_obj
                                 validated_tool_calls = validate_tool_payload(payload_obj)
-                                display_text = payload_extraction.display_text
+                                display_text = assistant_result.display_text
                                 logger.info(
                                     "[MOMENT PIN] cold_recall_rerun_executed",
                                     extra={
@@ -1240,8 +1280,8 @@ class ENSDispatcher:
             repair_invocation = await self.llm_invoker.invoke(repair_request)
             if repair_invocation.get("status") == "success":
                 repaired_raw = repair_invocation.get("output_text") or ""
-                repaired_extraction = extract_tool_payload(repaired_raw)
-                repaired_payload_obj = parse_tool_payload(repaired_extraction.payload_text)
+                repaired_assistant_result = self._assistant_result_from_invocation(repaired_raw, repair_invocation)
+                repaired_payload_obj = repaired_assistant_result.payload_obj
                 repaired_validated = validate_tool_payload(repaired_payload_obj)
                 if _count_allowed_tool_calls(repaired_validated, allowed_tools_set) > 0:
                     logger.info(
@@ -1250,10 +1290,10 @@ class ENSDispatcher:
                     )
                     invocation = repair_invocation
                     raw_content = repaired_raw
-                    payload_extraction = repaired_extraction
+                    assistant_result = repaired_assistant_result
                     payload_obj = repaired_payload_obj
                     validated_tool_calls = repaired_validated
-                    display_text = repaired_extraction.display_text
+                    display_text = repaired_assistant_result.display_text
                 else:
                     logger.warning(
                         "[MEDIA TOOLING] retry_payload_repair_failed",
@@ -1277,7 +1317,7 @@ class ENSDispatcher:
         malformed_tool_payload_non_sentinel = False
         malformed_payload_type: Optional[str] = None
         assistant_metadata: Dict[str, Any] = {}
-        if payload_extraction.payload_text is None:
+        if not assistant_result.payload_present:
             stripped_text, stripped, payload_type = strip_malformed_tool_payload_block(display_text)
             if stripped:
                 malformed_tool_payload_non_sentinel = True
@@ -1396,8 +1436,8 @@ class ENSDispatcher:
             "content_length": len(display_text),
             "response_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
             "response_excerpt": raw_content[:240],
-            "tool_payload_present": payload_extraction.payload_text is not None,
-            "tool_payload_parseable": payload_obj is not None,
+            "tool_payload_present": bool(assistant_result.payload_present),
+            "tool_payload_parseable": bool(assistant_result.payload_parseable),
             "tool_parse_status": (
                 "malformed_non_sentinel"
                 if malformed_tool_payload_non_sentinel and payload_obj is None
@@ -1471,11 +1511,11 @@ class ENSDispatcher:
         llm_output = params.get("llm_output") or {}
         media_gate_snapshot = params.get("media_gate_snapshot") or {}
         raw_content = llm_output.get("raw_content") or llm_output.get("content") or ""
-        payload_extraction = extract_tool_payload(raw_content)
-        payload_obj = parse_tool_payload(payload_extraction.payload_text)
+        assistant_result = normalize_assistant_result(raw_content=raw_content)
+        payload_obj = assistant_result.payload_obj
         media_tool_calls = validate_tool_payload(payload_obj)
         cold_recall_call = validate_cold_recall_payload(payload_obj)
-        parse_status = "ok" if payload_obj is not None else "none_or_invalid"
+        parse_status = "ok" if assistant_result.payload_parseable else "none_or_invalid"
 
         blocked_reasons: List[str] = []
         blocked_calls: List[Dict[str, Any]] = []
@@ -1588,8 +1628,8 @@ class ENSDispatcher:
                     db.commit()
 
         result = {
-            "tool_payload_present": payload_extraction.payload_text is not None,
-            "tool_payload_parseable": payload_obj is not None,
+            "tool_payload_present": bool(assistant_result.payload_present),
+            "tool_payload_parseable": bool(assistant_result.payload_parseable),
             "tool_parse_status": parse_status,
             "accepted_tool_calls": accepted,
             "pending_tool_calls": [

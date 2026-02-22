@@ -1031,6 +1031,19 @@ window.App = {
         }
     },
 
+    async reloadThreadMessagesFromServer() {
+        if (!this.state.selectedThreadId) return;
+        try {
+            const messages = await API.listMessages(this.state.selectedThreadId);
+            this.state.messages = messages;
+            UI.renderMessages(this.state.messages, this.state.conversationSegments);
+            this.clearMessageSelection();
+            setTimeout(() => UI.scrollToBottom(), 0);
+        } catch (error) {
+            console.warn('Failed to reload thread messages:', error);
+        }
+    },
+
     updateGeneralChatButtonState() {
         const btn = document.getElementById('generalChatBtn');
         if (!btn) return;
@@ -3136,7 +3149,7 @@ window.App = {
                     
                     // Scene capture now returns same format as normal image generation
                     if (result.success) {
-                        UI.appendGeneratedImage(result);
+                        await this.reloadThreadMessagesFromServer();
                         UI.showToast('Scene captured!', 'success');
                         await this.refreshGallery();
                     } else {
@@ -3159,7 +3172,7 @@ window.App = {
                     }
                     
                     if (result.success) {
-                        UI.appendGeneratedImage(result);
+                        await this.reloadThreadMessagesFromServer();
                         UI.showToast('Image generated successfully!', 'success');
                         
                         // Phase 9: Refresh gallery after image generation
@@ -3277,7 +3290,7 @@ window.App = {
             }
             
             if (result.success) {
-                UI.appendGeneratedImage(result);
+                await this.reloadThreadMessagesFromServer();
             } else {
                 UI.showToast('Image generation failed: ' + (result.error || 'Unknown error'), 'error');
             }
@@ -3356,7 +3369,7 @@ window.App = {
                 }
                 
                 if (result.success) {
-                    UI.appendGeneratedVideo(result);
+                    await this.reloadThreadMessagesFromServer();
                     UI.showToast(`Video generated! (${result.format}, ${result.duration_seconds}s)`, 'success');
                     await this.refreshGallery();
                 } else {
@@ -3404,7 +3417,7 @@ window.App = {
             }
             
             if (result.success) {
-                UI.appendGeneratedVideo(result);
+                await this.reloadThreadMessagesFromServer();
                 UI.showToast(`Video generated! (${result.format})`, 'success');
             } else {
                 UI.showToast('Video generation failed: ' + (result.error || 'Unknown error'), 'error');

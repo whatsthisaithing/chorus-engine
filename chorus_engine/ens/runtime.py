@@ -16,6 +16,7 @@ from chorus_engine.db.database import SessionLocal
 from chorus_engine.ens.models import ENSAction, ENSOutcome, SignalEnvelope
 from chorus_engine.ens.dispatcher import ENSDispatcher
 from chorus_engine.ens.decision_store import ENSDecisionStore
+from chorus_engine.ens.scheduler import ENSScheduler
 from chorus_engine.ens.session_registry import ENSSessionRegistry
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.surface_router import SurfaceRouter
@@ -41,12 +42,82 @@ class ENSRuntime:
     def __init__(self, app_state: Dict[str, Any]) -> None:
         self.app_state = app_state
         self.dispatcher = ENSDispatcher(app_state)
+        self.scheduler = ENSScheduler()
         self.session_registry = ENSSessionRegistry()
         self.decision_store = ENSDecisionStore()
 
-    async def ingest(self, signal: SignalEnvelope, ctx: Optional[ENSContext] = None) -> ENSOutcome:
+    def _ens_cfg(self) -> Any:
+        cfg = self.app_state.get("system_config")
+        return getattr(cfg, "ens", None) if cfg else None
+
+    def _v3_scheduler_enabled(self) -> bool:
+        ens_cfg = self._ens_cfg()
+        return bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "v3_scheduler_enabled", False)
+        )
+
+    async def enqueue_signal(self, signal: SignalEnvelope) -> Dict[str, Any]:
+        """Queue a signal for v3 scheduler processing."""
+        db = SessionLocal()
+        try:
+            row = self.scheduler.enqueue(db, signal)
+            return {
+                "queue_id": row.queue_id,
+                "signal_id": row.signal_id,
+                "status": row.status,
+                "priority_tier": row.priority_tier,
+                "created_at_us": row.created_at_us,
+            }
+        finally:
+            db.close()
+
+    async def scheduler_tick(self, ctx: Optional[ENSContext] = None) -> Optional[ENSOutcome]:
+        """Execute one scheduler tick using current runtime ingest path."""
         if ctx is None:
             ctx = ENSContext(app_state=self.app_state)
+        db = SessionLocal()
+        try:
+            return await self.scheduler.tick(
+                db,
+                execute_signal=lambda signal: self.ingest(signal, ctx, _force_legacy_execute=True),
+            )
+        finally:
+            db.close()
+
+    async def ingest(
+        self,
+        signal: SignalEnvelope,
+        ctx: Optional[ENSContext] = None,
+        *,
+        _force_legacy_execute: bool = False,
+    ) -> ENSOutcome:
+        if ctx is None:
+            ctx = ENSContext(app_state=self.app_state)
+
+        if not _force_legacy_execute and self._v3_scheduler_enabled():
+            queued = await self.enqueue_signal(signal)
+            ens_cfg = self._ens_cfg()
+            max_ticks = int(getattr(ens_cfg, "scheduler_sync_ticks_per_ingress", 1) or 0)
+            for _ in range(max_ticks):
+                outcome = await self.scheduler_tick(ctx)
+                if outcome is None:
+                    break
+                if outcome.signal_id == signal.signal_id:
+                    return outcome
+            return ENSOutcome(
+                decision_id=f"queued:{queued.get('queue_id')}",
+                trace_id=signal.trace_id,
+                signal_id=signal.signal_id,
+                actions=[],
+                action_results=[],
+                response_payload={
+                    "queued": True,
+                    "queue_id": queued.get("queue_id"),
+                    "status": queued.get("status"),
+                },
+            )
 
         db = SessionLocal()
         try:

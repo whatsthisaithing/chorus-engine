@@ -14,7 +14,16 @@ from .continuity import (
 from .workflow import Workflow
 from .document import Document, DocumentChunk, DocumentAccessLog, CodeExecutionLog
 from .custom_model import DownloadedModel
-from .ens import ENSSession, ENSDecision, ENSActionResult, ENSToolCallRequest, SurfaceBinding, SurfaceEgressIntent
+from .ens import (
+    ENSSession,
+    ENSDecision,
+    ENSActionResult,
+    ENSToolCallRequest,
+    SurfaceBinding,
+    SurfaceEgressIntent,
+    ENSSignalQueue,
+    ENSSchedulerTick,
+)
 from .relationship import Relationship, RelationshipSurface
 
 __all__ = [
@@ -47,6 +56,8 @@ __all__ = [
     "ENSToolCallRequest",
     "SurfaceBinding",
     "SurfaceEgressIntent",
+    "ENSSignalQueue",
+    "ENSSchedulerTick",
     "Relationship",
     "RelationshipSurface",
 ]

@@ -250,6 +250,7 @@ general_chat_segmentation:
 # Executive Nervous System (ENS) rollout flags
 ens:
   enabled: false
+  # Slice ownership rollout flags (temporary during migration)
   slice1_chat_ownership: false
   nonstream_intake_only: true
   streaming_intake_only: true
@@ -265,6 +266,21 @@ ens:
   slice65_egress_outbox_ownership: false  # DEV-ONLY rollout flag (surface egress outbox ownership)
   slice7_unified_llm_invocation: false  # DEV-ONLY rollout flag (unified LLM invoker ownership)
   slice75_llm_control_plane_ownership: false  # DEV-ONLY rollout flag (LLM control-plane ownership)
+  
+  # v3 rollout flags (temporary until ENS migration completes)
+  v3_scheduler_enabled: false  # Route runnable work through queue + scheduler tick boundary
+  v3_arbitration_enabled: false  # Enable v3 arbitration policy path
+  v3_loop_sessions_enabled: false  # Enable LoopSession as signal producer
+  v3_structured_control_enabled: false  # Accept control only from structured AssistantResult.control
+  v3_assistant_result_enabled: false  # Enable canonical AssistantResult normalization path
+  v3_context_compression_enabled: false  # Enable deterministic context compression hooks
+  v3_sentinel_fallback_enabled: true  # Keep sentinel payload fallback active for compatibility
+  
+  # Permanent scheduler operation knobs (retained after migration)
+  scheduler_sync_ticks_per_ingress: 1  # Bounded opportunistic ticks per ingress (0-10)
+  scheduler_drain_interval_ms: 250  # Periodic safety drain cadence (recommended 250-500ms)
+  scheduler_max_ticks_per_drain: 10  # Max ticks processed in one drain cycle
+  scheduler_max_wall_ms_per_drain: 50  # Max wall-clock time per drain cycle
   debug_capture_full_prompt: false  # Debug-only durable knob: include full assembled prompt/messages in ens_conversation logs
 
 # Startup synchronization

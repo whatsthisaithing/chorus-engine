@@ -347,3 +347,63 @@ def test_slice25_iteration_not_triggered_by_generic_another_without_recent_media
     assert snapshot.get("turn_classification") != "iterate_media"
     assert snapshot.get("is_iteration_request") is False
     assert snapshot.get("requested_media_type") == "none"
+
+
+def test_slice25_acknowledgement_turn_blocks_proactive_media_offer(client, db, helpers):
+    helpers.app_module.app_state["llm_client"] = _LLMClientWithPayload(
+        "<assistant_response><speech>Glad you liked it.</speech></assistant_response>\n"
+        "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+        '{"version":1,"tool_calls":[{"id":"ack-offer","tool":"image.generate","requires_approval":true,"args":{"prompt":"forest dawn"}}]}\n'
+        "---CHORUS_TOOL_PAYLOAD_END---"
+    )
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+    _conversation_id, thread_id = helpers.create_conversation_thread()
+
+    resp = client.post(
+        f"/threads/{thread_id}/messages",
+        json={
+            "message": "Oh... that's my kind of place. Very nice.",
+            "metadata": {"client_message_id": "slice25-ack-offer-block-1"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("pending_tool_calls") == []
+
+    decision = _latest_decision(db)
+    assert decision is not None
+
+    media_gate = (
+        db.query(ENSActionResult)
+        .filter(
+            ENSActionResult.decision_id == decision.decision_id,
+            ENSActionResult.kind == "media.gating.evaluate",
+        )
+        .first()
+    )
+    assert media_gate is not None
+    snapshot = (media_gate.output_json or {}).get("media_gate_snapshot") or {}
+    assert snapshot.get("requested_media_type") == "none"
+    assert snapshot.get("offer_allowed") is False
+    assert snapshot.get("media_tool_calls_allowed") is False
+    assert snapshot.get("allowed_tools_final") == []
+
+    adjudicate = (
+        db.query(ENSActionResult)
+        .filter(
+            ENSActionResult.decision_id == decision.decision_id,
+            ENSActionResult.kind == "tool_payload.adjudicate",
+        )
+        .first()
+    )
+    assert adjudicate is not None
+    output = adjudicate.output_json or {}
+    assert output.get("tool_call_count") == 0

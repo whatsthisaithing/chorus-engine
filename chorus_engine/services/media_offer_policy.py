@@ -205,6 +205,10 @@ def compute_turn_media_permissions(
             current_message_count=current_message_count,
         )
     )
+    # Acknowledgement-only turns must never trigger proactive media offers.
+    if is_acknowledgement and not explicit_allowed and not iteration_allowed:
+        image_offer_allowed_now = False
+        video_offer_allowed_now = False
 
     if allow_autopilot_media_offers is None:
         allow_autopilot_media_offers = bool(policy.offers_enabled)

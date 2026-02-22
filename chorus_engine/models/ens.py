@@ -152,3 +152,45 @@ class SurfaceEgressIntent(Base):
         Index("uq_surface_egress_intents_idempotency_key", "idempotency_key", unique=True),
         Index("ix_surface_egress_intents_status_surface", "status", "surface_id"),
     )
+
+
+class ENSSignalQueue(Base):
+    """Persistent ENS v3 signal queue entries."""
+
+    __tablename__ = "ens_signal_queue"
+
+    queue_id = Column(String(36), primary_key=True, default=_uuid)
+    signal_id = Column(String(36), nullable=False, unique=True, index=True)
+    signal_type = Column(String(100), nullable=False, index=True)
+    relationship_id = Column(String(36), nullable=True, index=True)
+    conversation_id = Column(String(36), nullable=True, index=True)
+    surface_id = Column(String(20), nullable=True, index=True)
+    priority_tier = Column(String(20), nullable=False, index=True, default="system")
+    created_at_us = Column(Integer, nullable=False, index=True)
+    idempotency_key = Column(String(255), nullable=True, index=True)
+    signal_json = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    selected_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ens_signal_queue_status_priority_created", "status", "priority_tier", "created_at_us"),
+        Index("ix_ens_signal_queue_surface_rel_status", "surface_id", "relationship_id", "status"),
+    )
+
+
+class ENSSchedulerTick(Base):
+    """Persistent scheduler selection trace for ENS v3."""
+
+    __tablename__ = "ens_scheduler_ticks"
+
+    tick_id = Column(String(36), primary_key=True, default=_uuid)
+    queue_id = Column(String(36), ForeignKey("ens_signal_queue.queue_id", ondelete="SET NULL"), nullable=True, index=True)
+    selected_signal_id = Column(String(36), nullable=True, index=True)
+    reason_trace_json = Column(JSON, nullable=False, default=dict)
+    tie_break_json = Column(JSON, nullable=True)
+    created_at_us = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

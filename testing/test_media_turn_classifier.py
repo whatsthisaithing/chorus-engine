@@ -18,3 +18,13 @@ def test_lexical_iteration_with_media_anchor_triggers():
     )
     assert signals.is_iteration_request is True
     assert signals.requested_media_type in {"either", "image"}
+
+
+def test_acknowledgement_phrase_is_detected():
+    signals = classify_media_turn(
+        message="Oh... that's my kind of place. Very nice.",
+        semantic_intents=[],
+    )
+    assert signals.is_acknowledgement is True
+    assert signals.explicit_media_request is False
+    assert signals.requested_media_type == "none"

@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from chorus_engine.ens.assistant_result import normalize_assistant_result
 
 NON_DETERMINISTIC_METADATA_KEYS = {
     "trace_id",
@@ -164,9 +165,35 @@ class LLMInvocationService:
                             request_fingerprint[:12],
                         )
                     latency_ms = int((time.perf_counter() - started) * 1000)
+                    normalized = normalize_assistant_result(
+                        raw_content=output_text,
+                        provider_raw={"finish_reason": finish_reason},
+                    )
                     return {
                         "status": "success",
                         "output_text": output_text,
+                        "assistant_result": {
+                            "display_text": normalized.display_text,
+                            "control": (
+                                {
+                                    "action": normalized.control.action,
+                                    "args": dict(normalized.control.args or {}),
+                                }
+                                if normalized.control
+                                else None
+                            ),
+                            "tool_requests": [
+                                {
+                                    "tool_name": item.tool_name,
+                                    "payload": dict(item.payload or {}),
+                                    "request_id": item.request_id,
+                                }
+                                for item in normalized.tool_requests
+                            ],
+                            "payload_present": bool(normalized.payload_present),
+                            "payload_parseable": bool(normalized.payload_parseable),
+                            "payload_obj": dict(normalized.payload_obj or {}) if normalized.payload_obj else None,
+                        },
                         "raw_response_excerpt": response.get("raw_response_excerpt"),
                         "token_usage": response.get("token_usage"),
                         "finish_reason": finish_reason,

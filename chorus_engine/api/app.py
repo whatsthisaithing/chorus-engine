@@ -355,6 +355,7 @@ app_state = {
     "ens_runtime": None,  # ENS runtime
     "ens_tool_executor": None,  # ENS tool execution callback
     "ens_scene_preview_executor": None,  # ENS scene preview callback
+    "ens_scheduler_drain_task": None,  # ENS periodic scheduler drain task
     "is_shutting_down": False,  # Reject mutating requests during shutdown drain
     "active_requests": 0,  # In-flight HTTP request counter
     "active_requests_lock": None,  # Async lock for request counter updates
@@ -566,6 +567,57 @@ async def _run_deferred_vector_health_deep_check() -> None:
         1 if repair_stats.get("document_rebuilt") else 0,
         int(repair_stats.get("errors", 0)),
     )
+
+
+async def _run_ens_scheduler_periodic_drain() -> None:
+    """Periodic safety drain for ENS scheduler queue (v3 hybrid model)."""
+    consecutive_errors = 0
+    while not bool(app_state.get("is_shutting_down", False)):
+        ens_cfg = getattr(app_state.get("system_config"), "ens", None)
+        runtime = app_state.get("ens_runtime")
+        scheduler_enabled = bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "v3_scheduler_enabled", False)
+            and runtime
+        )
+        if not scheduler_enabled:
+            await asyncio.sleep(0.5)
+            continue
+
+        interval_ms = int(getattr(ens_cfg, "scheduler_drain_interval_ms", 250) or 250)
+        max_ticks = int(getattr(ens_cfg, "scheduler_max_ticks_per_drain", 10) or 10)
+        max_wall_ms = int(getattr(ens_cfg, "scheduler_max_wall_ms_per_drain", 50) or 50)
+
+        start = time.perf_counter()
+        ticks = 0
+        try:
+            while ticks < max_ticks:
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+                if elapsed_ms >= max_wall_ms:
+                    break
+                outcome = await runtime.scheduler_tick(
+                    ENSContext(app_state=app_state, surface="system", source="scheduler")
+                )
+                if outcome is None:
+                    break
+                ticks += 1
+            consecutive_errors = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            consecutive_errors += 1
+            logger.warning(
+                "[ENS_SCHEDULER_DRAIN] periodic drain error (count=%s): %s",
+                consecutive_errors,
+                e,
+            )
+
+        # Error-only backoff: normal operation uses configured interval only.
+        sleep_seconds = max(0.05, float(interval_ms) / 1000.0)
+        if consecutive_errors > 0:
+            sleep_seconds += min(5.0, (2 ** min(consecutive_errors, 6)) * 0.05)
+        await asyncio.sleep(sleep_seconds)
 
 
 @asynccontextmanager
@@ -1172,6 +1224,8 @@ async def lifespan(app: FastAPI):
 
         # Deferred deep startup HNSW query checks are intentionally disabled.
         app_state["vector_health_deep_check_task"] = None
+        app_state["ens_scheduler_drain_task"] = asyncio.create_task(_run_ens_scheduler_periodic_drain())
+        logger.info("✓ ENS scheduler periodic drain started")
         
         logger.info(f"✓ Chorus Engine ready with {len(characters)} character(s)")
         
@@ -1221,6 +1275,18 @@ async def lifespan(app: FastAPI):
             logger.debug(f"Deferred vector health check task ended with error: {e}")
         finally:
             app_state["vector_health_deep_check_task"] = None
+
+    scheduler_drain_task = app_state.get("ens_scheduler_drain_task")
+    if scheduler_drain_task:
+        scheduler_drain_task.cancel()
+        try:
+            await scheduler_drain_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"ENS scheduler periodic drain task ended with error: {e}")
+        finally:
+            app_state["ens_scheduler_drain_task"] = None
     
     # Close persistent database session
     if app_state.get("db_session"):
@@ -4309,7 +4375,29 @@ async def _invoke_llm_control_unified(
     engine = LLMInvocationService._engine_from_client(llm_client)
     op_norm = str(op or "").strip().lower()
     model_part = str(model_id or "na")
-    idempotency_key = f"llm:control:{op_norm}:{engine}:{model_part}"
+    explicit_idempotency_key = None
+    if isinstance(metadata, dict):
+        explicit_idempotency_key = metadata.get("idempotency_key")
+    if explicit_idempotency_key:
+        idempotency_key = str(explicit_idempotency_key)
+    else:
+        scope_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "reason": reason,
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id,
+                    "surface_id": surface_id,
+                    "metadata": metadata or {},
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        nonce = uuid.uuid4().hex[:12]
+        # Control-plane operations must execute per request; avoid long-lived replay keys.
+        idempotency_key = f"llm:control:{op_norm}:{engine}:{model_part}:{scope_hash}:{nonce}"
     signal = SignalEnvelope(
         type="llm.control.requested",
         scope="GLOBAL",
