@@ -1,6 +1,10 @@
 import asyncio
+import uuid
 
-from chorus_engine.ens.models import SignalEnvelope
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from chorus_engine.ens.models import Signal
 import chorus_engine.ens.time_utils as time_utils
 from chorus_engine.models.conversation import Conversation
 from chorus_engine.models.ens import ENSDecision, ENSSchedulerTick, ENSSignalQueue, ENSToolCallRequest
@@ -8,7 +12,7 @@ from chorus_engine.models.ens import ENSDecision, ENSSchedulerTick, ENSSignalQue
 
 def test_v3_scheduler_scaffold_enqueue_and_tick_executes_selected_signal(helpers, db):
     runtime = helpers.app_module.app_state["ens_runtime"]
-    signal = SignalEnvelope(
+    signal = Signal(
         type="system.noop",
         scope="SYSTEM",
         source="test",
@@ -38,6 +42,8 @@ def test_v3_scheduler_scaffold_enqueue_and_tick_executes_selected_signal(helpers
     )
     assert tick_row is not None
     assert tick_row.reason_trace_json.get("selection") == "priority_then_created_at_then_signal_id"
+    assert int(tick_row.reason_trace_json.get("candidate_count") or 0) >= 1
+    assert tick_row.reason_trace_json.get("selected_signal_id") == signal.signal_id
 
 
 def test_v3_scheduler_deterministic_tie_break_for_identical_created_at_us(helpers):
@@ -50,7 +56,7 @@ def test_v3_scheduler_deterministic_tie_break_for_identical_created_at_us(helper
     ]
 
     for signal_id in signal_ids:
-        signal = SignalEnvelope(
+        signal = Signal(
             type="system.noop",
             scope="SYSTEM",
             source="test",
@@ -67,6 +73,72 @@ def test_v3_scheduler_deterministic_tie_break_for_identical_created_at_us(helper
         selected.append(outcome.signal_id)
 
     assert selected == sorted(signal_ids)
+
+
+def test_v3_scheduler_enqueue_dedupes_by_signal_idempotency_key(helpers, db):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    key = "slice31:dedupe:001"
+    first = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        payload={"kind": "noop"},
+        idempotency_key=key,
+    )
+    second = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        payload={"kind": "noop-2"},
+        idempotency_key=key,
+    )
+
+    first_row = asyncio.run(runtime.enqueue_signal(first))
+    second_row = asyncio.run(runtime.enqueue_signal(second))
+
+    assert second_row["queue_id"] == first_row["queue_id"]
+    assert second_row["signal_id"] == first_row["signal_id"]
+    assert (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.idempotency_key == key)
+        .count()
+        == 1
+    )
+
+
+def test_v3_scheduler_queue_db_unique_idempotency_key_enforced(db):
+    key = "slice31:db-unique:001"
+    row1 = ENSSignalQueue(
+        queue_id=str(uuid.uuid4()),
+        signal_id=str(uuid.uuid4()),
+        signal_type="system.noop",
+        priority_tier="system",
+        created_at_us=1_000_000,
+        idempotency_key=key,
+        signal_json={"type": "system.noop"},
+        status="pending",
+    )
+    db.add(row1)
+    db.commit()
+
+    row2 = ENSSignalQueue(
+        queue_id=str(uuid.uuid4()),
+        signal_id=str(uuid.uuid4()),
+        signal_type="system.noop",
+        priority_tier="system",
+        created_at_us=1_000_001,
+        idempotency_key=key,
+        signal_json={"type": "system.noop"},
+        status="pending",
+    )
+    db.add(row2)
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+
+    rows = db.query(ENSSignalQueue).filter(ENSSignalQueue.idempotency_key == key).all()
+    assert len(rows) == 1
+    assert rows[0].signal_id == row1.signal_id
 
 
 def test_time_utils_monotonic_guard_when_clock_stalls(monkeypatch):
@@ -94,7 +166,7 @@ def test_v3_scheduler_flag_path_processes_enqueued_signal_when_sync_tick_enabled
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     runtime = helpers.app_module.app_state["ens_runtime"]
-    signal = SignalEnvelope(
+    signal = Signal(
         type="system.noop",
         scope="SYSTEM",
         source="test",
@@ -117,7 +189,7 @@ def test_v3_scheduler_flag_path_returns_queued_when_sync_ticks_zero(helpers):
     ens_cfg.scheduler_sync_ticks_per_ingress = 0
 
     runtime = helpers.app_module.app_state["ens_runtime"]
-    signal = SignalEnvelope(
+    signal = Signal(
         type="system.noop",
         scope="SYSTEM",
         source="test",
@@ -179,7 +251,28 @@ def test_v3_scheduler_no_double_emit_on_replay(client, db, helpers):
     b2 = second.json()
     assert b1["user_message"]["id"] == b2["user_message"]["id"]
     assert b1["assistant_message"]["id"] == b2["assistant_message"]["id"]
+    assert sorted(b1.keys()) == sorted(b2.keys())
+    assert b1.get("pending_tool_calls") == b2.get("pending_tool_calls")
+    assert b1.get("conversation_title_updated") == b2.get("conversation_title_updated")
     assert len(db.query(ENSToolCallRequest).all()) == 1
+    assert (
+        db.query(ENSDecision)
+        .filter(ENSDecision.signal_type == "user.message")
+        .join(
+            ENSSignalQueue,
+            ENSSignalQueue.signal_id == ENSDecision.signal_id,
+        )
+        .filter(
+            ENSSignalQueue.idempotency_key
+            == "signal:user.message:"
+            + conversation_id
+            + ":"
+            + thread_id
+            + ":slice0-no-double-emit"
+        )
+        .count()
+        == 1
+    )
 
 
 def test_v3_scheduler_tool_call_sentinel_fallback_still_works(client, db, helpers):
@@ -243,7 +336,7 @@ def test_v3_scheduler_ingress_tick_and_parallel_tick_do_not_double_execute(helpe
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     runtime = helpers.app_module.app_state["ens_runtime"]
-    signal = SignalEnvelope(
+    signal = Signal(
         type="system.noop",
         scope="SYSTEM",
         source="test",
@@ -270,3 +363,29 @@ def test_v3_scheduler_ingress_tick_and_parallel_tick_do_not_double_execute(helpe
 
     decision_count = db.query(ENSDecision).filter(ENSDecision.signal_id == signal.signal_id).count()
     assert decision_count == 1
+
+
+def test_v3_scheduler_recovers_stuck_running_signal(helpers, db):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    signal = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        payload={"kind": "noop"},
+    )
+    queued = asyncio.run(runtime.enqueue_signal(signal))
+    row = db.query(ENSSignalQueue).filter(ENSSignalQueue.queue_id == queued["queue_id"]).first()
+    assert row is not None
+    row.status = "running"
+    row.claimed_at_us = max(1, (time_utils.time.time_ns() // 1000) - 5_000_000)
+    db.commit()
+
+    recovered = asyncio.run(runtime.scheduler_recover_stuck_running(ttl_seconds=1))
+    assert recovered >= 1
+
+    row = db.query(ENSSignalQueue).filter(ENSSignalQueue.queue_id == queued["queue_id"]).first()
+    assert row is not None
+    assert row.status == "pending"
+    assert row.error_message == "stuck_running_recovered"
+    assert row.claimed_at_us is None
+

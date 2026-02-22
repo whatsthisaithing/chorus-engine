@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 
 from chorus_engine.db.database import SessionLocal
-from chorus_engine.ens.models import ENSAction, ENSOutcome, SignalEnvelope
+from chorus_engine.ens.models import ENSAction, ENSOutcome, Signal
 from chorus_engine.ens.dispatcher import ENSDispatcher
 from chorus_engine.ens.decision_store import ENSDecisionStore
 from chorus_engine.ens.scheduler import ENSScheduler
@@ -22,6 +22,7 @@ from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.surface_router import SurfaceRouter
 from chorus_engine.repositories import ThreadRepository
 from chorus_engine.models.conversation import Conversation, ConversationSummary, Memory, Message, MessageRole, Thread
+from chorus_engine.models.ens import ENSActionResult, ENSDecision, ENSSignalQueue
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class ENSRuntime:
             and getattr(ens_cfg, "v3_scheduler_enabled", False)
         )
 
-    async def enqueue_signal(self, signal: SignalEnvelope) -> Dict[str, Any]:
+    async def enqueue_signal(self, signal: Signal) -> Dict[str, Any]:
         """Queue a signal for v3 scheduler processing."""
         db = SessionLocal()
         try:
@@ -86,9 +87,73 @@ class ENSRuntime:
         finally:
             db.close()
 
+    async def scheduler_recover_stuck_running(self, *, ttl_seconds: int) -> int:
+        """Recover stale running queue rows that exceeded running TTL."""
+        db = SessionLocal()
+        try:
+            ttl_us = max(1, int(ttl_seconds)) * 1_000_000
+            return self.scheduler.recover_stuck_running(db, running_ttl_us=ttl_us)
+        finally:
+            db.close()
+
+    def _replay_outcome_for_signal(self, signal_id: str, default_trace_id: str) -> Optional[ENSOutcome]:
+        """Build an ENSOutcome from the most recent persisted decision for a signal."""
+        db = SessionLocal()
+        try:
+            queue_row = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_id == signal_id)
+                .first()
+            )
+            if not queue_row:
+                return None
+            decision = (
+                db.query(ENSDecision)
+                .filter(ENSDecision.signal_id == signal_id)
+                .order_by(ENSDecision.created_at.desc())
+                .first()
+            )
+            if not decision:
+                return None
+
+            rows = (
+                db.query(ENSActionResult)
+                .filter(ENSActionResult.decision_id == decision.decision_id)
+                .order_by(ENSActionResult.created_at.asc())
+                .all()
+            )
+            action_results: List[Dict[str, Any]] = []
+            for row in rows:
+                output = dict(row.output_json or {})
+                result = {
+                    "action_id": row.action_id,
+                    "kind": row.kind,
+                    "execution_class": row.execution_class,
+                    "idempotency_key": row.idempotency_key,
+                    "status": row.status,
+                    "error_code": row.error_code,
+                    "error_message": row.error_message,
+                    "metrics": dict(row.metrics_json or {}),
+                    "output": output,
+                }
+                action_results.append(result)
+            signal_doc = dict(queue_row.signal_json or {})
+            replay_signal = Signal(**signal_doc)
+            outcome = self._build_outcome(
+                decision_id=str(decision.decision_id),
+                signal=replay_signal,
+                actions=[],
+                action_results=action_results,
+            )
+            if not outcome.trace_id:
+                outcome.trace_id = str(decision.trace_id or default_trace_id)
+            return outcome
+        finally:
+            db.close()
+
     async def ingest(
         self,
-        signal: SignalEnvelope,
+        signal: Signal,
         ctx: Optional[ENSContext] = None,
         *,
         _force_legacy_execute: bool = False,
@@ -98,18 +163,27 @@ class ENSRuntime:
 
         if not _force_legacy_execute and self._v3_scheduler_enabled():
             queued = await self.enqueue_signal(signal)
+            target_signal_id = str(queued.get("signal_id") or signal.signal_id)
+            queued_status = str(queued.get("status") or "").lower()
+            if queued_status in ("done", "completed", "failed"):
+                replay_outcome = self._replay_outcome_for_signal(target_signal_id, signal.trace_id)
+                if replay_outcome is not None:
+                    return replay_outcome
             ens_cfg = self._ens_cfg()
             max_ticks = int(getattr(ens_cfg, "scheduler_sync_ticks_per_ingress", 1) or 0)
             for _ in range(max_ticks):
                 outcome = await self.scheduler_tick(ctx)
                 if outcome is None:
                     break
-                if outcome.signal_id == signal.signal_id:
+                if outcome.signal_id == target_signal_id:
                     return outcome
+            replay_outcome = self._replay_outcome_for_signal(target_signal_id, signal.trace_id)
+            if replay_outcome is not None:
+                return replay_outcome
             return ENSOutcome(
                 decision_id=f"queued:{queued.get('queue_id')}",
                 trace_id=signal.trace_id,
-                signal_id=signal.signal_id,
+                signal_id=target_signal_id,
                 actions=[],
                 action_results=[],
                 response_payload={
@@ -492,7 +566,7 @@ class ENSRuntime:
             "output": output if output is not None else {"reason": reason},
         }
 
-    def _resolve_signal_session(self, db, signal: SignalEnvelope, ctx: ENSContext) -> SignalEnvelope:
+    def _resolve_signal_session(self, db, signal: Signal, ctx: ENSContext) -> Signal:
         if signal.scope == "SESSION" and not signal.session_id:
             ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
             slice6_enabled = bool(
@@ -558,7 +632,7 @@ class ENSRuntime:
                 signal.user_id = session.user_id
         return signal
 
-    def _propose_actions(self, db, signal: SignalEnvelope, ctx: ENSContext) -> List[ENSAction]:
+    def _propose_actions(self, db, signal: Signal, ctx: ENSContext) -> List[ENSAction]:
         if signal.type == "user.message":
             ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
             slice2_tool_parsing_ownership = bool(
@@ -1210,7 +1284,7 @@ class ENSRuntime:
         self,
         *,
         decision_id: str,
-        signal: SignalEnvelope,
+        signal: Signal,
         actions: List[ENSAction],
         action_results: List[Dict[str, Any]],
     ) -> ENSOutcome:
@@ -1371,7 +1445,7 @@ class ENSRuntime:
         self,
         db,
         decision_id: str,
-        signal: SignalEnvelope,
+        signal: Signal,
         actions: List[ENSAction],
         action_results: List[Dict[str, Any]],
     ) -> None:
@@ -1432,3 +1506,4 @@ class ENSRuntime:
                 row["output"] = sanitized_output
             sql_docs.append(row)
         return sql_docs
+

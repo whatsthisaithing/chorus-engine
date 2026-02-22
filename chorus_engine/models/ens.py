@@ -171,6 +171,7 @@ class ENSSignalQueue(Base):
     signal_json = Column(JSON, nullable=False, default=dict)
     status = Column(String(20), nullable=False, default="pending", index=True)
     selected_at = Column(DateTime, nullable=True)
+    claimed_at_us = Column(Integer, nullable=True, index=True)
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -179,6 +180,7 @@ class ENSSignalQueue(Base):
     __table_args__ = (
         Index("ix_ens_signal_queue_status_priority_created", "status", "priority_tier", "created_at_us"),
         Index("ix_ens_signal_queue_surface_rel_status", "surface_id", "relationship_id", "status"),
+        Index("uq_ens_signal_queue_idempotency_key", "idempotency_key", unique=True),
     )
 
 

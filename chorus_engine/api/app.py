@@ -125,7 +125,7 @@ from chorus_engine.services.intent_detection_service import IntentDetectionServi
 
 # Phase 10 imports (Integrated LLM)
 from chorus_engine.api.model_routes import router as model_router
-from chorus_engine.ens import ENSRuntime, ENSContext, SignalEnvelope
+from chorus_engine.ens import ENSRuntime, ENSContext, Signal
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.media_generation import ENSMediaGenerator
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
@@ -572,6 +572,7 @@ async def _run_deferred_vector_health_deep_check() -> None:
 async def _run_ens_scheduler_periodic_drain() -> None:
     """Periodic safety drain for ENS scheduler queue (v3 hybrid model)."""
     consecutive_errors = 0
+    next_recovery_check_monotonic = 0.0
     while not bool(app_state.get("is_shutting_down", False)):
         ens_cfg = getattr(app_state.get("system_config"), "ens", None)
         runtime = app_state.get("ens_runtime")
@@ -588,6 +589,8 @@ async def _run_ens_scheduler_periodic_drain() -> None:
         interval_ms = int(getattr(ens_cfg, "scheduler_drain_interval_ms", 250) or 250)
         max_ticks = int(getattr(ens_cfg, "scheduler_max_ticks_per_drain", 10) or 10)
         max_wall_ms = int(getattr(ens_cfg, "scheduler_max_wall_ms_per_drain", 50) or 50)
+        running_ttl_seconds = int(getattr(ens_cfg, "scheduler_running_ttl_seconds", 180) or 180)
+        recovery_check_interval_ms = int(getattr(ens_cfg, "scheduler_recovery_check_interval_ms", 1000) or 1000)
 
         start = time.perf_counter()
         ticks = 0
@@ -602,6 +605,20 @@ async def _run_ens_scheduler_periodic_drain() -> None:
                 if outcome is None:
                     break
                 ticks += 1
+            now_monotonic = time.perf_counter()
+            if now_monotonic >= next_recovery_check_monotonic:
+                recovered = await runtime.scheduler_recover_stuck_running(
+                    ttl_seconds=running_ttl_seconds,
+                )
+                if recovered > 0:
+                    logger.warning(
+                        "[ENS_SCHEDULER] recovered stale running signals count=%s ttl_seconds=%s",
+                        recovered,
+                        running_ttl_seconds,
+                    )
+                next_recovery_check_monotonic = (
+                    now_monotonic + (max(100, recovery_check_interval_ms) / 1000.0)
+                )
             consecutive_errors = 0
         except asyncio.CancelledError:
             raise
@@ -4207,7 +4224,7 @@ async def _ens_config_change(
     runtime = app_state.get("ens_runtime")
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-    signal = SignalEnvelope(
+    signal = Signal(
         type=signal_type,
         scope="GLOBAL",
         source="external",
@@ -4236,7 +4253,7 @@ async def _ens_message_mutation(
     runtime = app_state.get("ens_runtime")
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-    signal = SignalEnvelope(
+    signal = Signal(
         type="message.mutation_requested",
         scope="SESSION",
         source="external",
@@ -4271,7 +4288,7 @@ async def _ens_memory_moderation(
     runtime = app_state.get("ens_runtime")
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-    signal = SignalEnvelope(
+    signal = Signal(
         type="memory.moderation_requested",
         scope="SESSION",
         source="external",
@@ -4303,7 +4320,7 @@ async def _ens_admin_change(
     runtime = app_state.get("ens_runtime")
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-    signal = SignalEnvelope(
+    signal = Signal(
         type="config.admin.change_requested",
         scope="GLOBAL",
         source="external",
@@ -4334,7 +4351,7 @@ async def _ens_surface_send_request(
     runtime = app_state.get("ens_runtime")
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-    signal = SignalEnvelope(
+    signal = Signal(
         type="surface.send_message_requested",
         scope="SESSION",
         source="external",
@@ -4398,7 +4415,7 @@ async def _invoke_llm_control_unified(
         nonce = uuid.uuid4().hex[:12]
         # Control-plane operations must execute per request; avoid long-lived replay keys.
         idempotency_key = f"llm:control:{op_norm}:{engine}:{model_part}:{scope_hash}:{nonce}"
-    signal = SignalEnvelope(
+    signal = Signal(
         type="llm.control.requested",
         scope="GLOBAL",
         source="external",
@@ -4448,7 +4465,7 @@ async def _ens_simple_chat(request: ChatRequest) -> ChatResponse:
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="chat.simple",
         scope="ASSISTANT",
         source="external",
@@ -4482,11 +4499,16 @@ async def _ens_thread_chat(
         speaker_role="user",
         target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
-    signal = SignalEnvelope(
+    signal = Signal(
         type="user.message",
         scope="SESSION",
         source="external",
         assistant_id=character_id,
+        idempotency_key=(
+            f"signal:user.message:{conversation.id}:{thread_id}:{((request.metadata or {}).get('client_message_id') or (surface_fields['message_external_id'] or ''))}"
+            if ((request.metadata or {}).get("client_message_id") or surface_fields["message_external_id"])
+            else None
+        ),
         surface_id=surface_fields["surface_id"],
         surface_instance_id=surface_fields["surface_instance_id"],
         external_thread_id=surface_fields["external_thread_id"],
@@ -4561,7 +4583,7 @@ async def _ens_write_explicit_vision_memory(
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="memory.explicit_vision_create_requested",
         scope="SESSION",
         source="external",
@@ -4612,7 +4634,7 @@ async def _ens_nonstream_intake_only(
         speaker_role="user",
         target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
-    signal = SignalEnvelope(
+    signal = Signal(
         type="user.message.nonstream_intake",
         scope="SESSION",
         source="external",
@@ -4673,7 +4695,7 @@ async def _ens_history_message_add(
         speaker_role="assistant" if message.get("role") == "assistant" else "user",
         target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
     )
-    signal = SignalEnvelope(
+    signal = Signal(
         type="external.history.message",
         scope="SESSION",
         source="external",
@@ -5522,7 +5544,7 @@ async def refresh_continuity(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="continuity.bootstrap_requested",
             scope="ASSISTANT",
             source="external",
@@ -5876,7 +5898,7 @@ async def analyze_conversation_now(
             runtime = app_state.get("ens_runtime")
             if not runtime:
                 raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-            signal = SignalEnvelope(
+            signal = Signal(
                 type="analysis.manual_requested",
                 scope="SESSION",
                 source="external",
@@ -6261,7 +6283,7 @@ async def branch_conversation(
     if not runtime:
         raise HTTPException(status_code=503, detail="ENS runtime not initialized")
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="conversation.branch_requested",
         scope="SESSION",
         source=conversation.source or "web",
@@ -6322,7 +6344,7 @@ async def create_moment_pin(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="pin.create_requested",
             scope="SESSION",
             source="external",
@@ -6530,7 +6552,7 @@ async def update_moment_pin(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="pin.update_requested",
             scope="ASSISTANT",
             source="external",
@@ -6600,7 +6622,7 @@ async def delete_moment_pin(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="pin.delete_requested",
             scope="ASSISTANT",
             source="external",
@@ -8348,7 +8370,7 @@ async def send_message_stream(
                 speaker_role="user",
                 target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
             )
-            intake_signal = SignalEnvelope(
+            intake_signal = Signal(
                 type="user.message.stream_intake",
                 scope="SESSION",
                 source="external",
@@ -9488,7 +9510,7 @@ async def generate_scene_capture_prompt(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="scene_capture.preview_requested",
             scope="SESSION",
             source="external",
@@ -9674,7 +9696,7 @@ async def capture_scene(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="tool.execute_requested",
             scope="SESSION",
             source="external",
@@ -10083,7 +10105,7 @@ async def create_memory(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="memory.explicit_user_create_requested",
             scope="SESSION",
             source="external",
@@ -10803,7 +10825,7 @@ async def generate_image(
             runtime = app_state.get("ens_runtime")
             if not runtime:
                 raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-            signal = SignalEnvelope(
+            signal = Signal(
                 type="tool.execute_requested",
                 scope="SESSION",
                 source="external",
@@ -11379,7 +11401,7 @@ async def generate_video(
             runtime = app_state.get("ens_runtime")
             if not runtime:
                 raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-            signal = SignalEnvelope(
+            signal = Signal(
                 type="tool.execute_requested",
                 scope="SESSION",
                 source="external",
@@ -11634,7 +11656,7 @@ async def generate_video_scene_capture_prompt(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="scene_capture.preview_requested",
             scope="SESSION",
             source="external",
@@ -11789,7 +11811,7 @@ async def capture_video_scene(
         runtime = app_state.get("ens_runtime")
         if not runtime:
             raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-        signal = SignalEnvelope(
+        signal = Signal(
             type="tool.execute_requested",
             scope="SESSION",
             source="external",
@@ -14146,4 +14168,5 @@ if character_images_dir.exists():
 web_dir = Path(__file__).parent.parent.parent / "web"
 if web_dir.exists():
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+
 

@@ -6,7 +6,7 @@ ENS (Executive Nervous System) is the engine's centralized coordination layer fo
 
 In code, the center of gravity is:
 
-- `chorus_engine/ens/models.py` (`SignalEnvelope`, `ENSAction`, `ENSOutcome`)
+- `chorus_engine/ens/models.py` (`Signal`, `ENSAction`, `ENSOutcome`)
 - `chorus_engine/ens/runtime.py` (`ENSRuntime.ingest`)
 - `chorus_engine/ens/dispatcher.py` (action execution)
 - `chorus_engine/ens/decision_store.py` (SQL + JSONL persistence)
@@ -27,7 +27,7 @@ Current non-goals/limits in shipped code:
 
 ## Core Concepts
 
-### 1) Signals (`SignalEnvelope`)
+### 1) Signals (`Signal`)
 
 Every ENS flow starts as a normalized signal envelope:
 
@@ -123,7 +123,7 @@ sequenceDiagram
     participant DB as SQL + JSONL
 
     UI->>API: POST message
-    API->>ENS: SignalEnvelope(type=user.message)
+    API->>ENS: Signal(type=user.message)
     ENS->>ENS: resolve session/surface routing
     ENS->>ENS: propose actions
     ENS->>DISP: execute message.write_user

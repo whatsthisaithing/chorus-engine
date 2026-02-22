@@ -1,7 +1,7 @@
 """Executive Nervous System package."""
 
 from .runtime import ENSRuntime, ENSContext, ENSOutcome
-from .models import SignalEnvelope
+from .models import Signal
 from .llm_invocation_service import (
     LLMInvocationService,
     InvocationRequest,
@@ -18,7 +18,7 @@ __all__ = [
     "ENSRuntime",
     "ENSContext",
     "ENSOutcome",
-    "SignalEnvelope",
+    "Signal",
     "LLMInvocationService",
     "InvocationRequest",
     "EffectiveLLMConfig",
@@ -27,3 +27,4 @@ __all__ = [
     "ControlPlaneRequest",
     "in_control_plane_context",
 ]
+

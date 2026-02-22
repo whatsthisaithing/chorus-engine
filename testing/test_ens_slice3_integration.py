@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from chorus_engine.ens import ENSContext, SignalEnvelope
+from chorus_engine.ens import ENSContext, Signal
 from chorus_engine.models.conversation import ImageAttachment, Memory, MemoryType, Message, MessageRole, MomentPin
 from chorus_engine.models.ens import ENSActionResult, ENSDecision
 from chorus_engine.repositories import MemoryRepository
@@ -506,7 +506,7 @@ def test_slice3_heartbeat_analyze_idempotency_derives_message_ranges_when_missin
     )
     db.commit()
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="analysis.heartbeat_requested",
         scope="SESSION",
         source="external",
@@ -717,3 +717,4 @@ def test_slice3_ens_history_add_with_attachment_links_and_processes_without_llm(
 
     llm_count = db.query(ENSActionResult).filter(ENSActionResult.kind == "llm.invoke.chat").count()
     assert llm_count == 0
+

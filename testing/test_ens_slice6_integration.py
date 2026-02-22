@@ -1,6 +1,6 @@
 from chorus_engine.models.conversation import Conversation, Message, Thread
 from chorus_engine.models.ens import ENSSession, SurfaceBinding
-from chorus_engine.ens import ENSContext, SignalEnvelope
+from chorus_engine.ens import ENSContext, Signal
 import asyncio
 
 
@@ -153,7 +153,7 @@ def test_slice6_session_signal_with_conversation_hint_reuses_existing_thread(hel
     conversation_id, thread_id = helpers.create_conversation_thread()
     runtime = helpers.app_module.app_state["ens_runtime"]
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="analysis.heartbeat_requested",
         scope="SESSION",
         source="external",
@@ -189,7 +189,7 @@ def test_slice6_message_mutation_does_not_auto_create_conversation(helpers, db):
     before_conv_count = db.query(Conversation).filter(Conversation.character_id == "test_char").count()
     before_binding_count = db.query(SurfaceBinding).count()
 
-    signal = SignalEnvelope(
+    signal = Signal(
         type="message.mutation_requested",
         scope="SESSION",
         source="external",
@@ -212,3 +212,4 @@ def test_slice6_message_mutation_does_not_auto_create_conversation(helpers, db):
     latest = db.query(ENSSession).order_by(ENSSession.created_at.desc()).first()
     assert latest is not None
     assert latest.thread_id == thread_id
+

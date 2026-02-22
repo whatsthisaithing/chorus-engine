@@ -16,7 +16,7 @@ from chorus_engine.services.heartbeat_service import (
     BackgroundTaskHandler, BackgroundTask, TaskResult, TaskPriority
 )
 from chorus_engine.db.database import SessionLocal
-from chorus_engine.ens.models import SignalEnvelope
+from chorus_engine.ens.models import Signal
 from chorus_engine.ens.runtime import ENSContext
 from chorus_engine.models.conversation import Conversation
 
@@ -107,7 +107,7 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                         duration_seconds=0,
                         error="ENS runtime not available",
                     )
-                signal = SignalEnvelope(
+                signal = Signal(
                     type="analysis.heartbeat_requested",
                     scope="SESSION",
                     source="external",
@@ -521,3 +521,4 @@ class StaleConversationFinder:
             )
         
         return queued
+

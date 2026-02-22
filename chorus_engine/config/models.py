@@ -648,6 +648,18 @@ class ENSConfig(BaseModel):
         validation_alias=AliasChoices("scheduler_max_wall_ms_per_drain", "v3_max_wall_ms_per_drain"),
         description="ENS scheduler: maximum wall-clock milliseconds per background drain cycle",
     )
+    scheduler_running_ttl_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=3600,
+        description="ENS scheduler: running-state TTL before stale claim recovery",
+    )
+    scheduler_recovery_check_interval_ms: int = Field(
+        default=1000,
+        ge=100,
+        le=60000,
+        description="ENS scheduler: interval for stale running recovery sweep",
+    )
     debug_capture_full_prompt: bool = Field(
         default=False,
         description="Debug-only: include full assembled system prompt and message payload in ENS conversation logs",

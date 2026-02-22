@@ -13,7 +13,7 @@ def _id() -> str:
 
 
 @dataclass
-class SignalEnvelope:
+class Signal:
     """Normalized ingress signal for ENS processing."""
 
     type: str
@@ -34,6 +34,7 @@ class SignalEnvelope:
     message_external_id: Optional[str] = None
     priority_hint: Optional[int] = None
     blocking_hint: Optional[bool] = None
+    idempotency_key: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     signal_id: str = field(default_factory=_id)
     trace_id: str = field(default_factory=_id)
@@ -63,3 +64,4 @@ class ENSOutcome:
     actions: List[ENSAction]
     action_results: List[Dict[str, Any]]
     response_payload: Dict[str, Any] = field(default_factory=dict)
+

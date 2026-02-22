@@ -281,6 +281,8 @@ ens:
   scheduler_drain_interval_ms: 250  # Periodic safety drain cadence (recommended 250-500ms)
   scheduler_max_ticks_per_drain: 10  # Max ticks processed in one drain cycle
   scheduler_max_wall_ms_per_drain: 50  # Max wall-clock time per drain cycle
+  scheduler_running_ttl_seconds: 180  # Recover stale running claims older than this TTL
+  scheduler_recovery_check_interval_ms: 1000  # Stale-running recovery sweep cadence
   debug_capture_full_prompt: false  # Debug-only durable knob: include full assembled prompt/messages in ens_conversation logs
 
 # Startup synchronization

@@ -84,7 +84,7 @@ Important operational flags:
 
 ### Step 1: Add signal type + adapter
 
-Create/extend endpoint or internal adapter function that emits a `SignalEnvelope`.
+Create/extend endpoint or internal adapter function that emits a `Signal`.
 
 Pattern examples:
 

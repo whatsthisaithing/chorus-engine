@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from chorus_engine.ens.models import SignalEnvelope
+from chorus_engine.ens.models import Signal
 from chorus_engine.ens.runtime import ENSContext
 from chorus_engine.services.heartbeat_service import (
     BackgroundTaskHandler, BackgroundTask, TaskResult
@@ -73,7 +73,7 @@ class ContinuityBootstrapTaskHandler(BackgroundTaskHandler):
                         duration_seconds=0,
                         error="ENS runtime not available",
                     )
-                signal = SignalEnvelope(
+                signal = Signal(
                     type="continuity.bootstrap_requested",
                     scope="ASSISTANT",
                     source="external",
@@ -129,3 +129,4 @@ class ContinuityBootstrapTaskHandler(BackgroundTaskHandler):
                 duration_seconds=duration,
                 error=str(e)
             )
+
