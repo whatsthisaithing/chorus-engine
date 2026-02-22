@@ -660,6 +660,12 @@ class ENSConfig(BaseModel):
         le=60000,
         description="ENS scheduler: interval for stale running recovery sweep",
     )
+    scheduler_attention_lock_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description="ENS scheduler: deconfliction attention-lock TTL (weighting only; no reopen gating)",
+    )
     debug_capture_full_prompt: bool = Field(
         default=False,
         description="Debug-only: include full assembled system prompt and message payload in ENS conversation logs",

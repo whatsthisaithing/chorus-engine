@@ -63,6 +63,15 @@ class ENSRuntime:
         """Queue a signal for v3 scheduler processing."""
         db = SessionLocal()
         try:
+            ens_cfg = self._ens_cfg()
+            attention_lock_seconds = int(
+                getattr(ens_cfg, "scheduler_attention_lock_seconds", 120) if ens_cfg else 120
+            )
+            self.scheduler.update_floor_state_from_signal(
+                db,
+                signal,
+                attention_lock_seconds=attention_lock_seconds,
+            )
             row = self.scheduler.enqueue(db, signal)
             return {
                 "queue_id": row.queue_id,

@@ -23,6 +23,7 @@ from .ens import (
     SurfaceEgressIntent,
     ENSSignalQueue,
     ENSSchedulerTick,
+    ENSFloorControlState,
 )
 from .relationship import Relationship, RelationshipSurface
 
@@ -58,6 +59,7 @@ __all__ = [
     "SurfaceEgressIntent",
     "ENSSignalQueue",
     "ENSSchedulerTick",
+    "ENSFloorControlState",
     "Relationship",
     "RelationshipSurface",
 ]

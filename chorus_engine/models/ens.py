@@ -196,3 +196,27 @@ class ENSSchedulerTick(Base):
     tie_break_json = Column(JSON, nullable=True)
     created_at_us = Column(Integer, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ENSFloorControlState(Base):
+    """Relationship-level floor control and attention lock state.
+
+    This state is used only to influence scheduling fairness/cooldown weighting.
+    It must not hard-gate runnable signals behind surface reopen semantics.
+    """
+
+    __tablename__ = "ens_floor_control_state"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    relationship_id = Column(String(36), nullable=False, index=True)
+    active_surface_id = Column(String(20), nullable=True, index=True)
+    attention_lock_until_us = Column(Integer, nullable=True, index=True)
+    lock_source_signal_id = Column(String(36), nullable=True, index=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_ens_floor_control_state_relationship_id", "relationship_id", unique=True),
+        Index("ix_ens_floor_control_state_surface_lock", "active_surface_id", "attention_lock_until_us"),
+    )

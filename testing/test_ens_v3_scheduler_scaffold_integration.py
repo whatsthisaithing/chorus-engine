@@ -3,11 +3,12 @@ import uuid
 
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from chorus_engine.ens.models import Signal
 import chorus_engine.ens.time_utils as time_utils
 from chorus_engine.models.conversation import Conversation
-from chorus_engine.models.ens import ENSDecision, ENSSchedulerTick, ENSSignalQueue, ENSToolCallRequest
+from chorus_engine.models.ens import ENSDecision, ENSFloorControlState, ENSSchedulerTick, ENSSignalQueue, ENSToolCallRequest
 
 
 def test_v3_scheduler_scaffold_enqueue_and_tick_executes_selected_signal(helpers, db):
@@ -225,6 +226,215 @@ def test_v32_unresolved_relationship_id_fallback_normalized_once(helpers, db):
     row = db.query(ENSSignalQueue).filter(ENSSignalQueue.queue_id == queued["queue_id"]).first()
     assert row is not None
     assert row.relationship_id == "system/unknown"
+
+
+def test_v33_attention_lock_weights_non_user_selection_without_gating(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_attention_lock_seconds = 120
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    rel = "rel-v33-lock"
+
+    user = Signal(
+        type="user.message",
+        scope="SESSION",
+        source="test",
+        relationship_hint=rel,
+        surface_id="web",
+        payload={"conversation_id": "conv-v33", "thread_id": "thread-v33", "content": "lock web"},
+    )
+    asyncio.run(runtime.enqueue_signal(user))
+
+    older_other_surface = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        relationship_hint=rel,
+        surface_id="discord",
+        payload={"kind": "other-surface"},
+    )
+    older_other_surface.created_at_us = 6_000_000
+    asyncio.run(runtime.enqueue_signal(older_other_surface))
+
+    newer_locked_surface = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        relationship_hint=rel,
+        surface_id="web",
+        payload={"kind": "locked-surface"},
+    )
+    newer_locked_surface.created_at_us = 6_000_100
+    asyncio.run(runtime.enqueue_signal(newer_locked_surface))
+
+    # User preemption first.
+    first = asyncio.run(runtime.scheduler_tick())
+    assert first is not None
+    assert first.signal_id == user.signal_id
+
+    # Then non-user selection should be influenced by lock to prefer web despite created_at order.
+    second = asyncio.run(runtime.scheduler_tick())
+    assert second is not None
+    assert second.signal_id == newer_locked_surface.signal_id
+
+    tick = (
+        db.query(ENSSchedulerTick)
+        .filter(ENSSchedulerTick.selected_signal_id == newer_locked_surface.signal_id)
+        .first()
+    )
+    assert tick is not None
+    assert bool((tick.reason_trace_json or {}).get("attention_lock_applied")) is True
+
+    # No reopen gating: remaining non-active-surface signal still runnable next tick.
+    third = asyncio.run(runtime.scheduler_tick())
+    assert third is not None
+    assert third.signal_id == older_other_surface.signal_id
+
+    lock_state = (
+        db.query(ENSFloorControlState)
+        .filter(ENSFloorControlState.relationship_id == rel)
+        .first()
+    )
+    assert lock_state is not None
+    assert lock_state.active_surface_id == "web"
+
+
+def test_v33_expired_attention_lock_does_not_apply_weighting(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_attention_lock_seconds = 120
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    rel = "rel-v33-expired-lock"
+
+    user = Signal(
+        type="user.message",
+        scope="SESSION",
+        source="test",
+        relationship_hint=rel,
+        surface_id="web",
+        payload={"conversation_id": "conv-v33-expired", "thread_id": "thread-v33-expired", "content": "lock web"},
+    )
+    asyncio.run(runtime.enqueue_signal(user))
+    first = asyncio.run(runtime.scheduler_tick())
+    assert first is not None
+    assert first.signal_id == user.signal_id
+
+    lock_state = (
+        db.query(ENSFloorControlState)
+        .filter(ENSFloorControlState.relationship_id == rel)
+        .first()
+    )
+    assert lock_state is not None
+    lock_state.attention_lock_until_us = 1
+    db.commit()
+
+    older_other_surface = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        relationship_hint=rel,
+        surface_id="discord",
+        payload={"kind": "older-other-surface"},
+    )
+    older_other_surface.created_at_us = 7_000_000
+    asyncio.run(runtime.enqueue_signal(older_other_surface))
+
+    newer_locked_surface = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        relationship_hint=rel,
+        surface_id="web",
+        payload={"kind": "newer-web-surface"},
+    )
+    newer_locked_surface.created_at_us = 7_000_100
+    asyncio.run(runtime.enqueue_signal(newer_locked_surface))
+
+    second = asyncio.run(runtime.scheduler_tick())
+    assert second is not None
+    assert second.signal_id == older_other_surface.signal_id
+
+    tick = (
+        db.query(ENSSchedulerTick)
+        .filter(ENSSchedulerTick.selected_signal_id == older_other_surface.signal_id)
+        .first()
+    )
+    assert tick is not None
+    assert bool((tick.reason_trace_json or {}).get("attention_lock_applied")) is False
+
+
+def test_v33_floor_state_upsert_recovers_from_insert_race(helpers, db, monkeypatch):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    scheduler = runtime.scheduler
+    rel = "rel-v33-floor-race"
+    signal = Signal(
+        type="user.message",
+        scope="SESSION",
+        source="test",
+        relationship_hint=rel,
+        surface_id="web",
+        payload={"conversation_id": "conv-race", "thread_id": "thread-race", "content": "race"},
+    )
+
+    original_commit = db.commit
+    call_count = {"n": 0}
+
+    def flaky_commit():
+        if call_count["n"] == 0:
+            call_count["n"] += 1
+            other = Session(bind=db.bind)
+            try:
+                existing = (
+                    other.query(ENSFloorControlState)
+                    .filter(ENSFloorControlState.relationship_id == rel)
+                    .first()
+                )
+                if not existing:
+                    other.add(
+                        ENSFloorControlState(
+                            id=str(uuid.uuid4()),
+                            relationship_id=rel,
+                            active_surface_id="discord",
+                            attention_lock_until_us=1,
+                            lock_source_signal_id="seed-signal",
+                            metadata_json={"mode": "deconfliction_weight_only"},
+                        )
+                    )
+                    other.commit()
+            finally:
+                other.close()
+            raise IntegrityError("INSERT", {}, Exception("simulated unique race"))
+        return original_commit()
+
+    monkeypatch.setattr(db, "commit", flaky_commit)
+    scheduler.update_floor_state_from_signal(db, signal, attention_lock_seconds=120)
+
+    row = (
+        db.query(ENSFloorControlState)
+        .filter(ENSFloorControlState.relationship_id == rel)
+        .first()
+    )
+    assert row is not None
+    assert row.active_surface_id == "web"
+    assert int(row.attention_lock_until_us or 0) > 1
+    assert row.lock_source_signal_id == signal.signal_id
+    assert dict(row.metadata_json or {}).get("mode") == "deconfliction_weight_only"
 
 
 def test_v3_scheduler_enqueue_dedupes_by_signal_idempotency_key(helpers, db):

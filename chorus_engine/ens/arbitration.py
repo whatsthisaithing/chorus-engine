@@ -35,8 +35,10 @@ class ArbitrationEngine:
         *,
         last_non_user_surface_id: Optional[str],
         last_non_user_relationship_id: Optional[str],
+        floor_locks_by_relationship: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> ArbitrationSelection:
         ordered = _stable_order(list(candidates or []))
+        floor_locks_by_relationship = dict(floor_locks_by_relationship or {})
         if not ordered:
             return ArbitrationSelection(
                 selected=None,
@@ -83,6 +85,7 @@ class ArbitrationEngine:
         fairness_pool = list(non_user_rows)
         fairness_applied = False
         fairness_notes: Dict[str, Any] = {}
+        attention_lock_applied = False
 
         if last_non_user_surface_id:
             different_surface = [
@@ -110,7 +113,30 @@ class ArbitrationEngine:
                 fairness_notes["relationship_rotation_applied"] = False
                 fairness_notes["relationship_rotation_reason"] = "single_relationship_available"
 
-        selected = _stable_order(fairness_pool or non_user_rows)[0]
+        weighted_pool = _stable_order(fairness_pool or non_user_rows)
+        if weighted_pool:
+            if any(floor_locks_by_relationship.get(str(r.relationship_id or "")) for r in weighted_pool):
+                attention_lock_applied = True
+
+            def _attention_lock_penalty(row: ENSSignalQueue) -> int:
+                lock = floor_locks_by_relationship.get(str(row.relationship_id or ""))
+                if not lock:
+                    return 0
+                active_surface_id = str(lock.get("active_surface_id") or "")
+                if not active_surface_id:
+                    return 0
+                return 0 if str(row.surface_id or "") == active_surface_id else 1
+
+            weighted_pool = sorted(
+                weighted_pool,
+                key=lambda r: (
+                    _attention_lock_penalty(r),
+                    int(r.created_at_us or 0),
+                    str(r.signal_id),
+                ),
+            )
+
+        selected = weighted_pool[0]
         return ArbitrationSelection(
             selected=selected,
             reason_trace={
@@ -127,12 +153,12 @@ class ArbitrationEngine:
                 "budgets_check": "pass_stub",
                 "cooldowns_check": "pass_stub",
                 "fairness_applied": fairness_applied,
+                "attention_lock_applied": attention_lock_applied,
                 **fairness_notes,
             },
             tie_break={
-                "applied": len(fairness_pool or non_user_rows) > 1,
+                "applied": len(weighted_pool) > 1,
                 "created_at_us": selected.created_at_us,
                 "signal_id": selected.signal_id,
             },
         )
-

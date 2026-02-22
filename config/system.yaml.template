@@ -283,6 +283,7 @@ ens:
   scheduler_max_wall_ms_per_drain: 50  # Max wall-clock time per drain cycle
   scheduler_running_ttl_seconds: 180  # Recover stale running claims older than this TTL
   scheduler_recovery_check_interval_ms: 1000  # Stale-running recovery sweep cadence
+  scheduler_attention_lock_seconds: 120  # Deconfliction attention lock TTL (weighting only; never reopen gating)
   debug_capture_full_prompt: false  # Debug-only durable knob: include full assembled prompt/messages in ens_conversation logs
 
 # Startup synchronization

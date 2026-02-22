@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from chorus_engine.ens.models import ENSOutcome, Signal
 from chorus_engine.ens.arbitration import ArbitrationEngine, ArbitrationSelection
-from chorus_engine.models.ens import ENSSchedulerTick, ENSSignalQueue
+from chorus_engine.models.ens import ENSFloorControlState, ENSSchedulerTick, ENSSignalQueue
 from chorus_engine.ens.time_utils import next_created_at_us
 
 
@@ -137,6 +137,82 @@ class ENSScheduler:
                 return existing_by_signal
             raise
 
+    def update_floor_state_from_signal(
+        self,
+        db: Session,
+        signal: Signal,
+        *,
+        attention_lock_seconds: int,
+    ) -> None:
+        """Upsert floor/attention-lock state from user ingress signals.
+
+        De-confliction only: this influences arbitration weighting and must not
+        be used to hard-gate runnable signals.
+        """
+        if _priority_tier_for_signal(signal) != "user":
+            return
+        relationship_id, used_fallback = _relationship_id_for_signal(signal)
+        surface_id = str(getattr(signal, "surface_id", "") or "")
+        if used_fallback or not relationship_id or not surface_id:
+            return
+        ttl_us = max(0, int(attention_lock_seconds)) * 1_000_000
+        if ttl_us <= 0:
+            return
+        now_us = time.time_ns() // 1000
+        lock_until = now_us + ttl_us
+        lock_source_signal_id = str(signal.signal_id)
+
+        def _apply_state(state: ENSFloorControlState) -> None:
+            state.active_surface_id = surface_id
+            state.attention_lock_until_us = max(int(state.attention_lock_until_us or 0), lock_until)
+            state.lock_source_signal_id = lock_source_signal_id
+            meta = dict(state.metadata_json or {})
+            meta["mode"] = "deconfliction_weight_only"
+            state.metadata_json = meta
+
+        state = (
+            db.query(ENSFloorControlState)
+            .filter(ENSFloorControlState.relationship_id == relationship_id)
+            .first()
+        )
+        if not state:
+            db.add(
+                ENSFloorControlState(
+                    id=str(uuid.uuid4()),
+                    relationship_id=relationship_id,
+                    active_surface_id=surface_id,
+                    attention_lock_until_us=lock_until,
+                    lock_source_signal_id=lock_source_signal_id,
+                    metadata_json={"mode": "deconfliction_weight_only"},
+                )
+            )
+            try:
+                db.commit()
+                return
+            except IntegrityError:
+                # Concurrent ingress may win the insert race; recover with an update path.
+                db.rollback()
+                logger.info(
+                    "floor_state_insert_race_recovered relationship_id=%s signal_id=%s",
+                    relationship_id,
+                    lock_source_signal_id,
+                )
+
+        state = (
+            db.query(ENSFloorControlState)
+            .filter(ENSFloorControlState.relationship_id == relationship_id)
+            .first()
+        )
+        if not state:
+            logger.warning(
+                "floor_state_upsert_missing_after_race relationship_id=%s signal_id=%s",
+                relationship_id,
+                lock_source_signal_id,
+            )
+            return
+        _apply_state(state)
+        db.commit()
+
     def _select_next(self, db: Session) -> Optional[ENSSignalQueue]:
         return (
             db.query(ENSSignalQueue)
@@ -186,13 +262,46 @@ class ENSScheduler:
             .all()
         )
 
+    def _active_floor_locks(
+        self,
+        db: Session,
+        *,
+        now_us: int,
+        relationship_ids: list[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        ids = sorted(set([rid for rid in relationship_ids if rid and rid != FALLBACK_RELATIONSHIP_ID]))
+        if not ids:
+            return {}
+        rows = (
+            db.query(ENSFloorControlState)
+            .filter(ENSFloorControlState.relationship_id.in_(ids))
+            .filter(ENSFloorControlState.attention_lock_until_us.isnot(None))
+            .filter(ENSFloorControlState.attention_lock_until_us > now_us)
+            .all()
+        )
+        return {
+            str(row.relationship_id): {
+                "active_surface_id": str(row.active_surface_id or ""),
+                "attention_lock_until_us": int(row.attention_lock_until_us or 0),
+                "lock_source_signal_id": str(row.lock_source_signal_id or ""),
+            }
+            for row in rows
+        }
+
     def _select_with_arbitration(self, db: Session) -> ArbitrationSelection:
         candidates = self._pending_candidates(db)
         last_surface, last_relationship = self._last_non_user_selection(db)
+        now_us = time.time_ns() // 1000
+        locks = self._active_floor_locks(
+            db,
+            now_us=now_us,
+            relationship_ids=[str(c.relationship_id or "") for c in candidates],
+        )
         return self.arbitration.select(
             candidates,
             last_non_user_surface_id=last_surface,
             last_non_user_relationship_id=last_relationship,
+            floor_locks_by_relationship=locks,
         )
 
     def _claim_next(
