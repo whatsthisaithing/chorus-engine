@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 from chorus_engine.ens.models import Signal
 import chorus_engine.ens.time_utils as time_utils
 from chorus_engine.models.conversation import Conversation
-from chorus_engine.models.ens import ENSDecision, ENSFloorControlState, ENSSchedulerTick, ENSSignalQueue, ENSToolCallRequest
+from chorus_engine.models.ens import (
+    ENSDecision,
+    ENSFloorControlState,
+    ENSLoopSession,
+    ENSSchedulerTick,
+    ENSSignalQueue,
+    ENSToolCallRequest,
+)
 
 
 def test_v3_scheduler_scaffold_enqueue_and_tick_executes_selected_signal(helpers, db):
@@ -946,4 +953,266 @@ def test_v34_surface_rate_cap_counts_inflight_running_claims(helpers, db):
     assert "failed" in statuses
     failed_row = r1 if r1.status == "failed" else r2
     assert str(failed_row.error_message or "") == "surface_rate_cap_exhausted"
+
+
+def test_v35_loop_create_enqueues_progression_without_direct_step_execution(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+    ens_cfg.scheduler_sync_ticks_per_ingress = 1
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    loop_id = str(uuid.uuid4())
+    create_signal = Signal(
+        type="loop.session.create_requested",
+        scope="SESSION",
+        source="test",
+        relationship_hint="rel-v35-create",
+        payload={
+            "loop_id": loop_id,
+            "loop_kind": "generic",
+            "relationship_id": "rel-v35-create",
+            "conversation_id": "conv-v35-create",
+            "surface_id": "web",
+            "step_prompt": "continue planning",
+            "character_id": "test_char",
+        },
+    )
+    outcome = asyncio.run(runtime.ingest(create_signal))
+    assert outcome is not None
+    assert outcome.signal_id == create_signal.signal_id
+    assert bool(outcome.response_payload.get("progression_enqueued")) is True
+
+    session = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+    assert session is not None
+    assert session.state == "running"
+    assert int(session.step_index or 0) == 0
+    assert int(session.step_count or 0) == 0
+
+    pending_rows = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .all()
+    )
+    assert len(pending_rows) == 1
+
+
+def test_v35_loop_progression_coalescing_is_concurrency_safe(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        relationship_id="rel-v35-coalesce",
+        conversation_id="conv-v35-coalesce",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+
+    async def _enqueue_twice():
+        a = asyncio.create_task(
+            runtime.enqueue_loop_progression(
+                loop_id=loop_id,
+                loop_kind="generic",
+                relationship_id="rel-v35-coalesce",
+                conversation_id="conv-v35-coalesce",
+                surface_id="web",
+                step_prompt="coalesced step",
+                character_id="test_char",
+            )
+        )
+        b = asyncio.create_task(
+            runtime.enqueue_loop_progression(
+                loop_id=loop_id,
+                loop_kind="generic",
+                relationship_id="rel-v35-coalesce",
+                conversation_id="conv-v35-coalesce",
+                surface_id="web",
+                step_prompt="coalesced step",
+                character_id="test_char",
+            )
+        )
+        return await asyncio.gather(a, b)
+
+    first, second = asyncio.run(_enqueue_twice())
+    assert first["queue_id"] == second["queue_id"]
+
+    rows = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .all()
+    )
+    assert len(rows) == 1
+
+
+@pytest.mark.parametrize("state", ["paused", "waiting_for_user", "stopped", "errored"])
+def test_v35_loop_progression_state_gating_non_runnable_no_followup(helpers, db, state):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        relationship_id="rel-v35-gating",
+        conversation_id="conv-v35-gating",
+        surface_id="web",
+        state=state,
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic",
+            relationship_id="rel-v35-gating",
+            conversation_id="conv-v35-gating",
+            surface_id="web",
+            step_prompt="should not run",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("reason") == "loop_not_runnable"
+
+    row = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .order_by(ENSSignalQueue.created_at.asc())
+        .first()
+    )
+    assert row is not None
+    assert row.status == "done"
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 0
+
+    updated = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+    assert updated is not None
+    assert int(updated.step_count or 0) == 0
+
+
+def test_v35_loop_progression_continue_enqueues_exactly_one_followup(helpers, db):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse(
+                "Loop step.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"CONTINUE"},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        relationship_id="rel-v35-continue",
+        conversation_id="conv-v35-continue",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic",
+            relationship_id="rel-v35-continue",
+            conversation_id="conv-v35-continue",
+            surface_id="web",
+            step_prompt="take one loop step",
+            character_id="test_char",
+        )
+    )
+
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("control_action") == "CONTINUE"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is True
+
+    updated = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+    assert updated is not None
+    assert updated.state == "running"
+    assert int(updated.step_index or 0) == 1
+    assert int(updated.step_count or 0) == 1
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 1
 

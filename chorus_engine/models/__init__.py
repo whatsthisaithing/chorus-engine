@@ -24,6 +24,7 @@ from .ens import (
     ENSSignalQueue,
     ENSSchedulerTick,
     ENSFloorControlState,
+    ENSLoopSession,
 )
 from .relationship import Relationship, RelationshipSurface
 
@@ -60,6 +61,7 @@ __all__ = [
     "ENSSignalQueue",
     "ENSSchedulerTick",
     "ENSFloorControlState",
+    "ENSLoopSession",
     "Relationship",
     "RelationshipSurface",
 ]

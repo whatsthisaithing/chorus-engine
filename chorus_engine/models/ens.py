@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON, Index
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON, Index, text
 
 from chorus_engine.db.database import Base
 
@@ -163,6 +163,7 @@ class ENSSignalQueue(Base):
     signal_id = Column(String(36), nullable=False, unique=True, index=True)
     signal_type = Column(String(100), nullable=False, index=True)
     relationship_id = Column(String(36), nullable=True, index=True)
+    loop_id = Column(String(36), nullable=True, index=True)
     conversation_id = Column(String(36), nullable=True, index=True)
     surface_id = Column(String(20), nullable=True, index=True)
     priority_tier = Column(String(20), nullable=False, index=True, default="system")
@@ -181,6 +182,39 @@ class ENSSignalQueue(Base):
         Index("ix_ens_signal_queue_status_priority_created", "status", "priority_tier", "created_at_us"),
         Index("ix_ens_signal_queue_surface_rel_status", "surface_id", "relationship_id", "status"),
         Index("uq_ens_signal_queue_idempotency_key", "idempotency_key", unique=True),
+        Index(
+            "uq_ens_signal_queue_pending_loop_progression_by_loop",
+            "loop_id",
+            unique=True,
+            sqlite_where=text(
+                "signal_type = 'loop_progression' AND status = 'pending' AND loop_id IS NOT NULL"
+            ),
+        ),
+    )
+
+
+class ENSLoopSession(Base):
+    """Persistent loop session tracked as a signal producer state machine."""
+
+    __tablename__ = "ens_loop_sessions"
+
+    loop_id = Column(String(36), primary_key=True, default=_uuid)
+    loop_kind = Column(String(100), nullable=False, index=True)
+    relationship_id = Column(String(36), nullable=False, index=True)
+    conversation_id = Column(String(36), nullable=True, index=True)
+    surface_id = Column(String(20), nullable=True, index=True)
+    step_index = Column(Integer, nullable=False, default=0)
+    step_count = Column(Integer, nullable=False, default=0)
+    token_budget_used = Column(Integer, nullable=False, default=0)
+    tool_budget_used = Column(Integer, nullable=False, default=0)
+    state = Column(String(30), nullable=False, default="running", index=True)
+    stop_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ens_loop_sessions_relationship_state", "relationship_id", "state"),
+        Index("ix_ens_loop_sessions_surface_state", "surface_id", "state"),
     )
 
 

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from chorus_engine.models.conversation import Message, MessageRole
-from chorus_engine.models.ens import ENSActionResult, ENSToolCallRequest
+from chorus_engine.models.ens import ENSActionResult, ENSLoopSession, ENSToolCallRequest
 from chorus_engine.repositories import (
     ConversationSegmentRepository,
     ConversationRepository,
@@ -65,6 +65,13 @@ from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvoc
 from chorus_engine.ens.llm_control_plane_service import ControlPlaneRequest, LLMControlPlaneService
 
 logger = logging.getLogger(__name__)
+
+
+_LOOP_RUNNABLE_STATES = {"running"}
+_ALLOWED_TOOLS_BY_LOOP_KIND = {
+    # Expand in later slices; default remains deny-by-default for safety.
+    "generic": set(),
+}
 
 
 def _get_effective_template(character) -> str:
@@ -321,6 +328,10 @@ class ENSDispatcher:
                 output = self._persist_surface_egress_intent(db, action.params)
             elif action.kind == "llm.control.execute":
                 output = await self._execute_llm_control(action.params)
+            elif action.kind == "loop.session.create":
+                output = await self._create_loop_session(db, action.params)
+            elif action.kind == "loop.progression.step":
+                output = await self._run_loop_progression_step(db, action.params)
             else:
                 raise ValueError(f"Unsupported action kind: {action.kind}")
 
@@ -1704,6 +1715,233 @@ class ENSDispatcher:
             "output_empty": bool(invocation.get("output_empty")),
             "completion_flags": invocation.get("completion_flags") or [],
             "character_name": character.name,
+        }
+
+    @staticmethod
+    def _allowed_tools_for_loop_kind(loop_kind: str) -> set[str]:
+        allowed = _ALLOWED_TOOLS_BY_LOOP_KIND.get(str(loop_kind or "").strip(), set())
+        return set(allowed or set())
+
+    @staticmethod
+    def _loop_tokens_used(invocation: Dict[str, Any]) -> int:
+        usage = invocation.get("token_usage")
+        if isinstance(usage, dict):
+            for key in ("total_tokens", "total", "tokens"):
+                value = usage.get(key)
+                if isinstance(value, int):
+                    return max(0, value)
+        return 0
+
+    async def _enqueue_loop_progression_from_session(
+        self,
+        db: Session,
+        *,
+        session: ENSLoopSession,
+        step_prompt: Optional[str],
+        character_id: Optional[str],
+    ) -> Dict[str, Any]:
+        from chorus_engine.ens.models import Signal
+
+        runtime = self.app_state.get("ens_runtime")
+        scheduler = getattr(runtime, "scheduler", None) if runtime is not None else None
+        if scheduler is None:
+            raise RuntimeError("ENS runtime scheduler unavailable for loop progression enqueue")
+
+        signal = Signal(
+            type="loop_progression",
+            scope="SESSION",
+            source="ens.loop",
+            payload={
+                "loop_id": str(session.loop_id),
+                "loop_kind": str(session.loop_kind),
+                "relationship_id": str(session.relationship_id),
+                "conversation_id": session.conversation_id,
+                "surface_id": session.surface_id,
+                "step_prompt": step_prompt,
+                "character_id": character_id,
+            },
+            relationship_hint=str(session.relationship_id),
+            surface_id=session.surface_id,
+        )
+        row = scheduler.enqueue(db, signal)
+        return {
+            "queue_id": row.queue_id,
+            "signal_id": row.signal_id,
+            "status": row.status,
+            "priority_tier": row.priority_tier,
+            "created_at_us": row.created_at_us,
+        }
+
+    async def _create_loop_session(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        loop_id = str(params.get("loop_id") or str(uuid.uuid4())).strip()
+        loop_kind = str(params.get("loop_kind") or "generic").strip() or "generic"
+        relationship_id = str(params.get("relationship_id") or "").strip()
+        if not relationship_id:
+            raise RuntimeError("loop.session.create requires relationship_id")
+        initial_state = "paused" if bool(params.get("start_paused")) else "running"
+
+        existing = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.loop_id == loop_id)
+            .first()
+        )
+        if existing is not None:
+            created = False
+            session = existing
+        else:
+            created = True
+            session = ENSLoopSession(
+                loop_id=loop_id,
+                loop_kind=loop_kind,
+                relationship_id=relationship_id,
+                conversation_id=params.get("conversation_id"),
+                surface_id=params.get("surface_id"),
+                step_index=0,
+                step_count=0,
+                token_budget_used=0,
+                tool_budget_used=0,
+                state=initial_state,
+                stop_reason=None,
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+
+        progression = None
+        if session.state in _LOOP_RUNNABLE_STATES:
+            progression = await self._enqueue_loop_progression_from_session(
+                db,
+                session=session,
+                step_prompt=params.get("step_prompt"),
+                character_id=params.get("character_id"),
+            )
+
+        return {
+            "loop_id": session.loop_id,
+            "created": created,
+            "loop_kind": session.loop_kind,
+            "relationship_id": session.relationship_id,
+            "conversation_id": session.conversation_id,
+            "surface_id": session.surface_id,
+            "state": session.state,
+            "progression_enqueued": bool(progression),
+            "progression": progression,
+        }
+
+    async def _run_loop_progression_step(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        loop_id = str(params.get("loop_id") or "").strip()
+        if not loop_id:
+            raise RuntimeError("loop.progression.step requires loop_id")
+
+        session = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.loop_id == loop_id)
+            .first()
+        )
+        if session is None:
+            return {"_ens_action_status": "skipped", "reason": "loop_not_found", "loop_id": loop_id}
+        if str(session.state or "") not in _LOOP_RUNNABLE_STATES:
+            return {
+                "_ens_action_status": "skipped",
+                "reason": "loop_not_runnable",
+                "loop_id": loop_id,
+                "state": session.state,
+            }
+
+        character_id = str(params.get("character_id") or "").strip() or None
+        character = self.app_state["characters"].get(character_id) if character_id else None
+        effective = self.llm_invoker.resolve_effective_config(
+            character=character,
+            invocation_kind="chat",
+        )
+        step_prompt = str(
+            params.get("step_prompt")
+            or f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}."
+        )
+
+        invocation = await self.llm_invoker.invoke(
+            InvocationRequest(
+                invocation_kind="chat",
+                idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
+                model_id=effective.model_id,
+                provider=effective.provider,
+                engine=effective.engine,
+                conversation_id=session.conversation_id,
+                surface_id=session.surface_id,
+                character_id=character_id,
+                prompt=step_prompt,
+                system_prompt=getattr(character, "system_prompt", None),
+                temperature=effective.temperature,
+                max_tokens=effective.max_tokens,
+                metadata={
+                    "loop_id": loop_id,
+                    "loop_kind": session.loop_kind,
+                    "relationship_id": session.relationship_id,
+                },
+            )
+        )
+        if invocation.get("status") != "success":
+            session.state = "errored"
+            session.stop_reason = (invocation.get("error") or {}).get("message") or "loop_step_invocation_failed"
+            db.commit()
+            raise RuntimeError(str(session.stop_reason))
+
+        raw_content = invocation.get("output_text") or ""
+        assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
+        control_action = assistant_result.control.action if assistant_result.control else None
+
+        requested_tools = assistant_result.tool_requests or []
+        allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
+        allowed_tool_requests = [r for r in requested_tools if r.tool_name in allowed_tools]
+        blocked_tool_requests = [r.tool_name for r in requested_tools if r.tool_name not in allowed_tools]
+
+        session.step_index = int(session.step_index or 0) + 1
+        session.step_count = int(session.step_count or 0) + 1
+        session.token_budget_used = int(session.token_budget_used or 0) + self._loop_tokens_used(invocation)
+        session.tool_budget_used = int(session.tool_budget_used or 0) + len(allowed_tool_requests)
+        session.stop_reason = None
+
+        enqueue_next = False
+        if control_action == "WAIT_FOR_USER":
+            session.state = "waiting_for_user"
+            session.stop_reason = "wait_for_user"
+        elif control_action == "COMPLETE":
+            session.state = "stopped"
+            session.stop_reason = "complete"
+        elif control_action == "YIELD":
+            session.state = "paused"
+            session.stop_reason = "yielded"
+        else:
+            session.state = "running"
+            enqueue_next = control_action == "CONTINUE"
+
+        db.commit()
+
+        next_progression = None
+        if enqueue_next:
+            next_progression = await self._enqueue_loop_progression_from_session(
+                db,
+                session=session,
+                step_prompt=params.get("step_prompt"),
+                character_id=character_id,
+            )
+
+        return {
+            "loop_id": loop_id,
+            "loop_kind": session.loop_kind,
+            "state": session.state,
+            "stop_reason": session.stop_reason,
+            "step_index": int(session.step_index or 0),
+            "step_count": int(session.step_count or 0),
+            "token_budget_used": int(session.token_budget_used or 0),
+            "tool_budget_used": int(session.tool_budget_used or 0),
+            "display_text": assistant_result.display_text,
+            "control_action": control_action,
+            "tool_requests_total": len(requested_tools),
+            "tool_requests_allowed": len(allowed_tool_requests),
+            "tool_requests_blocked": blocked_tool_requests,
+            "next_progression_enqueued": bool(next_progression),
+            "next_progression": next_progression,
         }
 
     @staticmethod

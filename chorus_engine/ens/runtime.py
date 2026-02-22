@@ -59,6 +59,15 @@ class ENSRuntime:
             and getattr(ens_cfg, "v3_scheduler_enabled", False)
         )
 
+    def _v3_loop_sessions_enabled(self) -> bool:
+        ens_cfg = self._ens_cfg()
+        return bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "v3_scheduler_enabled", False)
+            and getattr(ens_cfg, "v3_loop_sessions_enabled", False)
+        )
+
     async def enqueue_signal(self, signal: Signal) -> Dict[str, Any]:
         """Queue a signal for v3 scheduler processing."""
         db = SessionLocal()
@@ -82,6 +91,37 @@ class ENSRuntime:
             }
         finally:
             db.close()
+
+    async def enqueue_loop_progression(
+        self,
+        *,
+        loop_id: str,
+        loop_kind: str,
+        relationship_id: str,
+        conversation_id: Optional[str] = None,
+        surface_id: Optional[str] = None,
+        step_prompt: Optional[str] = None,
+        character_id: Optional[str] = None,
+        source: str = "ens.loop",
+    ) -> Dict[str, Any]:
+        """Enqueue one loop progression signal via the normal scheduler queue path."""
+        signal = Signal(
+            type="loop_progression",
+            scope="SESSION",
+            source=source,
+            payload={
+                "loop_id": str(loop_id),
+                "loop_kind": str(loop_kind),
+                "relationship_id": str(relationship_id),
+                "conversation_id": conversation_id,
+                "surface_id": surface_id,
+                "step_prompt": step_prompt,
+                "character_id": character_id,
+            },
+            relationship_hint=str(relationship_id),
+            surface_id=surface_id,
+        )
+        return await self.enqueue_signal(signal)
 
     async def scheduler_tick(self, ctx: Optional[ENSContext] = None) -> Optional[ENSOutcome]:
         """Execute one scheduler tick using current runtime ingest path."""
@@ -701,6 +741,36 @@ class ENSRuntime:
         return signal
 
     def _propose_actions(self, db, signal: Signal, ctx: ENSContext) -> List[ENSAction]:
+        if signal.type in ("loop.create_requested", "loop.session.create_requested"):
+            if not self._v3_loop_sessions_enabled():
+                return []
+            payload = dict(signal.payload or {})
+            payload.setdefault("loop_id", str(payload.get("loop_id") or str(uuid.uuid4())))
+            payload.setdefault("loop_kind", str(payload.get("loop_kind") or "generic"))
+            payload.setdefault("relationship_id", signal.relationship_hint or payload.get("relationship_id"))
+            payload.setdefault("conversation_id", payload.get("conversation_id"))
+            payload.setdefault("surface_id", signal.surface_id or payload.get("surface_id"))
+            payload.setdefault("character_id", signal.assistant_id or payload.get("character_id"))
+            return [
+                ENSAction(
+                    kind="loop.session.create",
+                    idempotency_key=f"loop:create:{payload['loop_id']}",
+                    params=payload,
+                )
+            ]
+
+        if signal.type == "loop_progression":
+            if not self._v3_loop_sessions_enabled():
+                return []
+            payload = dict(signal.payload or {})
+            return [
+                ENSAction(
+                    kind="loop.progression.step",
+                    idempotency_key=f"loop:step:{payload.get('loop_id')}:{signal.signal_id}",
+                    params=payload,
+                )
+            ]
+
         if signal.type == "user.message":
             ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
             slice2_tool_parsing_ownership = bool(
@@ -1482,6 +1552,12 @@ class ENSRuntime:
         elif signal.type == "llm.control.requested":
             control_result = next((r for r in action_results if r.get("kind") == "llm.control.execute"), None)
             response_payload = dict((control_result or {}).get("output") or {})
+        elif signal.type in ("loop.create_requested", "loop.session.create_requested"):
+            create_result = next((r for r in action_results if r.get("kind") == "loop.session.create"), None)
+            response_payload = dict((create_result or {}).get("output") or {})
+        elif signal.type == "loop_progression":
+            step_result = next((r for r in action_results if r.get("kind") == "loop.progression.step"), None)
+            response_payload = dict((step_result or {}).get("output") or {})
 
         return ENSOutcome(
             decision_id=decision_id,
