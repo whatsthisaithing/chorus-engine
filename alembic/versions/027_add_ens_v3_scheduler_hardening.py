@@ -42,6 +42,44 @@ def upgrade():
                 "ens_signal_queue",
                 ["claimed_at_us"],
             )
+        duplicate_keys = [
+            row[0]
+            for row in bind.execute(
+                sa.text(
+                    """
+                    SELECT idempotency_key
+                    FROM ens_signal_queue
+                    WHERE idempotency_key IS NOT NULL
+                    GROUP BY idempotency_key
+                    HAVING COUNT(*) > 1
+                    """
+                )
+            ).fetchall()
+        ]
+        for dup_key in duplicate_keys:
+            rows = bind.execute(
+                sa.text(
+                    """
+                    SELECT queue_id
+                    FROM ens_signal_queue
+                    WHERE idempotency_key = :k
+                    ORDER BY created_at ASC, created_at_us ASC, queue_id ASC
+                    """
+                ),
+                {"k": dup_key},
+            ).fetchall()
+            for queue_id_row in rows[1:]:
+                bind.execute(
+                    sa.text(
+                        """
+                        UPDATE ens_signal_queue
+                        SET idempotency_key = NULL
+                        WHERE queue_id = :q
+                        """
+                    ),
+                    {"q": queue_id_row[0]},
+                )
+
         if not _has_index(inspector, "ens_signal_queue", "uq_ens_signal_queue_idempotency_key"):
             op.create_index(
                 "uq_ens_signal_queue_idempotency_key",

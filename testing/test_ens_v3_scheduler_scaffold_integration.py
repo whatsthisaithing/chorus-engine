@@ -75,6 +75,158 @@ def test_v3_scheduler_deterministic_tie_break_for_identical_created_at_us(helper
     assert selected == sorted(signal_ids)
 
 
+def test_v3_scheduler_user_preempts_loop_and_system_flood(helpers):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    created_at_us = 3_000_000
+
+    for idx in range(5):
+        s = Signal(
+            type="system.noop",
+            scope="SYSTEM",
+            source="test",
+            payload={"kind": f"sys-{idx}"},
+        )
+        s.created_at_us = created_at_us + idx
+        asyncio.run(runtime.enqueue_signal(s))
+
+    for idx in range(5):
+        s = Signal(
+            type="loop.progression",
+            scope="SESSION",
+            source="test",
+            payload={"kind": f"loop-{idx}"},
+        )
+        s.created_at_us = created_at_us + 100 + idx
+        asyncio.run(runtime.enqueue_signal(s))
+
+    user_signal = Signal(
+        type="user.message",
+        scope="SESSION",
+        source="test",
+        payload={"conversation_id": "conv-preempt", "thread_id": "thread-preempt", "content": "hi"},
+    )
+    user_signal.created_at_us = created_at_us + 1000
+    asyncio.run(runtime.enqueue_signal(user_signal))
+
+    first = asyncio.run(runtime.scheduler_tick())
+    assert first is not None
+    assert first.signal_id == user_signal.signal_id
+
+
+def test_v3_scheduler_user_not_starved_by_non_user_backlog(helpers):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    created_at_us = 4_000_000
+
+    for idx in range(20):
+        s = Signal(
+            type="system.noop",
+            scope="SYSTEM",
+            source="test",
+            payload={"kind": f"sys-{idx}"},
+        )
+        s.created_at_us = created_at_us + idx
+        asyncio.run(runtime.enqueue_signal(s))
+
+    user_signal = Signal(
+        type="user.message",
+        scope="SESSION",
+        source="test",
+        payload={"conversation_id": "conv-starve", "thread_id": "thread-starve", "content": "priority me"},
+    )
+    user_signal.created_at_us = created_at_us + 500
+    asyncio.run(runtime.enqueue_signal(user_signal))
+
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.signal_id == user_signal.signal_id
+
+
+def test_v3_scheduler_no_surface_reopen_gating_non_active_surface_still_runnable(helpers):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    first = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        surface_id="discord",
+        payload={"kind": "discord-surface-noop"},
+    )
+    second = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        surface_id="web",
+        payload={"kind": "web-surface-noop"},
+    )
+
+    asyncio.run(runtime.enqueue_signal(first))
+    asyncio.run(runtime.enqueue_signal(second))
+    o1 = asyncio.run(runtime.scheduler_tick())
+    o2 = asyncio.run(runtime.scheduler_tick())
+    assert o1 is not None and o2 is not None
+    assert {o1.signal_id, o2.signal_id} == {first.signal_id, second.signal_id}
+
+
+def test_v3_scheduler_non_user_fairness_rotates_by_surface(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    created_at_us = 5_000_000
+    # Backlog skewed toward one surface.
+    for idx in range(3):
+        s = Signal(
+            type="system.noop",
+            scope="SYSTEM",
+            source="test",
+            surface_id="web",
+            payload={"kind": f"web-{idx}"},
+        )
+        s.created_at_us = created_at_us + idx
+        asyncio.run(runtime.enqueue_signal(s))
+    for idx in range(3):
+        s = Signal(
+            type="system.noop",
+            scope="SYSTEM",
+            source="test",
+            surface_id="discord",
+            payload={"kind": f"discord-{idx}"},
+        )
+        s.created_at_us = created_at_us + 10 + idx
+        asyncio.run(runtime.enqueue_signal(s))
+
+    selected_surface_ids = []
+    for _ in range(4):
+        outcome = asyncio.run(runtime.scheduler_tick())
+        assert outcome is not None
+        row = db.query(ENSSignalQueue).filter(ENSSignalQueue.signal_id == outcome.signal_id).first()
+        assert row is not None
+        selected_surface_ids.append(row.surface_id)
+
+    # v3.2 behavior: non-user fairness prevents monopolization by one surface.
+    assert selected_surface_ids[0] != selected_surface_ids[1]
+
+
+def test_v32_unresolved_relationship_id_fallback_normalized_once(helpers, db):
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    signal = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        payload={"kind": "noop"},
+    )
+    queued = asyncio.run(runtime.enqueue_signal(signal))
+    row = db.query(ENSSignalQueue).filter(ENSSignalQueue.queue_id == queued["queue_id"]).first()
+    assert row is not None
+    assert row.relationship_id == "system/unknown"
+
+
 def test_v3_scheduler_enqueue_dedupes_by_signal_idempotency_key(helpers, db):
     runtime = helpers.app_module.app_state["ens_runtime"]
     key = "slice31:dedupe:001"

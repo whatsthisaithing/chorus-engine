@@ -7,7 +7,7 @@ the existing ENSRuntime ingest path until full rollout.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 import logging
 import time
 import uuid
@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from chorus_engine.ens.models import ENSOutcome, Signal
+from chorus_engine.ens.arbitration import ArbitrationEngine, ArbitrationSelection
 from chorus_engine.models.ens import ENSSchedulerTick, ENSSignalQueue
 from chorus_engine.ens.time_utils import next_created_at_us
 
@@ -28,6 +29,7 @@ STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
 logger = logging.getLogger(__name__)
+FALLBACK_RELATIONSHIP_ID = "system/unknown"
 
 def _priority_tier_for_signal(signal: Signal) -> str:
     signal_type = (signal.type or "").lower()
@@ -47,8 +49,25 @@ def _idempotency_key_for_signal(signal: Signal) -> Optional[str]:
     return payload_key or None
 
 
+def _relationship_id_for_signal(signal: Signal) -> Tuple[str, bool]:
+    payload = dict(getattr(signal, "payload", {}) or {})
+    raw = (
+        getattr(signal, "relationship_hint", None)
+        or payload.get("relationship_hint")
+        or payload.get("relationship_id")
+    )
+    value = str(raw or "").strip()
+    if value:
+        return value, False
+    return FALLBACK_RELATIONSHIP_ID, True
+
+
 class ENSScheduler:
     """Persistent queue/tick selector for v3 rollout."""
+
+    def __init__(self) -> None:
+        self.arbitration = ArbitrationEngine()
+        self.unresolved_relationship_fallback_count = 0
 
     def enqueue(self, db: Session, signal: Signal) -> ENSSignalQueue:
         existing = (
@@ -71,11 +90,20 @@ class ENSScheduler:
                 return existing_by_key
 
         payload = dict(getattr(signal, "__dict__", {}) or {})
+        relationship_id, used_fallback_relationship = _relationship_id_for_signal(signal)
+        if used_fallback_relationship:
+            self.unresolved_relationship_fallback_count += 1
+            logger.info(
+                "signal_relationship_fallback_applied signal_id=%s fallback_relationship_id=%s count=%s",
+                signal.signal_id,
+                relationship_id,
+                self.unresolved_relationship_fallback_count,
+            )
         row = ENSSignalQueue(
             queue_id=str(uuid.uuid4()),
             signal_id=str(signal.signal_id),
             signal_type=str(signal.type),
-            relationship_id=payload.get("relationship_hint"),
+            relationship_id=relationship_id,
             conversation_id=payload.get("payload", {}).get("conversation_id"),
             surface_id=payload.get("surface_id"),
             priority_tier=_priority_tier_for_signal(signal),
@@ -126,13 +154,67 @@ class ENSScheduler:
             .first()
         )
 
-    def _claim_next(self, db: Session) -> Optional[ENSSignalQueue]:
+    def _last_non_user_selection(self, db: Session) -> Tuple[Optional[str], Optional[str]]:
+        row = (
+            db.query(ENSSignalQueue)
+            .join(
+                ENSSchedulerTick,
+                ENSSchedulerTick.selected_signal_id == ENSSignalQueue.signal_id,
+            )
+            .filter(ENSSignalQueue.priority_tier.in_(("system", "loop")))
+            .order_by(ENSSchedulerTick.created_at_us.desc())
+            .first()
+        )
+        if not row:
+            return None, None
+        return str(row.surface_id or ""), str(row.relationship_id or "")
+
+    def _pending_candidates(self, db: Session) -> list[ENSSignalQueue]:
+        return (
+            db.query(ENSSignalQueue)
+            .filter(ENSSignalQueue.status == STATUS_PENDING)
+            .order_by(
+                case(
+                    (ENSSignalQueue.priority_tier == "user", 0),
+                    (ENSSignalQueue.priority_tier == "system", 1),
+                    (ENSSignalQueue.priority_tier == "loop", 2),
+                    else_=1,
+                ).asc(),
+                ENSSignalQueue.created_at_us.asc(),
+                ENSSignalQueue.signal_id.asc(),
+            )
+            .all()
+        )
+
+    def _select_with_arbitration(self, db: Session) -> ArbitrationSelection:
+        candidates = self._pending_candidates(db)
+        last_surface, last_relationship = self._last_non_user_selection(db)
+        return self.arbitration.select(
+            candidates,
+            last_non_user_surface_id=last_surface,
+            last_non_user_relationship_id=last_relationship,
+        )
+
+    def _claim_next(
+        self,
+        db: Session,
+        *,
+        arbitration_enabled: bool,
+    ) -> Tuple[Optional[ENSSignalQueue], Dict[str, Any], Dict[str, Any]]:
         """Atomically claim one pending signal for execution."""
         claim_us = next_created_at_us()
         for _ in range(8):
-            candidate = self._select_next(db)
+            if arbitration_enabled:
+                arbitration = self._select_with_arbitration(db)
+                candidate = arbitration.selected
+                reason_trace = dict(arbitration.reason_trace or {})
+                tie_break = dict(arbitration.tie_break or {})
+            else:
+                candidate = self._select_next(db)
+                reason_trace = {}
+                tie_break = {}
             if not candidate:
-                return None
+                return None, reason_trace, tie_break
             claimed = (
                 db.query(ENSSignalQueue)
                 .filter(
@@ -150,12 +232,13 @@ class ENSScheduler:
             )
             db.commit()
             if claimed == 1:
-                return (
+                row = (
                     db.query(ENSSignalQueue)
                     .filter(ENSSignalQueue.queue_id == candidate.queue_id)
                     .first()
                 )
-        return None
+                return row, reason_trace, tie_break
+        return None, {}, {}
 
     def _running_age_us(self, row: ENSSignalQueue, now_us: int) -> int:
         claimed_at_us = int(getattr(row, "claimed_at_us", 0) or 0)
@@ -201,33 +284,46 @@ class ENSScheduler:
         db: Session,
         *,
         execute_signal: Callable[[Signal], Awaitable[ENSOutcome]],
+        arbitration_enabled: bool = False,
     ) -> Optional[ENSOutcome]:
-        candidate_count = (
+        candidate_count_before_claim = (
             db.query(ENSSignalQueue)
             .filter(ENSSignalQueue.status == STATUS_PENDING)
             .count()
         )
-        row = self._claim_next(db)
+        row, arbitration_reason_trace, arbitration_tie_break = self._claim_next(
+            db,
+            arbitration_enabled=arbitration_enabled,
+        )
         if not row:
             return None
+
+        if arbitration_enabled:
+            reason_trace = dict(arbitration_reason_trace or {})
+            tie_break = dict(arbitration_tie_break or {})
+            reason_trace.setdefault("status", row.status)
+            reason_trace.setdefault("priority_tier", row.priority_tier)
+        else:
+            reason_trace = {
+                "selection": "priority_then_created_at_then_signal_id",
+                "candidate_count": candidate_count_before_claim,
+                "selected_signal_id": row.signal_id,
+                "selected_priority_tier": row.priority_tier,
+                "priority_tier": row.priority_tier,
+                "status": row.status,
+            }
+            tie_break = {
+                "applied": candidate_count_before_claim > 1,
+                "created_at_us": row.created_at_us,
+                "signal_id": row.signal_id,
+            }
 
         tick = ENSSchedulerTick(
             tick_id=str(uuid.uuid4()),
             queue_id=row.queue_id,
             selected_signal_id=row.signal_id,
-            reason_trace_json={
-                "selection": "priority_then_created_at_then_signal_id",
-                "candidate_count": candidate_count,
-                "selected_signal_id": row.signal_id,
-                "selected_priority_tier": row.priority_tier,
-                "priority_tier": row.priority_tier,
-                "status": row.status,
-            },
-            tie_break_json={
-                "applied": candidate_count > 1,
-                "created_at_us": row.created_at_us,
-                "signal_id": row.signal_id,
-            },
+            reason_trace_json=reason_trace,
+            tie_break_json=tie_break,
             created_at_us=next_created_at_us(),
         )
         db.add(tick)

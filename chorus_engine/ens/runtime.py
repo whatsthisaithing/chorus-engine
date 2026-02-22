@@ -78,11 +78,19 @@ class ENSRuntime:
         """Execute one scheduler tick using current runtime ingest path."""
         if ctx is None:
             ctx = ENSContext(app_state=self.app_state)
+        ens_cfg = self._ens_cfg()
+        arbitration_enabled = bool(
+            ens_cfg
+            and getattr(ens_cfg, "enabled", False)
+            and getattr(ens_cfg, "v3_scheduler_enabled", False)
+            and getattr(ens_cfg, "v3_arbitration_enabled", False)
+        )
         db = SessionLocal()
         try:
             return await self.scheduler.tick(
                 db,
                 execute_signal=lambda signal: self.ingest(signal, ctx, _force_legacy_execute=True),
+                arbitration_enabled=arbitration_enabled,
             )
         finally:
             db.close()
