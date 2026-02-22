@@ -284,6 +284,9 @@ ens:
   scheduler_running_ttl_seconds: 180  # Recover stale running claims older than this TTL
   scheduler_recovery_check_interval_ms: 1000  # Stale-running recovery sweep cadence
   scheduler_attention_lock_seconds: 120  # Deconfliction attention lock TTL (weighting only; never reopen gating)
+  scheduler_surface_rate_cap_per_minute: 0  # Max completed signals per surface per rolling minute (0 disables)
+  scheduler_assistant_rate_cap_per_minute: 0  # Max completed signals per assistant per rolling minute (0 disables)
+  scheduler_surface_cooldown_ms: 0  # Minimum gap between same-surface completions in ms (0 disables)
   debug_capture_full_prompt: false  # Debug-only durable knob: include full assembled prompt/messages in ens_conversation logs
 
 # Startup synchronization

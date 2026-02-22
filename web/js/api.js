@@ -6,6 +6,31 @@
 const API_BASE_URL = window.location.origin;
 
 class API {
+    static _detailToMessage(detail, fallback = null) {
+        if (detail == null) return fallback || 'Unknown error';
+        if (typeof detail === 'string') return detail;
+        if (Array.isArray(detail)) {
+            const parts = detail
+                .map((item) => this._detailToMessage(item, ''))
+                .filter((item) => typeof item === 'string' && item.trim().length > 0);
+            return parts.join('; ') || (fallback || 'Unknown error');
+        }
+        if (typeof detail === 'object') {
+            const stopReason = (detail.stop_reason || '').toString().trim();
+            const errorCode = (detail.error || '').toString().trim();
+            if (errorCode && stopReason) return `${errorCode}: ${stopReason}`;
+            if (detail.message && typeof detail.message === 'string') return detail.message;
+            if (stopReason) return stopReason;
+            if (errorCode) return errorCode;
+            try {
+                return JSON.stringify(detail);
+            } catch (_) {
+                return fallback || 'Unknown error';
+            }
+        }
+        return String(detail);
+    }
+
     static _isConfigMutation(endpoint, method) {
         const m = (method || 'GET').toUpperCase();
         if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(m)) return false;
@@ -38,7 +63,11 @@ class API {
             
             if (!response.ok) {
                 const error = await response.json().catch(() => ({}));
-                throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+                const detailMessage = this._detailToMessage(
+                    error.detail,
+                    `HTTP ${response.status}: ${response.statusText}`
+                );
+                throw new Error(detailMessage);
             }
             
             const data = await response.json();

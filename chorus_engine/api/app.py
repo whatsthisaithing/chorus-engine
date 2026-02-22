@@ -4549,6 +4549,17 @@ async def _ens_thread_chat(
     user_message_id = outcome.response_payload.get("user_message_id")
     assistant_message_id = outcome.response_payload.get("assistant_message_id")
     if not user_message_id or not assistant_message_id:
+        stop_reason = str((outcome.response_payload or {}).get("stop_reason") or "").strip()
+        if stop_reason:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "scheduler_policy_blocked",
+                    "stop_reason": stop_reason,
+                    "queue_id": (outcome.response_payload or {}).get("queue_id"),
+                    "status": (outcome.response_payload or {}).get("status"),
+                },
+            )
         raise HTTPException(status_code=500, detail="ENS chat outcome missing message identifiers")
 
     msg_repo = MessageRepository(db)

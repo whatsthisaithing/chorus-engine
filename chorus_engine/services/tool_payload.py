@@ -19,6 +19,8 @@ from chorus_engine.services.json_extraction import extract_json_block
 
 BEGIN_SENTINEL = "---CHORUS_TOOL_PAYLOAD_BEGIN---"
 END_SENTINEL = "---CHORUS_TOOL_PAYLOAD_END---"
+_RELAXED_BEGIN_SENTINEL_RE = re.compile(r"(?is)-{0,3}\s*CHORUS_TOOL_PAYLOAD_BEGIN---")
+_RELAXED_END_SENTINEL_RE = re.compile(r"(?is)-{0,3}\s*CHORUS_TOOL_PAYLOAD_END---")
 SUPPORTED_TOOLS_V1 = {"image.generate", "video.generate"}
 MOMENT_PIN_COLD_RECALL_TOOL = "moment_pin.cold_recall"
 
@@ -66,7 +68,7 @@ def detect_malformed_tool_payload_block(raw_text: str) -> tuple[bool, Optional[s
     """
     if not raw_text:
         return False, None
-    if BEGIN_SENTINEL in raw_text:
+    if BEGIN_SENTINEL in raw_text or _RELAXED_BEGIN_SENTINEL_RE.search(raw_text):
         return False, None
     if _HEADING_FENCED_PATTERN.search(raw_text):
         return True, "heading_json"
@@ -107,15 +109,28 @@ def extract_tool_payload(raw_text: str) -> ToolPayloadExtraction:
         return ToolPayloadExtraction(display_text="", payload_text=None, had_begin=False, had_end=False)
 
     begin_index = raw_text.find(BEGIN_SENTINEL)
+    begin_end = -1
     if begin_index == -1:
-        return ToolPayloadExtraction(display_text=raw_text, payload_text=None, had_begin=False, had_end=False)
+        relaxed_begin = _RELAXED_BEGIN_SENTINEL_RE.search(raw_text)
+        if not relaxed_begin:
+            return ToolPayloadExtraction(display_text=raw_text, payload_text=None, had_begin=False, had_end=False)
+        begin_index = relaxed_begin.start()
+        begin_end = relaxed_begin.end()
+    else:
+        begin_end = begin_index + len(BEGIN_SENTINEL)
 
     display_text = raw_text[:begin_index]
-    end_index = raw_text.find(END_SENTINEL, begin_index + len(BEGIN_SENTINEL))
+    end_index = raw_text.find(END_SENTINEL, begin_end)
+    end_start = -1
     if end_index == -1:
-        return ToolPayloadExtraction(display_text=display_text, payload_text=None, had_begin=True, had_end=False)
+        relaxed_end = _RELAXED_END_SENTINEL_RE.search(raw_text, begin_end)
+        if not relaxed_end:
+            return ToolPayloadExtraction(display_text=display_text, payload_text=None, had_begin=True, had_end=False)
+        end_start = relaxed_end.start()
+    else:
+        end_start = end_index
 
-    payload_text = raw_text[begin_index + len(BEGIN_SENTINEL):end_index].strip()
+    payload_text = raw_text[begin_end:end_start].strip()
     return ToolPayloadExtraction(display_text=display_text, payload_text=payload_text, had_begin=True, had_end=True)
 
 

@@ -94,12 +94,24 @@ class ENSRuntime:
             and getattr(ens_cfg, "v3_scheduler_enabled", False)
             and getattr(ens_cfg, "v3_arbitration_enabled", False)
         )
+        surface_rate_cap_per_minute = int(
+            getattr(ens_cfg, "scheduler_surface_rate_cap_per_minute", 0) if ens_cfg else 0
+        )
+        assistant_rate_cap_per_minute = int(
+            getattr(ens_cfg, "scheduler_assistant_rate_cap_per_minute", 0) if ens_cfg else 0
+        )
+        surface_cooldown_ms = int(
+            getattr(ens_cfg, "scheduler_surface_cooldown_ms", 0) if ens_cfg else 0
+        )
         db = SessionLocal()
         try:
             return await self.scheduler.tick(
                 db,
                 execute_signal=lambda signal: self.ingest(signal, ctx, _force_legacy_execute=True),
                 arbitration_enabled=arbitration_enabled,
+                surface_rate_cap_per_minute=surface_rate_cap_per_minute,
+                assistant_rate_cap_per_minute=assistant_rate_cap_per_minute,
+                surface_cooldown_ms=surface_cooldown_ms,
             )
         finally:
             db.close()
@@ -168,6 +180,27 @@ class ENSRuntime:
         finally:
             db.close()
 
+    def _queue_state_for_signal(self, signal_id: str) -> Optional[Dict[str, Any]]:
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_id == signal_id)
+                .first()
+            )
+            if not row:
+                return None
+            return {
+                "queue_id": row.queue_id,
+                "signal_id": row.signal_id,
+                "status": str(row.status or ""),
+                "error_message": row.error_message,
+                "selected_at": row.selected_at.isoformat() if row.selected_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+        finally:
+            db.close()
+
     async def ingest(
         self,
         signal: Signal,
@@ -197,6 +230,24 @@ class ENSRuntime:
             replay_outcome = self._replay_outcome_for_signal(target_signal_id, signal.trace_id)
             if replay_outcome is not None:
                 return replay_outcome
+            queue_state = self._queue_state_for_signal(target_signal_id) or {}
+            final_status = str(queue_state.get("status") or queued.get("status") or "").lower()
+            stop_reason = str(queue_state.get("error_message") or "").strip() or None
+            if final_status == "failed":
+                return ENSOutcome(
+                    decision_id=f"queued:{queue_state.get('queue_id') or queued.get('queue_id')}",
+                    trace_id=signal.trace_id,
+                    signal_id=target_signal_id,
+                    actions=[],
+                    action_results=[],
+                    response_payload={
+                        "queued": False,
+                        "blocked": True,
+                        "status": "failed",
+                        "queue_id": queue_state.get("queue_id") or queued.get("queue_id"),
+                        "stop_reason": stop_reason or "scheduler_policy_blocked",
+                    },
+                )
             return ENSOutcome(
                 decision_id=f"queued:{queued.get('queue_id')}",
                 trace_id=signal.trace_id,
@@ -205,8 +256,8 @@ class ENSRuntime:
                 action_results=[],
                 response_payload={
                     "queued": True,
-                    "queue_id": queued.get("queue_id"),
-                    "status": queued.get("status"),
+                    "queue_id": queue_state.get("queue_id") or queued.get("queue_id"),
+                    "status": final_status or str(queued.get("status") or ""),
                 },
             )
 

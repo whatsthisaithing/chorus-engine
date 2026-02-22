@@ -50,3 +50,17 @@ def test_assistant_result_ignores_malformed_control():
     result = normalize_assistant_result(raw_content=raw)
     assert result.control is None
 
+
+def test_assistant_result_parses_relaxed_sentinel_markers_without_leaking_payload():
+    raw = (
+        "Visible text first.\n"
+        "CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+        '{"version":1,"tool_calls":[{"id":"c2","tool":"image.generate","args":{"prompt":"mountain"}}]}\n'
+        "CHORUS_TOOL_PAYLOAD_END---"
+    )
+    result = normalize_assistant_result(raw_content=raw)
+    assert result.display_text.strip() == "Visible text first."
+    assert result.payload_present is True
+    assert result.payload_parseable is True
+    assert len(result.tool_requests) == 1
+    assert result.tool_requests[0].tool_name == "image.generate"

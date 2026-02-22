@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -468,6 +469,66 @@ def test_v3_scheduler_enqueue_dedupes_by_signal_idempotency_key(helpers, db):
     )
 
 
+def test_v34_budget_exhausted_sets_explicit_stop_reason_and_tick_trace(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_surface_rate_cap_per_minute = 1
+    ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
+    ens_cfg.scheduler_surface_cooldown_ms = 0
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    first = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        surface_id="web",
+        payload={"kind": "seed-completion"},
+    )
+    second = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        surface_id="web",
+        payload={"kind": "should-stop"},
+    )
+
+    asyncio.run(runtime.enqueue_signal(first))
+    first_outcome = asyncio.run(runtime.scheduler_tick())
+    assert first_outcome is not None
+    assert first_outcome.signal_id == first.signal_id
+
+    asyncio.run(runtime.enqueue_signal(second))
+    second_outcome = asyncio.run(runtime.scheduler_tick())
+    assert second_outcome is None
+
+    row = db.query(ENSSignalQueue).filter(ENSSignalQueue.signal_id == second.signal_id).first()
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error_message == "surface_rate_cap_exhausted"
+
+    tick = (
+        db.query(ENSSchedulerTick)
+        .filter(ENSSchedulerTick.selected_signal_id == second.signal_id)
+        .order_by(ENSSchedulerTick.created_at_us.desc())
+        .first()
+    )
+    assert tick is not None
+    assert (tick.reason_trace_json or {}).get("phase") == "budget_cooldown_stop"
+    assert (tick.reason_trace_json or {}).get("stop_reason") == "surface_rate_cap_exhausted"
+    assert (tick.reason_trace_json or {}).get("status") == "failed"
+
+    # Explicit stop means no execution decision should be written for the blocked signal.
+    decision_count = db.query(ENSDecision).filter(ENSDecision.signal_id == second.signal_id).count()
+    assert decision_count == 0
+
+
 def test_v3_scheduler_queue_db_unique_idempotency_key_enforced(db):
     key = "slice31:db-unique:001"
     row1 = ENSSignalQueue(
@@ -750,4 +811,139 @@ def test_v3_scheduler_recovers_stuck_running_signal(helpers, db):
     assert row.status == "pending"
     assert row.error_message == "stuck_running_recovered"
     assert row.claimed_at_us is None
+
+
+def test_v34_thread_messages_returns_429_with_stop_reason_when_policy_blocked(client, db, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+        slice2_tool_parsing_ownership=True,
+        slice2_tool_dispatch_ownership=False,
+        slice25_media_gating_ownership=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_sync_ticks_per_ingress = 1
+    ens_cfg.scheduler_surface_rate_cap_per_minute = 1
+    ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
+    ens_cfg.scheduler_surface_cooldown_ms = 0
+
+    conversation_id, thread_id = helpers.create_conversation_thread()
+
+    first = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "first should pass", "metadata": {"client_message_id": "slice34-cap-first"}},
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        f"/threads/{thread_id}/messages",
+        json={"message": "second should be policy blocked", "metadata": {"client_message_id": "slice34-cap-second"}},
+    )
+    assert second.status_code == 429, second.text
+    detail = second.json().get("detail") or {}
+    assert detail.get("error") == "scheduler_policy_blocked"
+    assert detail.get("stop_reason") == "surface_rate_cap_exhausted"
+
+    failed_rows = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.conversation_id == conversation_id)
+        .filter(ENSSignalQueue.status == "failed")
+        .all()
+    )
+    assert failed_rows
+    assert any(str(row.error_message or "") == "surface_rate_cap_exhausted" for row in failed_rows)
+
+
+def test_v34_surface_rate_cap_ignores_stale_completions_outside_rolling_window(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_surface_rate_cap_per_minute = 1
+    ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
+    ens_cfg.scheduler_surface_cooldown_ms = 0
+
+    stale = ENSSignalQueue(
+        queue_id=str(uuid.uuid4()),
+        signal_id=str(uuid.uuid4()),
+        signal_type="system.noop",
+        relationship_id="rel-stale-cap",
+        conversation_id="conv-stale-cap",
+        surface_id="web",
+        priority_tier="system",
+        created_at_us=1_000_000,
+        idempotency_key=f"stale-cap-{uuid.uuid4()}",
+        signal_json={"type": "system.noop", "payload": {}},
+        status="done",
+        selected_at=datetime.utcnow() - timedelta(minutes=5),
+        completed_at=datetime.utcnow() - timedelta(minutes=5),
+    )
+    db.add(stale)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    signal = Signal(
+        type="system.noop",
+        scope="SYSTEM",
+        source="test",
+        surface_id="web",
+        payload={"kind": "fresh-after-stale"},
+    )
+    asyncio.run(runtime.enqueue_signal(signal))
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.signal_id == signal.signal_id
+
+    row = db.query(ENSSignalQueue).filter(ENSSignalQueue.signal_id == signal.signal_id).first()
+    assert row is not None
+    assert row.status == "done"
+    assert row.error_message is None
+
+
+def test_v34_surface_rate_cap_counts_inflight_running_claims(helpers, db):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_arbitration_enabled = True
+    ens_cfg.scheduler_surface_rate_cap_per_minute = 1
+    ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
+    ens_cfg.scheduler_surface_cooldown_ms = 0
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    s1 = Signal(type="system.noop", scope="SYSTEM", source="test", surface_id="web", payload={"k": "1"})
+    s2 = Signal(type="system.noop", scope="SYSTEM", source="test", surface_id="web", payload={"k": "2"})
+    asyncio.run(runtime.enqueue_signal(s1))
+    asyncio.run(runtime.enqueue_signal(s2))
+
+    async def _run():
+        t1 = asyncio.create_task(runtime.scheduler_tick())
+        t2 = asyncio.create_task(runtime.scheduler_tick())
+        return await asyncio.gather(t1, t2)
+
+    o1, o2 = asyncio.run(_run())
+    outcomes = [o for o in (o1, o2) if o is not None]
+    assert len(outcomes) == 1
+
+    r1 = db.query(ENSSignalQueue).filter(ENSSignalQueue.signal_id == s1.signal_id).first()
+    r2 = db.query(ENSSignalQueue).filter(ENSSignalQueue.signal_id == s2.signal_id).first()
+    assert r1 is not None and r2 is not None
+    statuses = {r1.status, r2.status}
+    assert "done" in statuses
+    assert "failed" in statuses
+    failed_row = r1 if r1.status == "failed" else r2
+    assert str(failed_row.error_message or "") == "surface_rate_cap_exhausted"
 

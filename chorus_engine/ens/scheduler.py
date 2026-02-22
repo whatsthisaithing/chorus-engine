@@ -6,7 +6,7 @@ the existing ENSRuntime ingest path until full rollout.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 import logging
 import time
@@ -304,19 +304,230 @@ class ENSScheduler:
             floor_locks_by_relationship=locks,
         )
 
+    def _assistant_id_for_row(self, row: ENSSignalQueue) -> str:
+        signal_doc = dict(getattr(row, "signal_json", {}) or {})
+        payload = dict(signal_doc.get("payload") or {})
+        return str(
+            signal_doc.get("assistant_id")
+            or payload.get("assistant_id")
+            or ""
+        ).strip()
+
+    def _evaluate_limits(
+        self,
+        db: Session,
+        *,
+        candidates: list[ENSSignalQueue],
+        now_us: int,
+        surface_rate_cap_per_minute: int,
+        assistant_rate_cap_per_minute: int,
+        surface_cooldown_ms: int,
+    ) -> Tuple[list[ENSSignalQueue], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+        ordered = sorted(
+            list(candidates or []),
+            key=lambda r: (int(r.created_at_us or 0), str(r.signal_id)),
+        )
+        if not ordered:
+            return [], {}, {
+                "budgets_check": "pass",
+                "cooldowns_check": "pass",
+                "blocked_candidate_count": 0,
+            }
+
+        surface_cap = max(0, int(surface_rate_cap_per_minute or 0))
+        assistant_cap = max(0, int(assistant_rate_cap_per_minute or 0))
+        cooldown_us = max(0, int(surface_cooldown_ms or 0)) * 1000
+        limits_enabled = bool(surface_cap > 0 or assistant_cap > 0 or cooldown_us > 0)
+        if not limits_enabled:
+            return ordered, {}, {
+                "budgets_check": "pass",
+                "cooldowns_check": "pass",
+                "blocked_candidate_count": 0,
+            }
+
+        now_dt = datetime.utcnow()
+        window_start_dt = now_dt - timedelta(seconds=60)
+        recent_rows = (
+            db.query(ENSSignalQueue)
+            .filter(ENSSignalQueue.status.in_(("done", "completed")))
+            .filter(ENSSignalQueue.completed_at.isnot(None))
+            .filter(ENSSignalQueue.completed_at >= window_start_dt)
+            .filter(ENSSignalQueue.completed_at <= now_dt)
+            .all()
+        )
+        running_rows = (
+            db.query(ENSSignalQueue)
+            .filter(ENSSignalQueue.status == STATUS_RUNNING)
+            .filter(ENSSignalQueue.selected_at.isnot(None))
+            .filter(ENSSignalQueue.selected_at >= window_start_dt)
+            .filter(ENSSignalQueue.selected_at <= now_dt)
+            .all()
+        )
+        surface_counts: Dict[str, int] = {}
+        assistant_counts: Dict[str, int] = {}
+        surface_last_completed_at: Dict[str, datetime] = {}
+        for row in recent_rows:
+            completion_at = getattr(row, "completed_at", None)
+            if not completion_at:
+                continue
+            surface = str(getattr(row, "surface_id", "") or "")
+            if surface:
+                surface_counts[surface] = int(surface_counts.get(surface, 0)) + 1
+                prior = surface_last_completed_at.get(surface)
+                if prior is None or completion_at > prior:
+                    surface_last_completed_at[surface] = completion_at
+            assistant_id = self._assistant_id_for_row(row)
+            if assistant_id:
+                assistant_counts[assistant_id] = int(assistant_counts.get(assistant_id, 0)) + 1
+
+        # Reserve budget for in-flight claims so concurrent ticks cannot overrun caps.
+        for row in running_rows:
+            surface = str(getattr(row, "surface_id", "") or "")
+            if surface:
+                surface_counts[surface] = int(surface_counts.get(surface, 0)) + 1
+            assistant_id = self._assistant_id_for_row(row)
+            if assistant_id:
+                assistant_counts[assistant_id] = int(assistant_counts.get(assistant_id, 0)) + 1
+
+        eligible: list[ENSSignalQueue] = []
+        blocked: Dict[str, Dict[str, Any]] = {}
+        for row in ordered:
+            surface_id = str(getattr(row, "surface_id", "") or "")
+            assistant_id = self._assistant_id_for_row(row)
+            stop_reason = ""
+            reason_details: Dict[str, Any] = {}
+            if surface_cap > 0 and surface_id:
+                used = int(surface_counts.get(surface_id, 0))
+                if used >= surface_cap:
+                    stop_reason = "surface_rate_cap_exhausted"
+                    reason_details = {"surface_id": surface_id, "used": used, "limit": surface_cap}
+            if not stop_reason and assistant_cap > 0 and assistant_id:
+                used = int(assistant_counts.get(assistant_id, 0))
+                if used >= assistant_cap:
+                    stop_reason = "assistant_rate_cap_exhausted"
+                    reason_details = {"assistant_id": assistant_id, "used": used, "limit": assistant_cap}
+            if not stop_reason and cooldown_us > 0 and surface_id:
+                last_completed_at = surface_last_completed_at.get(surface_id)
+                if last_completed_at and now_dt < (last_completed_at + timedelta(microseconds=cooldown_us)):
+                    last_completed_us = int(last_completed_at.timestamp() * 1_000_000)
+                    stop_reason = "surface_cooldown_active"
+                    reason_details = {
+                        "surface_id": surface_id,
+                        "last_completed_us": last_completed_us,
+                        "cooldown_ms": int(surface_cooldown_ms or 0),
+                    }
+            if stop_reason:
+                blocked[str(row.signal_id)] = {
+                    "stop_reason": stop_reason,
+                    "details": reason_details,
+                }
+                continue
+            eligible.append(row)
+
+        return eligible, blocked, {
+            "budgets_check": "enforced",
+            "cooldowns_check": "enforced" if cooldown_us > 0 else "pass",
+            "blocked_candidate_count": len(blocked),
+            "surface_rate_cap_per_minute": surface_cap,
+            "assistant_rate_cap_per_minute": assistant_cap,
+            "surface_cooldown_ms": int(surface_cooldown_ms or 0),
+        }
+
+    def _stop_blocked_signal(
+        self,
+        db: Session,
+        *,
+        row: ENSSignalQueue,
+        stop_reason: str,
+        stop_details: Dict[str, Any],
+        limits_trace: Dict[str, Any],
+    ) -> None:
+        row.status = STATUS_FAILED
+        row.completed_at = datetime.utcnow()
+        row.claimed_at_us = None
+        row.error_message = str(stop_reason)
+        reason_trace = {
+            "selection": "arbitration_v3",
+            "phase": "budget_cooldown_stop",
+            "selected_signal_id": row.signal_id,
+            "selected_priority_tier": row.priority_tier,
+            "stop_reason": stop_reason,
+            "stop_details": dict(stop_details or {}),
+            "status": STATUS_FAILED,
+            **dict(limits_trace or {}),
+        }
+        tick = ENSSchedulerTick(
+            tick_id=str(uuid.uuid4()),
+            queue_id=row.queue_id,
+            selected_signal_id=row.signal_id,
+            reason_trace_json=reason_trace,
+            tie_break_json={"applied": False, "signal_id": row.signal_id},
+            created_at_us=next_created_at_us(),
+        )
+        db.add(tick)
+        db.commit()
+        logger.info(
+            "signal_stopped_by_scheduler_policy signal_id=%s stop_reason=%s queue_id=%s",
+            row.signal_id,
+            stop_reason,
+            row.queue_id,
+        )
+
     def _claim_next(
         self,
         db: Session,
         *,
         arbitration_enabled: bool,
+        surface_rate_cap_per_minute: int = 0,
+        assistant_rate_cap_per_minute: int = 0,
+        surface_cooldown_ms: int = 0,
     ) -> Tuple[Optional[ENSSignalQueue], Dict[str, Any], Dict[str, Any]]:
         """Atomically claim one pending signal for execution."""
         claim_us = next_created_at_us()
         for _ in range(8):
             if arbitration_enabled:
-                arbitration = self._select_with_arbitration(db)
+                candidates = self._pending_candidates(db)
+                now_us = time.time_ns() // 1000
+                eligible, blocked, limits_trace = self._evaluate_limits(
+                    db,
+                    candidates=candidates,
+                    now_us=now_us,
+                    surface_rate_cap_per_minute=surface_rate_cap_per_minute,
+                    assistant_rate_cap_per_minute=assistant_rate_cap_per_minute,
+                    surface_cooldown_ms=surface_cooldown_ms,
+                )
+                if not eligible:
+                    if candidates and blocked:
+                        stop_row = sorted(
+                            candidates,
+                            key=lambda r: (int(r.created_at_us or 0), str(r.signal_id)),
+                        )[0]
+                        blocked_item = dict(blocked.get(str(stop_row.signal_id)) or {})
+                        stop_reason = str(blocked_item.get("stop_reason") or "scheduler_policy_blocked")
+                        stop_details = dict(blocked_item.get("details") or {})
+                        self._stop_blocked_signal(
+                            db,
+                            row=stop_row,
+                            stop_reason=stop_reason,
+                            stop_details=stop_details,
+                            limits_trace=limits_trace,
+                        )
+                    return None, {}, {}
+                last_surface, last_relationship = self._last_non_user_selection(db)
+                locks = self._active_floor_locks(
+                    db,
+                    now_us=now_us,
+                    relationship_ids=[str(c.relationship_id or "") for c in eligible],
+                )
+                arbitration = self.arbitration.select(
+                    eligible,
+                    last_non_user_surface_id=last_surface,
+                    last_non_user_relationship_id=last_relationship,
+                    floor_locks_by_relationship=locks,
+                )
                 candidate = arbitration.selected
                 reason_trace = dict(arbitration.reason_trace or {})
+                reason_trace.update(dict(limits_trace or {}))
                 tie_break = dict(arbitration.tie_break or {})
             else:
                 candidate = self._select_next(db)
@@ -394,6 +605,9 @@ class ENSScheduler:
         *,
         execute_signal: Callable[[Signal], Awaitable[ENSOutcome]],
         arbitration_enabled: bool = False,
+        surface_rate_cap_per_minute: int = 0,
+        assistant_rate_cap_per_minute: int = 0,
+        surface_cooldown_ms: int = 0,
     ) -> Optional[ENSOutcome]:
         candidate_count_before_claim = (
             db.query(ENSSignalQueue)
@@ -403,6 +617,9 @@ class ENSScheduler:
         row, arbitration_reason_trace, arbitration_tie_break = self._claim_next(
             db,
             arbitration_enabled=arbitration_enabled,
+            surface_rate_cap_per_minute=surface_rate_cap_per_minute,
+            assistant_rate_cap_per_minute=assistant_rate_cap_per_minute,
+            surface_cooldown_ms=surface_cooldown_ms,
         )
         if not row:
             return None

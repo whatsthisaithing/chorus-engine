@@ -666,6 +666,24 @@ class ENSConfig(BaseModel):
         le=3600,
         description="ENS scheduler: deconfliction attention-lock TTL (weighting only; no reopen gating)",
     )
+    scheduler_surface_rate_cap_per_minute: int = Field(
+        default=0,
+        ge=0,
+        le=10000,
+        description="ENS scheduler: max completed signals per surface per rolling minute (0 disables)",
+    )
+    scheduler_assistant_rate_cap_per_minute: int = Field(
+        default=0,
+        ge=0,
+        le=10000,
+        description="ENS scheduler: max completed signals per assistant per rolling minute (0 disables)",
+    )
+    scheduler_surface_cooldown_ms: int = Field(
+        default=0,
+        ge=0,
+        le=60000,
+        description="ENS scheduler: minimum gap between completions on same surface in milliseconds (0 disables)",
+    )
     debug_capture_full_prompt: bool = Field(
         default=False,
         description="Debug-only: include full assembled system prompt and message payload in ENS conversation logs",
