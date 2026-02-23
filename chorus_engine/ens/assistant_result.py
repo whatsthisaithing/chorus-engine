@@ -63,20 +63,30 @@ def _normalize_tool_requests(raw_tool_calls: Any) -> List[ToolRequest]:
     for item in raw_tool_calls:
         if not isinstance(item, dict):
             continue
+        payload = item
         tool_name = item.get("tool")
+        request_id = item.get("id")
+
+        # Accept wrapped normalized form from LLMInvocationService:
+        # {"tool_name": "...", "payload": {...}, "request_id": "..."}
+        wrapped_payload = item.get("payload")
+        if isinstance(wrapped_payload, dict):
+            payload = dict(wrapped_payload)
+            tool_name = payload.get("tool")
+            request_id = payload.get("id")
+            if request_id is None:
+                request_id = item.get("request_id")
+
         if not isinstance(tool_name, str) or not tool_name.strip():
             tool_name = item.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name.strip():
             continue
-        request_id = item.get("id")
-        if request_id is None:
-            request_id = item.get("request_id")
         if request_id is not None and not isinstance(request_id, str):
             request_id = None
         normalized.append(
             ToolRequest(
                 tool_name=tool_name.strip(),
-                payload=dict(item),
+                payload=dict(payload),
                 request_id=request_id,
             )
         )

@@ -997,6 +997,15 @@ class CharacterBackupConfig(BaseModel):
             raise ValueError("backup.destination_override must be an absolute path")
         return v
 
+
+class CharacterFeaturesConfig(BaseModel):
+    """Feature flags for character-scoped optional capabilities."""
+
+    interactive_narrative: bool = Field(
+        default=False,
+        description="Enable interactive narrative loop controls for this character",
+    )
+
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""
     
@@ -1080,6 +1089,7 @@ class CharacterConfig(BaseModel):
     # Metadata
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    features: CharacterFeaturesConfig = Field(default_factory=CharacterFeaturesConfig)
     
     @field_validator('id')
     @classmethod

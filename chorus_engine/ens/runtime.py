@@ -761,6 +761,33 @@ class ENSRuntime:
                 )
             ]
 
+        if signal.type == "loop.session.pause_requested":
+            if not self._v3_loop_sessions_enabled():
+                return []
+            payload = dict(signal.payload or {})
+            payload.setdefault("loop_id", str(payload.get("loop_id") or ""))
+            return [
+                ENSAction(
+                    kind="loop.session.pause",
+                    idempotency_key=f"loop:pause:{payload.get('loop_id')}:{signal.signal_id}",
+                    params=payload,
+                )
+            ]
+
+        if signal.type == "loop.session.resume_requested":
+            if not self._v3_loop_sessions_enabled():
+                return []
+            payload = dict(signal.payload or {})
+            payload.setdefault("loop_id", str(payload.get("loop_id") or ""))
+            payload.setdefault("character_id", signal.assistant_id or payload.get("character_id"))
+            return [
+                ENSAction(
+                    kind="loop.session.resume",
+                    idempotency_key=f"loop:resume:{payload.get('loop_id')}:{signal.signal_id}",
+                    params=payload,
+                )
+            ]
+
         if signal.type == "loop_progression":
             if not self._v3_loop_sessions_enabled():
                 return []
@@ -1559,6 +1586,12 @@ class ENSRuntime:
         elif signal.type in ("loop.create_requested", "loop.session.create_requested"):
             create_result = next((r for r in action_results if r.get("kind") == "loop.session.create"), None)
             response_payload = dict((create_result or {}).get("output") or {})
+        elif signal.type == "loop.session.pause_requested":
+            pause_result = next((r for r in action_results if r.get("kind") == "loop.session.pause"), None)
+            response_payload = dict((pause_result or {}).get("output") or {})
+        elif signal.type == "loop.session.resume_requested":
+            resume_result = next((r for r in action_results if r.get("kind") == "loop.session.resume"), None)
+            response_payload = dict((resume_result or {}).get("output") or {})
         elif signal.type == "loop_progression":
             step_result = next((r for r in action_results if r.get("kind") == "loop.progression.step"), None)
             response_payload = dict((step_result or {}).get("output") or {})

@@ -1,6 +1,38 @@
 from chorus_engine.models.relationship import Relationship, RelationshipSurface
 
 
+def test_standard_conversation_auto_binds_relationship_when_missing(client, db):
+    created = client.post(
+        "/conversations",
+        json={"character_id": "test_char", "title": "Auto-bound relationship", "source": "web"},
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["relationship_id"]
+
+    rel_rows = (
+        db.query(Relationship)
+        .filter(
+            Relationship.owner_user_id == "user:local:owner",
+            Relationship.character_id == "test_char",
+        )
+        .all()
+    )
+    assert len(rel_rows) == 1
+    assert rel_rows[0].id == body["relationship_id"]
+
+    surface_rows = (
+        db.query(RelationshipSurface)
+        .filter(
+            RelationshipSurface.relationship_id == body["relationship_id"],
+            RelationshipSurface.surface_id == "web",
+            RelationshipSurface.surface_instance_id == "",
+        )
+        .all()
+    )
+    assert len(surface_rows) == 1
+
+
 def test_general_chat_resolver_is_idempotent_and_separated_from_standard_list(client, db):
     first = client.post("/characters/test_char/general-chat")
     assert first.status_code == 200, first.text
@@ -49,7 +81,9 @@ def test_general_chat_resolver_is_idempotent_and_separated_from_standard_list(cl
         json={"character_id": "test_char", "title": "Standard v0 test", "source": "web"},
     )
     assert created.status_code == 200, created.text
-    standard_id = created.json()["id"]
+    created_body = created.json()
+    standard_id = created_body["id"]
+    assert created_body["relationship_id"] == first_body["relationship_id"]
 
     default_list_after = client.get("/conversations?character_id=test_char")
     assert default_list_after.status_code == 200, default_list_after.text

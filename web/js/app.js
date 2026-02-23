@@ -39,6 +39,14 @@ window.App = {
         configDriftDismissedFingerprint: null,
         configDriftPollTimer: null,
         selectedConversationLogFile: null,
+        interactiveNarrative: {
+            enabled: false,
+            loopId: null,
+            state: 'paused',
+            autoplayActive: false,
+            autoplayDelayMs: 500,
+            pendingTickTimerId: null,
+        },
     },
     
     /**
@@ -200,6 +208,12 @@ window.App = {
             e.preventDefault();
             this.sendMessage();
         });
+        const interactiveNarrativeBtn = document.getElementById('interactiveNarrativeBtn');
+        if (interactiveNarrativeBtn) {
+            interactiveNarrativeBtn.addEventListener('click', () => {
+                this.handleInteractiveNarrativeButton();
+            });
+        }
         const retryLastSendBtn = document.getElementById('retryLastSendBtn');
         if (retryLastSendBtn) {
             retryLastSendBtn.addEventListener('click', () => {
@@ -545,6 +559,12 @@ window.App = {
                 this.sendMessage();
             }
         });
+        document.getElementById('messageInput').addEventListener('input', () => {
+            const value = (document.getElementById('messageInput').value || '').trim();
+            if (value.length > 0) {
+                this.pauseInteractiveNarrativeAutoplay('typing');
+            }
+        });
         
         // Conversation search button
         document.getElementById('searchConversationsBtn').addEventListener('click', () => {
@@ -649,12 +669,21 @@ window.App = {
         this.state.messages = [];
         this.state.conversationSegments = [];
         this.state.threads = [];
+        this.state.interactiveNarrative = {
+            enabled: false,
+            loopId: null,
+            state: 'paused',
+            autoplayActive: false,
+            autoplayDelayMs: 500,
+            pendingTickTimerId: null,
+        };
         
         // Clear all conversation UI components
         UI.renderMessages([]);  // Clear messages properly
         this.clearMessageSelection();
         UI.renderThreads([], null);  // Clear thread tabs
         UI.updateHeader('No conversation selected', '');  // Clear header
+        this.updateInteractiveNarrativeButton();
         
         // Enable memory and workflow buttons
         document.getElementById('memoryPanelBtn').disabled = false;
@@ -897,6 +926,9 @@ window.App = {
             
             // Phase 9: Update scene capture button visibility
             this.updateSceneCaptureButton();
+
+            // Interactive Narrative control state
+            await this.refreshInteractiveNarrativeState();
             
             // Continuity preview for new conversations
             await this.maybeShowContinuityPreview();
@@ -1599,6 +1631,165 @@ window.App = {
             UI.showToast('Failed to delete moment pin', 'error');
         }
     },
+
+    isInteractiveNarrativeEnabledForCharacter() {
+        const character = this.state.characters.find((c) => c.id === this.state.selectedCharacterId);
+        return !!(character && character.features && character.features.interactive_narrative);
+    },
+
+    clearInteractiveNarrativeTimer() {
+        const timerId = this.state.interactiveNarrative.pendingTickTimerId;
+        if (timerId) {
+            clearTimeout(timerId);
+            this.state.interactiveNarrative.pendingTickTimerId = null;
+        }
+    },
+
+    updateInteractiveNarrativeButton() {
+        const btn = document.getElementById('interactiveNarrativeBtn');
+        if (!btn) return;
+        const supported = this.isInteractiveNarrativeEnabledForCharacter();
+        const hasConversation = !!this.state.selectedConversationId;
+        const active = !!this.state.interactiveNarrative.autoplayActive;
+
+        btn.style.display = supported ? '' : 'none';
+        btn.disabled = !(supported && hasConversation);
+        btn.innerHTML = active
+            ? '<i class="bi bi-pause-fill"></i><span class="ms-1">Pause</span>'
+            : '<i class="bi bi-play-fill"></i><span class="ms-1">Let the story continue</span>';
+    },
+
+    async refreshInteractiveNarrativeState() {
+        this.clearInteractiveNarrativeTimer();
+        this.state.interactiveNarrative.loopId = null;
+        this.state.interactiveNarrative.state = 'paused';
+        this.state.interactiveNarrative.autoplayActive = false;
+
+        if (!this.state.selectedConversationId || !this.isInteractiveNarrativeEnabledForCharacter()) {
+            this.updateInteractiveNarrativeButton();
+            return;
+        }
+
+        try {
+            const session = await API.getInteractiveNarrativeSession(this.state.selectedConversationId);
+            this.state.interactiveNarrative.loopId = session.loop_id || null;
+            this.state.interactiveNarrative.state = session.state || 'paused';
+            this.state.interactiveNarrative.autoplayActive = ['running'].includes(this.state.interactiveNarrative.state);
+        } catch (_) {
+            // No existing session is expected for new conversations.
+        }
+
+        this.updateInteractiveNarrativeButton();
+    },
+
+    async pauseInteractiveNarrativeAutoplay(reason = 'manual') {
+        if (!this.state.interactiveNarrative.autoplayActive) return;
+        this.clearInteractiveNarrativeTimer();
+        const loopId = this.state.interactiveNarrative.loopId;
+        this.state.interactiveNarrative.autoplayActive = false;
+        this.state.interactiveNarrative.state = 'paused';
+        this.updateInteractiveNarrativeButton();
+        if (!loopId) return;
+        try {
+            const paused = await API.pauseInteractiveNarrative(loopId);
+            this.state.interactiveNarrative.state = paused.state || 'paused';
+        } catch (error) {
+            console.warn(`Failed to pause interactive narrative (${reason}):`, error);
+        } finally {
+            this.updateInteractiveNarrativeButton();
+        }
+    },
+
+    async handleInteractiveNarrativeButton() {
+        if (!this.isInteractiveNarrativeEnabledForCharacter() || !this.state.selectedConversationId) return;
+        if (this.state.interactiveNarrative.autoplayActive) {
+            await this.pauseInteractiveNarrativeAutoplay('button');
+            return;
+        }
+        await this.startInteractiveNarrativeAutoplay();
+    },
+
+    appendInteractiveNarrativeMessage(content, messageId = null, controlAction = null) {
+        const text = (content || '').trim();
+        if (!text) return;
+        const assistantMsg = {
+            role: 'assistant',
+            content: text,
+            created_at: new Date().toISOString(),
+            id: messageId || null,
+            metadata: {
+                loop: {
+                    loop_id: this.state.interactiveNarrative.loopId,
+                    control_action: controlAction,
+                },
+            },
+        };
+        this.state.messages.push(assistantMsg);
+        const element = UI.appendMessage(assistantMsg);
+        if (element && messageId) {
+            UI.attachMessageId(element, messageId, 'assistant');
+        }
+        setTimeout(() => UI.scrollToBottom(), 0);
+    },
+
+    scheduleInteractiveNarrativeTick() {
+        this.clearInteractiveNarrativeTimer();
+        if (!this.state.interactiveNarrative.autoplayActive) return;
+        const loopId = this.state.interactiveNarrative.loopId;
+        if (!loopId) return;
+        const delayMs = this.state.interactiveNarrative.autoplayDelayMs || 500;
+        this.state.interactiveNarrative.pendingTickTimerId = setTimeout(async () => {
+            this.state.interactiveNarrative.pendingTickTimerId = null;
+            try {
+                const result = await API.tickInteractiveNarrative(loopId);
+                this.state.interactiveNarrative.state = result.state || this.state.interactiveNarrative.state;
+                const control = (result.last_step_control_action || '').toUpperCase();
+                if (result.display_text) {
+                    this.appendInteractiveNarrativeMessage(result.display_text, result.assistant_message_id || null, control || null);
+                }
+                if (this.state.interactiveNarrative.autoplayActive && control === 'CONTINUE') {
+                    this.scheduleInteractiveNarrativeTick();
+                } else if (result.state && result.state !== 'running') {
+                    this.state.interactiveNarrative.autoplayActive = false;
+                } else if (control === 'WAIT_FOR_USER' || control === 'YIELD' || control === 'COMPLETE') {
+                    this.state.interactiveNarrative.autoplayActive = false;
+                }
+            } catch (error) {
+                console.error('Interactive narrative tick failed:', error);
+                this.state.interactiveNarrative.autoplayActive = false;
+                UI.showToast('Interactive narrative stopped due to an error.', 'warning');
+            } finally {
+                this.updateInteractiveNarrativeButton();
+            }
+        }, delayMs);
+    },
+
+    async startInteractiveNarrativeAutoplay() {
+        this.clearInteractiveNarrativeTimer();
+        if (!this.state.selectedConversationId || !this.isInteractiveNarrativeEnabledForCharacter()) return;
+        let loopId = this.state.interactiveNarrative.loopId;
+        try {
+            if (!loopId) {
+                const created = await API.createInteractiveNarrativeSession(this.state.selectedConversationId, {});
+                loopId = created.loop_id;
+                this.state.interactiveNarrative.loopId = loopId;
+                this.state.interactiveNarrative.state = created.state || 'running';
+            } else {
+                const resumed = await API.resumeInteractiveNarrative(loopId);
+                this.state.interactiveNarrative.state = resumed.state || 'running';
+            }
+            this.state.interactiveNarrative.autoplayActive = (this.state.interactiveNarrative.state === 'running');
+            this.updateInteractiveNarrativeButton();
+            if (this.state.interactiveNarrative.autoplayActive) {
+                this.scheduleInteractiveNarrativeTick();
+            }
+        } catch (error) {
+            console.error('Failed to start interactive narrative autoplay:', error);
+            this.state.interactiveNarrative.autoplayActive = false;
+            this.updateInteractiveNarrativeButton();
+            UI.showToast(error.message || 'Failed to start interactive narrative', 'error');
+        }
+    },
     
     /**
      * Send a message
@@ -1613,6 +1804,8 @@ window.App = {
             UI.showToast('Please select a conversation first', 'error');
             return;
         }
+
+        await this.pauseInteractiveNarrativeAutoplay('user_send');
         
         // Task 1.8 & 3.1: Check if there are image attachments (multiple support)
         let attachmentIds = [];

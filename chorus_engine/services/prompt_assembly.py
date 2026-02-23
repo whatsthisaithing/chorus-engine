@@ -351,6 +351,8 @@ class PromptAssemblyService:
         allow_proactive_media_offers: Optional[bool] = None,
         media_gate_context: Optional[dict] = None,
         segment_context: Optional[dict] = None,
+        loop_step: bool = False,
+        loop_kind: Optional[str] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -388,6 +390,8 @@ class PromptAssemblyService:
             allowed_media_tools=allowed_media_tools,
             allow_proactive_media_offers=allow_proactive_media_offers,
             media_gate_context=media_gate_context,
+            loop_step=loop_step,
+            loop_kind=loop_kind,
         )
         segment_recap_injected = False
         segment_recap_source_segment_id: Optional[str] = None
@@ -797,7 +801,9 @@ class PromptAssemblyService:
         include_conversation_context: bool = True,
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
-        media_gate_context: Optional[dict] = None
+        media_gate_context: Optional[dict] = None,
+        loop_step: bool = False,
+        loop_kind: Optional[str] = None,
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -841,6 +847,8 @@ class PromptAssemblyService:
                 allowed_media_tools=allowed_media_tools,
                 allow_proactive_media_offers=allow_proactive_media_offers,
                 media_gate_context=media_gate_context,
+                loop_step=loop_step,
+                loop_kind=loop_kind,
             )
         
         # Check if summarization needed
@@ -865,6 +873,8 @@ class PromptAssemblyService:
                 allowed_media_tools=allowed_media_tools,
                 allow_proactive_media_offers=allow_proactive_media_offers,
                 media_gate_context=media_gate_context,
+                loop_step=loop_step,
+                loop_kind=loop_kind,
             )
         
         # Long conversation - apply selective preservation
@@ -886,6 +896,8 @@ class PromptAssemblyService:
             allowed_media_tools=allowed_media_tools,
             allow_proactive_media_offers=allow_proactive_media_offers,
             media_gate_context=media_gate_context,
+            loop_step=loop_step,
+            loop_kind=loop_kind,
         )
         
         # Inject identity/time headers before other system prompt additions

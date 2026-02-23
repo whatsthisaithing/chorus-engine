@@ -28,6 +28,8 @@ class SystemPromptGenerator:
         allowed_media_tools: Optional[set[str]] = None,
         allow_proactive_media_offers: Optional[bool] = None,
         media_gate_context: Optional[dict] = None,
+        loop_step: bool = False,
+        loop_kind: Optional[str] = None,
     ) -> str:
         """
         Generate the complete system prompt for a character.
@@ -117,8 +119,26 @@ class SystemPromptGenerator:
                 tools_for_contract = set(allowed_media_tools)
             proactive_offers_allowed = True if allow_proactive_media_offers is None else bool(allow_proactive_media_offers)
             parts.append(self._generate_media_guidance(tools_for_contract, proactive_offers_allowed, media_gate_context))
-            if tools_for_contract:
-                parts.append(self._generate_tool_payload_contract(tools_for_contract))
+
+        # 5.5 Control/tool contract and loop-step addenda.
+        # Keep non-loop behavior unchanged: contract is required only when tool payloads can appear.
+        # Loop steps always need the contract because structured control is required there.
+        should_add_contract = bool(loop_step) or bool(image_enabled or video_enabled)
+        if should_add_contract:
+            if allowed_media_tools is None:
+                contract_tools: set[str] = set()
+                if image_enabled:
+                    contract_tools.add("image.generate")
+                if video_enabled:
+                    contract_tools.add("video.generate")
+            else:
+                contract_tools = set(allowed_media_tools)
+            parts.append(self._generate_tool_payload_contract(contract_tools, loop_step=bool(loop_step)))
+
+        if loop_step:
+            parts.append(self._generate_loop_step_mode_block())
+            if str(loop_kind or "").strip() == "narrative.v1":
+                parts.append(self._generate_narrative_v1_control_rules_block())
         
         # 6. Add structured response contract (always enforced)
         structured_contract = self._generate_structured_response_contract(character)
@@ -439,7 +459,7 @@ class SystemPromptGenerator:
                 f"- ALLOWED_TOOLS: {allowed_tools_list}",
                 f"- REQUESTED_MEDIA_TYPE: {requested_type}",
                 f"- IS_ITERATION_REQUEST: {iteration_text}",
-                "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT emit any tool payload.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT emit any media tool call payload.",
                 "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is not 'none', you MUST emit exactly one valid tool payload.",
                 "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is 'none', you may emit at most one tool payload only when making a genuine proactive offer.",
                 "- Do not force or invent a tool payload unless intentionally offering media.",
@@ -528,7 +548,7 @@ class SystemPromptGenerator:
 
         return "\n".join(lines)
 
-    def _generate_tool_payload_contract(self, allowed_tools: set[str]) -> str:
+    def _generate_tool_payload_contract(self, allowed_tools: set[str], *, loop_step: bool = False) -> str:
         supported_tools: list[str] = []
         if "image.generate" in allowed_tools:
             supported_tools.append("- image.generate")
@@ -536,7 +556,7 @@ class SystemPromptGenerator:
             supported_tools.append("- video.generate")
         supported_tools_block = "\n".join(supported_tools)
 
-        contract = """**Tool Payload Contract (Mandatory):**
+        contract = """**Control / Tool Payload Contract (Mandatory When Requested):**
 - If you emit a tool call, place it AFTER </assistant_response>.
 - Use these exact sentinels:
 ---CHORUS_TOOL_PAYLOAD_BEGIN---
@@ -547,11 +567,15 @@ class SystemPromptGenerator:
 - Do not mention or explain tool JSON in visible prose.
 - Never output tool JSON as prose, markdown, fenced code blocks, or raw JSON text.
 - Tool payloads must appear only inside the exact required sentinel markers.
-- If you are not 100% certain you can format the sentinel block correctly, emit no tool payload.
+- If you are not 100% certain you can format the sentinel block correctly, emit no payload.
 
 JSON schema (version 1):
 {
   "version": 1,
+  "control": {
+    "action": "CONTINUE | YIELD | COMPLETE",
+    "args": {}
+  },
   "tool_calls": [
     {
       "id": "unique_call_identifier",
@@ -567,7 +591,54 @@ JSON schema (version 1):
 Supported tools:
 - {supported_tools}
 Only one tool call is recommended."""
-        return contract.replace("- {supported_tools}", supported_tools_block)
+        contract = contract.replace("- {supported_tools}", supported_tools_block)
+        clarifications = [
+            "",
+            "Clarifications:",
+            "- `control` is REQUIRED for loop steps.",
+            "- `control` is OPTIONAL in normal conversation turns.",
+            "- `tool_calls` must remain an array (may be empty).",
+            "- Never encode control decisions in prose.",
+            "- Never emit control outside the sentinel payload.",
+        ]
+        if not loop_step:
+            clarifications.append("- If not producing control or tool calls, do not emit a sentinel payload block.")
+        return "\n".join([contract] + clarifications)
+
+    def _generate_loop_step_mode_block(self) -> str:
+        lines = [
+            "**Loop Step Mode (Mandatory):**",
+            "This message is part of an ENS loop progression step.",
+            "",
+            "You MUST:",
+            "- Emit exactly one control payload inside the sentinel block.",
+            "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
+            "- Keep `tool_calls` empty unless explicitly allowed.",
+            "- Write one narrative beat.",
+            "- Do not resolve major user-character decisions without input.",
+            "- Do not encode control decisions in prose.",
+            "",
+            "If you fail to emit structured control, the step is invalid.",
+        ]
+        return "\n".join(lines)
+
+    def _generate_narrative_v1_control_rules_block(self) -> str:
+        lines = [
+            "**Interactive Narrative Control Selection Rules:**",
+            "- Use YIELD when you ask the user a question, when a meaningful player decision is required,",
+            "  before irreversible consequences, or at a natural pause point.",
+            "- Use CONTINUE when advancing environment/NPC behavior or consequences already implied",
+            "  without removing user agency.",
+            "- Use COMPLETE when the scene resolves naturally and the narrative arc concludes cleanly.",
+            "- Do not artificially prolong scenes.",
+            "- Do not generate multiple major beats in one step.",
+            "",
+            "**Narrative.v1 Media Safeguard:**",
+            "- Tool allowlist is empty for narrative.v1 steps.",
+            "- If the user requests media during autoplay, respond in-character and emit `control.action = YIELD`.",
+            "- Do NOT emit a media tool call during narrative.v1 loop steps.",
+        ]
+        return "\n".join(lines)
 
     def _get_effective_template(self, character: CharacterConfig) -> str:
         if getattr(character, "response_template", None):

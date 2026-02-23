@@ -103,6 +103,7 @@ from chorus_engine.services.media_offer_policy import (
     record_offer,
 )
 from chorus_engine.services.relationship_resolution_service import RelationshipResolutionService
+from chorus_engine.repositories.relationship_repository import RelationshipRepository
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import (
@@ -129,6 +130,7 @@ from chorus_engine.ens import ENSRuntime, ENSContext, Signal
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.media_generation import ENSMediaGenerator
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
+from chorus_engine.models.ens import ENSLoopSession, ENSLoopStepEvent
 
 logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
@@ -2003,6 +2005,23 @@ class ChatInThreadResponse(BaseModel):
     conversation_title_updated: Optional[str] = None  # New title if auto-generated
 
 
+class InteractiveNarrativeSessionRequest(BaseModel):
+    loop_id: Optional[str] = None
+    step_prompt: Optional[str] = None
+
+
+class InteractiveNarrativeSessionResponse(BaseModel):
+    loop_id: str
+    state: str
+    progression_enqueued: bool
+    created: Optional[bool] = None
+    loop_kind: Optional[str] = None
+    loop_mode: Optional[str] = None
+    last_step_control_action: Optional[str] = None
+    assistant_message_id: Optional[str] = None
+    display_text: Optional[str] = None
+
+
 class ConversationMediaOffersUpdateRequest(BaseModel):
     """Update conversation-level proactive offer flags."""
 
@@ -2387,10 +2406,14 @@ async def list_characters():
                 "video_generation": {
                     "enabled": char.video_generation.enabled if char.video_generation else False,
                 } if char.video_generation else None,
+                "features": {
+                    "interactive_narrative": bool(getattr(getattr(char, "features", None), "interactive_narrative", False)),
+                },
                 "capabilities": {
                     "image_generation": char.image_generation.enabled if char.image_generation else False,
                     "video_generation": char.video_generation.enabled if char.video_generation else False,
                     "audio_generation": char.voice is not None,
+                    "interactive_narrative": bool(getattr(getattr(char, "features", None), "interactive_narrative", False)),
                 },
                 "document_analysis": {
                     "enabled": char.document_analysis.enabled if char.document_analysis else False,
@@ -5373,15 +5396,30 @@ async def create_conversation(
             detail=f"Character '{request.character_id}' not found"
         )
     
+    source = request.source or "web"
+    resolved_relationship_id = request.relationship_id
+    if not resolved_relationship_id:
+        relationship_repo = RelationshipRepository(db)
+        relationship = relationship_repo.get_or_create_relationship(
+            RelationshipResolutionService.OWNER_USER_ID,
+            request.character_id,
+        )
+        resolved_relationship_id = relationship.id
+        relationship_repo.get_or_create_surface(
+            relationship_id=relationship.id,
+            surface_id=source,
+            surface_instance_id="",
+        )
+
     repo = ConversationRepository(db)
     conversation = repo.create(
         character_id=request.character_id,
         title=request.title,
-        source=request.source or "web",
+        source=source,
         image_confirmation_disabled=request.image_confirmation_disabled,
         primary_user=request.primary_user,
         continuity_mode="ask",
-        relationship_id=request.relationship_id,
+        relationship_id=resolved_relationship_id,
         conversation_kind=request.conversation_kind or "standard",
         origin_conversation_id=request.origin_conversation_id,
     )
@@ -5733,6 +5771,300 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     
     return conversation
+
+
+@app.get(
+    "/conversations/{conversation_id}/interactive-narrative/session",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def get_interactive_narrative_session(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+):
+    conversation = ConversationRepository(db).get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    session = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.conversation_id == conversation_id)
+        .order_by(ENSLoopSession.updated_at.desc())
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    last_event = (
+        db.query(ENSLoopStepEvent)
+        .filter(ENSLoopStepEvent.loop_id == session.loop_id)
+        .order_by(ENSLoopStepEvent.step_index_after.desc(), ENSLoopStepEvent.created_at_us.desc())
+        .first()
+    )
+    return InteractiveNarrativeSessionResponse(
+        loop_id=session.loop_id,
+        state=str(session.state or "paused"),
+        progression_enqueued=False,
+        created=False,
+        loop_kind=str(session.loop_kind),
+        loop_mode=str(session.loop_mode),
+        last_step_control_action=(str(last_event.control_action) if last_event and last_event.control_action else None),
+        assistant_message_id=(
+            str(((last_event.output_json or {}).get("assistant_message_id")))
+            if last_event and isinstance(last_event.output_json, dict) and (last_event.output_json or {}).get("assistant_message_id")
+            else None
+        ),
+    )
+
+
+@app.post(
+    "/conversations/{conversation_id}/interactive-narrative/session",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def create_interactive_narrative_session(
+    conversation_id: str,
+    request: InteractiveNarrativeSessionRequest,
+    db: Session = Depends(get_db),
+):
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    conversation = ConversationRepository(db).get_by_id(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    character = app_state["characters"].get(conversation.character_id)
+    if not character:
+        raise HTTPException(status_code=404, detail=f"Character '{conversation.character_id}' not found")
+    enabled = bool(getattr(getattr(character, "features", None), "interactive_narrative", False))
+    if not enabled:
+        raise HTTPException(status_code=400, detail="Interactive narrative is disabled for this character")
+    if not conversation.relationship_id:
+        relationship_repo = RelationshipRepository(db)
+        relationship = relationship_repo.get_or_create_relationship(
+            RelationshipResolutionService.OWNER_USER_ID,
+            conversation.character_id,
+        )
+        conversation.relationship_id = relationship.id
+        relationship_repo.get_or_create_surface(
+            relationship_id=relationship.id,
+            surface_id=conversation.source or "web",
+            surface_instance_id="",
+        )
+        db.commit()
+        db.refresh(conversation)
+
+    if request.loop_id:
+        loop_id = str(request.loop_id)
+    else:
+        existing = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.conversation_id == conversation.id)
+            .filter(ENSLoopSession.loop_kind == "narrative.v1")
+            .order_by(ENSLoopSession.updated_at.desc())
+            .first()
+        )
+        loop_id = str(existing.loop_id) if existing is not None else str(uuid.uuid4())
+    signal = Signal(
+        type="loop.session.create_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=conversation.character_id,
+        payload={
+            "loop_id": loop_id,
+            "loop_kind": "narrative.v1",
+            "loop_mode": "visible",
+            "relationship_id": conversation.relationship_id,
+            "conversation_id": conversation.id,
+            "surface_id": conversation.source or "web",
+            "character_id": conversation.character_id,
+            "step_prompt": request.step_prompt,
+            "auto_enqueue": False,
+        },
+        relationship_hint=conversation.relationship_id,
+        surface_id=conversation.source or "web",
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(app_state=app_state, surface=conversation.source or "web", source=conversation.source or "web"),
+    )
+    payload = dict(outcome.response_payload or {})
+    return InteractiveNarrativeSessionResponse(
+        loop_id=str(payload.get("loop_id") or loop_id),
+        state=str(payload.get("state") or "paused"),
+        progression_enqueued=bool(payload.get("progression_enqueued")),
+        created=bool(payload.get("created")),
+        loop_kind=str(payload.get("loop_kind") or "narrative.v1"),
+        loop_mode=str(payload.get("loop_mode") or "visible"),
+    )
+
+
+@app.post(
+    "/interactive-narrative/{loop_id}/pause",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def pause_interactive_narrative(loop_id: str, db: Session = Depends(get_db)):
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    row = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(row.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
+    assistant_id = str(conversation.character_id) if conversation and conversation.character_id else None
+    signal = Signal(
+        type="loop.session.pause_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=assistant_id,
+        payload={"loop_id": loop_id},
+        relationship_hint=row.relationship_id,
+        surface_id=row.surface_id,
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(app_state=app_state, surface=row.surface_id or "web", source=row.surface_id or "web"),
+    )
+    payload = dict(outcome.response_payload or {})
+    if not payload.get("loop_id"):
+        row.state = "paused"
+        row.stop_reason = "manual_pause"
+        db.commit()
+        payload = {
+            "loop_id": row.loop_id,
+            "loop_kind": row.loop_kind,
+            "loop_mode": row.loop_mode,
+            "state": row.state,
+            "progression_enqueued": False,
+        }
+    if str(payload.get("loop_kind") or "narrative.v1") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    return InteractiveNarrativeSessionResponse(
+        loop_id=str(payload.get("loop_id")),
+        state=str(payload.get("state") or "paused"),
+        progression_enqueued=False,
+        created=False,
+        last_step_control_action=None,
+    )
+
+
+@app.post(
+    "/interactive-narrative/{loop_id}/resume",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def resume_interactive_narrative(loop_id: str, db: Session = Depends(get_db)):
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    row = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(row.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
+    assistant_id = str(conversation.character_id) if conversation and conversation.character_id else None
+    signal = Signal(
+        type="loop.session.resume_requested",
+        scope="SESSION",
+        source="external",
+        assistant_id=assistant_id,
+        payload={"loop_id": loop_id, "auto_enqueue": False},
+        relationship_hint=row.relationship_id,
+        surface_id=row.surface_id,
+    )
+
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(app_state=app_state, surface=row.surface_id or "web", source=row.surface_id or "web"),
+    )
+    payload = dict(outcome.response_payload or {})
+    if not payload.get("loop_id"):
+        if str(row.state or "") in ("paused", "waiting_for_user"):
+            row.state = "running"
+            row.stop_reason = None
+            db.commit()
+        payload = {
+            "loop_id": row.loop_id,
+            "loop_kind": row.loop_kind,
+            "loop_mode": row.loop_mode,
+            "state": row.state,
+            "progression_enqueued": False,
+        }
+    return InteractiveNarrativeSessionResponse(
+        loop_id=str(payload.get("loop_id") or loop_id),
+        state=str(payload.get("state") or "paused"),
+        progression_enqueued=bool(payload.get("progression_enqueued")),
+        created=False,
+        last_step_control_action=payload.get("last_step_control_action"),
+    )
+
+
+@app.post(
+    "/interactive-narrative/{loop_id}/tick",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)):
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+    session = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(session.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    conversation = ConversationRepository(db).get_by_id(str(session.conversation_id or "")) if session.conversation_id else None
+    if str(session.state or "") not in ("running",):
+        return InteractiveNarrativeSessionResponse(
+            loop_id=session.loop_id,
+            state=str(session.state or "paused"),
+            progression_enqueued=False,
+            created=False,
+            loop_kind=str(session.loop_kind),
+            loop_mode=str(session.loop_mode),
+        )
+
+    signal = Signal(
+        type="loop_progression",
+        scope="SESSION",
+        source="external",
+        assistant_id=(str(conversation.character_id) if conversation and conversation.character_id else None),
+        payload={
+            "loop_id": session.loop_id,
+            "loop_kind": session.loop_kind,
+            "relationship_id": session.relationship_id,
+            "conversation_id": session.conversation_id,
+            "surface_id": session.surface_id,
+            "character_id": (str(conversation.character_id) if conversation and conversation.character_id else None),
+        },
+        relationship_hint=session.relationship_id,
+        surface_id=session.surface_id,
+    )
+    outcome = await runtime.ingest(
+        signal,
+        ENSContext(app_state=app_state, surface=session.surface_id or "web", source=session.surface_id or "web"),
+    )
+    payload = dict(outcome.response_payload or {})
+    return InteractiveNarrativeSessionResponse(
+        loop_id=str(payload.get("loop_id") or loop_id),
+        state=str(payload.get("state") or "paused"),
+        progression_enqueued=bool(payload.get("next_progression_enqueued")),
+        created=False,
+        loop_kind=str(payload.get("loop_kind") or session.loop_kind),
+        loop_mode=str(payload.get("loop_mode") or session.loop_mode),
+        last_step_control_action=payload.get("last_step_control_action") or payload.get("control_action"),
+        assistant_message_id=payload.get("assistant_message_id"),
+        display_text=payload.get("display_text"),
+    )
 
 
 @app.get("/conversations/{conversation_id}/segments", response_model=List[ConversationSegmentResponse])

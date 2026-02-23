@@ -210,6 +210,35 @@ class API {
         return this.request(`/conversations/${conversationId}`);
     }
 
+    static async getInteractiveNarrativeSession(conversationId) {
+        return this.request(`/conversations/${conversationId}/interactive-narrative/session`);
+    }
+
+    static async createInteractiveNarrativeSession(conversationId, payload = {}) {
+        return this.request(`/conversations/${conversationId}/interactive-narrative/session`, {
+            method: 'POST',
+            body: JSON.stringify(payload || {}),
+        });
+    }
+
+    static async pauseInteractiveNarrative(loopId) {
+        return this.request(`/interactive-narrative/${loopId}/pause`, {
+            method: 'POST',
+        });
+    }
+
+    static async resumeInteractiveNarrative(loopId) {
+        return this.request(`/interactive-narrative/${loopId}/resume`, {
+            method: 'POST',
+        });
+    }
+
+    static async tickInteractiveNarrative(loopId) {
+        return this.request(`/interactive-narrative/${loopId}/tick`, {
+            method: 'POST',
+        });
+    }
+
     static async listConversationSegments(conversationId, skip = 0, limit = 500) {
         const params = new URLSearchParams();
         if (skip) params.append('skip', skip);

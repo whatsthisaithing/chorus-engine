@@ -47,6 +47,7 @@ from chorus_engine.services.conversation_segmentation_service import Conversatio
 from chorus_engine.db.conversation_segment_vector_store import ConversationSegmentVectorStore
 from chorus_engine.services.moment_pin_extraction_service import MomentPinExtractionService
 from chorus_engine.services.prompt_assembly import PromptAssemblyService
+from chorus_engine.services.system_prompt_generator import SystemPromptGenerator
 from chorus_engine.services.media_turn_classifier import classify_media_turn
 from chorus_engine.services.media_offer_policy import (
     compute_turn_media_permissions,
@@ -90,9 +91,16 @@ _LOOP_RUNNABLE_STATES = {"running"}
 _ALLOWED_TOOLS_BY_LOOP_KIND = {
     # Expand in later slices; default remains deny-by-default for safety.
     "generic": set(),
+    "narrative.v1": set(),
 }
 _VALID_LOOP_MODES = {"visible", "hidden"}
 _LOOP_COMPRESSION_ALGO_VERSION = "fold_v1"
+_NARRATIVE_V1_CONTROL_WAIT_EQUIVALENTS = {"WAIT_FOR_USER", "YIELD"}
+_LOOP_POLICY_BY_KIND = {
+    "narrative.v1": {
+        "max_consecutive_continue": 4,
+    },
+}
 
 
 def _get_effective_template(character) -> str:
@@ -322,6 +330,10 @@ class ENSDispatcher:
                 output = await self._execute_llm_control(action.params)
             elif action.kind == "loop.session.create":
                 output = await self._create_loop_session(db, action.params)
+            elif action.kind == "loop.session.pause":
+                output = self._pause_loop_session(db, action.params)
+            elif action.kind == "loop.session.resume":
+                output = await self._resume_loop_session(db, action.params)
             elif action.kind == "loop.progression.step":
                 output = await self._run_loop_progression_step(db, action.params)
             else:
@@ -1134,6 +1146,10 @@ class ENSDispatcher:
             "tool_calls": [dict(req.payload or {}) for req in (assistant_result.tool_requests or [])],
         }
         validated_tool_calls = validate_tool_payload(normalized_tool_payload)
+        # Defensive fallback: if normalized wrapper shape drifts, preserve valid
+        # sentinel payload tool calls instead of silently dropping them.
+        if not validated_tool_calls and isinstance(payload_obj, dict):
+            validated_tool_calls = validate_tool_payload(payload_obj)
         display_text = assistant_result.display_text
         cold_recall_requested = False
         cold_recall_executed = False
@@ -1947,6 +1963,43 @@ class ENSDispatcher:
         )
         return str(intent.id)
 
+    def _persist_loop_visible_web_message(
+        self,
+        db: Session,
+        *,
+        session: ENSLoopSession,
+        display_text: str,
+        control_action: Optional[str],
+        step_index: int,
+    ) -> Optional[str]:
+        text = str(display_text or "").strip()
+        if not text:
+            return None
+        if str(session.surface_id or "").strip().lower() != "web":
+            return None
+        conversation_id = str(session.conversation_id or "").strip()
+        if not conversation_id:
+            return None
+        thread_repo = ThreadRepository(db)
+        threads = thread_repo.list_by_conversation(conversation_id)
+        if not threads:
+            return None
+        msg_repo = MessageRepository(db)
+        created = msg_repo.create(
+            thread_id=threads[0].id,
+            role=MessageRole.ASSISTANT,
+            content=text,
+            metadata={
+                "loop": {
+                    "loop_id": session.loop_id,
+                    "control_action": control_action,
+                    "step_index": step_index,
+                }
+            },
+            is_private=False,
+        )
+        return str(created.id)
+
     async def _enqueue_loop_progression_from_session(
         self,
         db: Session,
@@ -2028,8 +2081,9 @@ class ENSDispatcher:
             db.commit()
             db.refresh(session)
 
+        auto_enqueue = bool(params.get("auto_enqueue", True))
         progression = None
-        if session.state in _LOOP_RUNNABLE_STATES:
+        if auto_enqueue and session.state in _LOOP_RUNNABLE_STATES:
             progression = await self._enqueue_loop_progression_from_session(
                 db,
                 session=session,
@@ -2049,6 +2103,127 @@ class ENSDispatcher:
             "state": session.state,
             "progression_enqueued": bool(progression),
             "progression": progression,
+        }
+
+    @staticmethod
+    def _loop_kind_policy(loop_kind: str) -> Dict[str, Any]:
+        kind = str(loop_kind or "").strip()
+        return dict(_LOOP_POLICY_BY_KIND.get(kind) or {})
+
+    @staticmethod
+    def _is_narrative_v1(loop_kind: str) -> bool:
+        return str(loop_kind or "").strip() == "narrative.v1"
+
+    def _consecutive_continue_count(self, db: Session, *, loop_id: str) -> int:
+        rows = (
+            db.query(ENSLoopStepEvent.control_action)
+            .filter(ENSLoopStepEvent.loop_id == loop_id)
+            .order_by(ENSLoopStepEvent.step_index_after.desc(), ENSLoopStepEvent.created_at_us.desc())
+            .limit(64)
+            .all()
+        )
+        count = 0
+        for row in rows:
+            action = str(getattr(row, "control_action", None) or "").strip().upper()
+            if action == "CONTINUE":
+                count += 1
+                continue
+            break
+        return count
+
+    @staticmethod
+    def _loop_step_prompt_addendum(loop_kind: str) -> str:
+        base = [
+            "Loop Step Mode (Mandatory):",
+            "- This message is one loop step.",
+            "- You MUST include a control payload in the Chorus sentinel block.",
+            "- Choose exactly one action: CONTINUE, WAIT_FOR_USER, COMPLETE, or YIELD.",
+            "- Write one narrative beat only.",
+            "- Do not encode control decisions in prose.",
+            "- Do not emit tool calls unless explicitly allowed for this loop kind.",
+        ]
+        if str(loop_kind or "").strip() == "narrative.v1":
+            base.extend(
+                [
+                    "",
+                    "Interactive Narrative Control Selection Rules:",
+                    "- Use WAIT_FOR_USER or YIELD when asking a question, at a meaningful choice point, or before irreversible consequences.",
+                    "- Use CONTINUE when advancing immediate consequences or NPC/environment beats without removing user agency.",
+                    "- Use COMPLETE when the scene resolves naturally.",
+                    "- In narrative.v1, WAIT_FOR_USER and YIELD are equivalent wait controls.",
+                ]
+            )
+        return "\n".join(base)
+
+    def _pause_loop_session(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        loop_id = str(params.get("loop_id") or "").strip()
+        if not loop_id:
+            raise RuntimeError("loop.session.pause requires loop_id")
+        session = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.loop_id == loop_id)
+            .first()
+        )
+        if session is None:
+            return {"_ens_action_status": "skipped", "reason": "loop_not_found", "loop_id": loop_id}
+        prev_state = str(session.state or "")
+        session.state = "paused"
+        session.stop_reason = "manual_pause"
+        db.commit()
+        return {
+            "loop_id": session.loop_id,
+            "loop_kind": session.loop_kind,
+            "loop_mode": session.loop_mode,
+            "state": session.state,
+            "previous_state": prev_state,
+            "paused": True,
+            "progression_enqueued": False,
+        }
+
+    async def _resume_loop_session(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        loop_id = str(params.get("loop_id") or "").strip()
+        if not loop_id:
+            raise RuntimeError("loop.session.resume requires loop_id")
+        session = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.loop_id == loop_id)
+            .first()
+        )
+        if session is None:
+            return {"_ens_action_status": "skipped", "reason": "loop_not_found", "loop_id": loop_id}
+
+        prev_state = str(session.state or "")
+        auto_enqueue = bool(params.get("auto_enqueue", True))
+        progression = None
+        if prev_state in ("paused", "waiting_for_user"):
+            session.state = "running"
+            session.stop_reason = None
+            db.commit()
+            if auto_enqueue:
+                progression = await self._enqueue_loop_progression_from_session(
+                    db,
+                    session=session,
+                    step_prompt=params.get("step_prompt"),
+                    character_id=params.get("character_id"),
+                    idempotency_key=str(params.get("progression_idempotency_key") or "").strip() or None,
+                )
+
+        last_event = (
+            db.query(ENSLoopStepEvent)
+            .filter(ENSLoopStepEvent.loop_id == session.loop_id)
+            .order_by(ENSLoopStepEvent.step_index_after.desc(), ENSLoopStepEvent.created_at_us.desc())
+            .first()
+        )
+        return {
+            "loop_id": session.loop_id,
+            "loop_kind": session.loop_kind,
+            "loop_mode": session.loop_mode,
+            "state": session.state,
+            "previous_state": prev_state,
+            "resumed": bool(prev_state in ("paused", "waiting_for_user")),
+            "progression_enqueued": bool(progression),
+            "progression": progression,
+            "last_step_control_action": (str(last_event.control_action) if last_event and last_event.control_action else None),
         }
 
     async def _run_loop_progression_step(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -2078,20 +2253,83 @@ class ENSDispatcher:
         loop_mode = self._loop_mode_for_session(session.loop_kind, getattr(session, "loop_mode", None))
         session.loop_mode = loop_mode
         character = self.app_state["characters"].get(character_id) if character_id else None
+        conversation = None
+        if session.conversation_id:
+            conversation = ConversationRepository(db).get_by_id(str(session.conversation_id))
         effective = self.llm_invoker.resolve_effective_config(
             character=character,
             invocation_kind="chat",
         )
         explicit_prompt = str(params.get("step_prompt") or "").strip()
-        if explicit_prompt:
-            step_prompt = explicit_prompt
-        else:
-            context_doc = self._build_loop_prompt_context(db, session=session)
-            step_prompt = (
-                f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}.\n"
-                "Deterministic working memory context (folded + recent raw):\n"
-                f"{canonical_json(context_doc)}"
+        prompt_addendum = self._loop_step_prompt_addendum(session.loop_kind)
+        loop_system_prompt = getattr(character, "system_prompt", None)
+        step_messages = None
+        prompt_token_breakdown = None
+        if character is not None:
+            loop_allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
+            loop_system_prompt = SystemPromptGenerator().generate(
+                character=character,
+                primary_user=getattr(conversation, "primary_user", None),
+                conversation_source=(session.surface_id or getattr(conversation, "source", None) or "web"),
+                conversation_kind=getattr(conversation, "conversation_kind", None),
+                allowed_media_tools=loop_allowed_tools,
+                allow_proactive_media_offers=False,
+                media_gate_context=None,
+                loop_step=True,
+                loop_kind=str(session.loop_kind or ""),
             )
+            if self._is_narrative_v1(session.loop_kind) and conversation is not None:
+                thread_repo = ThreadRepository(db)
+                threads = thread_repo.list_by_conversation(str(conversation.id))
+                if threads:
+                    prompt_assembler = PromptAssemblyService(
+                        db=db,
+                        character_id=character.id,
+                        model_name=self.app_state["system_config"].llm.model,
+                        context_window=character.preferred_llm.context_window or self.app_state["system_config"].llm.context_window,
+                        shared_embedding_service=self.app_state.get("embedding_service"),
+                        shared_memory_vector_store=self.app_state.get("vector_store"),
+                        shared_summary_vector_store=self.app_state.get("summary_vector_store"),
+                        shared_moment_pin_vector_store=self.app_state.get("moment_pin_vector_store"),
+                        shared_document_vector_store=(
+                            self.app_state.get("document_manager").vector_store
+                            if self.app_state.get("document_manager")
+                            else None
+                        ),
+                        startup_monotonic=self.app_state.get("startup_monotonic"),
+                    )
+                    prompt_components = prompt_assembler.assemble_prompt(
+                        thread_id=str(threads[0].id),
+                        include_memories=True,
+                        primary_user=getattr(conversation, "primary_user", None),
+                        conversation_source=(session.surface_id or getattr(conversation, "source", None) or "web"),
+                        conversation_kind=getattr(conversation, "conversation_kind", None),
+                        surface_instance_id=None,
+                        conversation_id=str(conversation.id),
+                        user_id=None,
+                        include_conversation_context=True,
+                        allowed_media_tools=loop_allowed_tools,
+                        allow_proactive_media_offers=False,
+                        media_gate_context=None,
+                        segment_context=params.get("segment_context"),
+                        loop_step=True,
+                        loop_kind=str(session.loop_kind or ""),
+                    )
+                    step_messages = prompt_assembler.format_for_api(prompt_components)
+                    step_messages.append({"role": "user", "content": (explicit_prompt or "continue")})
+                    prompt_token_breakdown = dict(prompt_components.token_breakdown or {})
+
+        if step_messages is None:
+            if explicit_prompt:
+                step_prompt = f"{explicit_prompt}\n\n{prompt_addendum}"
+            else:
+                context_doc = self._build_loop_prompt_context(db, session=session)
+                step_prompt = (
+                    f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}.\n"
+                    "Deterministic working memory context (folded + recent raw):\n"
+                    f"{canonical_json(context_doc)}\n\n"
+                    f"{prompt_addendum}"
+                )
 
         # Hidden loops preempt immediately when newer user input is waiting.
         if loop_mode == "hidden" and self._has_newer_pending_user_signal(
@@ -2152,6 +2390,7 @@ class ENSDispatcher:
                 "token_budget_used": int(session.token_budget_used or 0),
                 "tool_budget_used": int(session.tool_budget_used or 0),
                 "display_text": "",
+                "last_step_control_action": None,
                 "control_action": None,
                 "tool_requests_total": 0,
                 "tool_requests_allowed": 0,
@@ -2162,27 +2401,29 @@ class ENSDispatcher:
                 "step_event_id": step_event.event_id,
             }
 
-        invocation = await self.llm_invoker.invoke(
-            InvocationRequest(
-                invocation_kind="chat",
-                idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
-                model_id=effective.model_id,
-                provider=effective.provider,
-                engine=effective.engine,
-                conversation_id=session.conversation_id,
-                surface_id=session.surface_id,
-                character_id=character_id,
-                prompt=step_prompt,
-                system_prompt=getattr(character, "system_prompt", None),
-                temperature=effective.temperature,
-                max_tokens=effective.max_tokens,
-                metadata={
-                    "loop_id": loop_id,
-                    "loop_kind": session.loop_kind,
-                    "relationship_id": session.relationship_id,
-                },
-            )
+        request_kwargs = dict(
+            invocation_kind="chat",
+            idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
+            model_id=effective.model_id,
+            provider=effective.provider,
+            engine=effective.engine,
+            conversation_id=session.conversation_id,
+            surface_id=session.surface_id,
+            character_id=character_id,
+            temperature=effective.temperature,
+            max_tokens=effective.max_tokens,
+            metadata={
+                "loop_id": loop_id,
+                "loop_kind": session.loop_kind,
+                "relationship_id": session.relationship_id,
+            },
         )
+        if step_messages is not None:
+            request_kwargs["messages"] = step_messages
+        else:
+            request_kwargs["prompt"] = step_prompt
+            request_kwargs["system_prompt"] = loop_system_prompt
+        invocation = await self.llm_invoker.invoke(InvocationRequest(**request_kwargs))
         if invocation.get("status") != "success":
             session.state = "errored"
             session.stop_reason = (invocation.get("error") or {}).get("message") or "loop_step_invocation_failed"
@@ -2192,6 +2433,8 @@ class ENSDispatcher:
         raw_content = invocation.get("output_text") or ""
         assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
         control_action = assistant_result.control.action if assistant_result.control else None
+        if self._is_narrative_v1(session.loop_kind) and not control_action:
+            control_action = "WAIT_FOR_USER"
         control_channel = "structured_control_present" if control_action else "no_control_present"
         parsed_from_text = False
         logger.info(
@@ -2216,36 +2459,84 @@ class ENSDispatcher:
         allowed_tool_requests = [r for r in requested_tools if r.tool_name in allowed_tools]
         blocked_tool_requests = [r.tool_name for r in requested_tools if r.tool_name not in allowed_tools]
 
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        capture_full_prompt = bool(ens_cfg and getattr(ens_cfg, "debug_capture_full_prompt", False))
+        loop_log_event: Dict[str, Any] = {
+            "type": "ens_loop_step_turn",
+            "loop_id": loop_id,
+            "loop_kind": session.loop_kind,
+            "conversation_id": session.conversation_id,
+            "character_id": character_id,
+            "step_index_before": step_index_before,
+            "step_prompt_mode": ("messages" if step_messages is not None else "prompt"),
+            "raw_content": raw_content,
+            "display_content": assistant_result.display_text,
+            "control_action": control_action,
+            "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            "tool_requests_total": len(requested_tools),
+            "tool_requests_allowed": len(allowed_tool_requests),
+            "tool_requests_blocked": blocked_tool_requests,
+            "finish_reason": invocation.get("finish_reason"),
+            "output_empty": bool(invocation.get("output_empty")),
+            "completion_flags": invocation.get("completion_flags") or [],
+        }
+        if capture_full_prompt:
+            loop_log_event["prompt_capture"] = {
+                "enabled": True,
+                "mode": ("messages" if step_messages is not None else "prompt"),
+                "messages_for_llm": (step_messages if step_messages is not None else None),
+                "system_prompt": (loop_system_prompt if step_messages is None else None),
+                "prompt": (step_prompt if step_messages is None else None),
+                "token_breakdown": prompt_token_breakdown,
+            }
+        self._append_conversation_ens_debug_log(session.conversation_id, loop_log_event)
+
         session.step_index = int(session.step_index or 0) + 1
         session.step_count = int(session.step_count or 0) + 1
         session.token_budget_used = int(session.token_budget_used or 0) + self._loop_tokens_used(invocation)
         session.tool_budget_used = int(session.tool_budget_used or 0) + len(allowed_tool_requests)
         session.stop_reason = None
 
+        control_action_norm = str(control_action or "").strip().upper() if control_action else None
+        if self._is_narrative_v1(session.loop_kind) and control_action_norm in _NARRATIVE_V1_CONTROL_WAIT_EQUIVALENTS:
+            control_action_norm = "WAIT_FOR_USER"
+            control_action = "WAIT_FOR_USER"
+
         enqueue_next = False
         if loop_mode == "hidden":
-            if control_action == "COMPLETE":
+            if control_action_norm == "COMPLETE":
                 session.state = "stopped"
                 session.stop_reason = "complete"
-            elif control_action == "WAIT_FOR_USER":
+            elif control_action_norm == "WAIT_FOR_USER":
                 session.state = "waiting_for_user"
                 session.stop_reason = "wait_for_user"
             else:
                 session.state = "running"
                 enqueue_next = True
         else:
-            if control_action == "WAIT_FOR_USER":
+            if control_action_norm == "WAIT_FOR_USER":
                 session.state = "waiting_for_user"
                 session.stop_reason = "wait_for_user"
-            elif control_action == "COMPLETE":
+            elif control_action_norm == "COMPLETE":
                 session.state = "stopped"
                 session.stop_reason = "complete"
-            elif control_action == "YIELD":
+            elif control_action_norm == "YIELD":
                 session.state = "running"
                 session.stop_reason = "yielded"
             else:
                 session.state = "running"
-                enqueue_next = control_action == "CONTINUE"
+                enqueue_next = control_action_norm == "CONTINUE"
+
+        policy = self._loop_kind_policy(session.loop_kind)
+        max_consecutive_continue = int(policy.get("max_consecutive_continue", 0) or 0)
+        if max_consecutive_continue > 0 and control_action_norm == "CONTINUE":
+            trailing_continue = self._consecutive_continue_count(db, loop_id=loop_id)
+            if trailing_continue + 1 >= max_consecutive_continue:
+                session.state = "waiting_for_user"
+                session.stop_reason = "max_consecutive_continue_reached"
+                enqueue_next = False
+                control_action = "WAIT_FOR_USER"
+                control_action_norm = "WAIT_FOR_USER"
 
         # Visible loops: if newer user input is pending, pause after current step completes.
         if loop_mode == "visible" and self._has_newer_pending_user_signal(
@@ -2263,6 +2554,7 @@ class ENSDispatcher:
         db.commit()
 
         outbox_count = 0
+        assistant_message_id = None
         if loop_mode == "visible":
             intent_id = self._persist_loop_visible_egress(
                 db,
@@ -2274,6 +2566,13 @@ class ENSDispatcher:
             )
             if intent_id:
                 outbox_count = 1
+            assistant_message_id = self._persist_loop_visible_web_message(
+                db,
+                session=session,
+                display_text=assistant_result.display_text,
+                control_action=control_action,
+                step_index=int(session.step_index or 0),
+            )
         elif loop_mode == "hidden" and control_action == "COMPLETE":
             intent_id = self._persist_loop_visible_egress(
                 db,
@@ -2341,6 +2640,7 @@ class ENSDispatcher:
                 "tool_requests_blocked": blocked_tool_requests,
                 "next_progression_enqueued": bool(next_progression),
                 "outbox_count": outbox_count,
+                "assistant_message_id": assistant_message_id,
             },
             created_at_us=next_created_at_us(),
         )
@@ -2359,6 +2659,7 @@ class ENSDispatcher:
             "token_budget_used": int(session.token_budget_used or 0),
             "tool_budget_used": int(session.tool_budget_used or 0),
             "display_text": assistant_result.display_text,
+            "last_step_control_action": control_action,
             "control_action": control_action,
             "tool_requests_total": len(requested_tools),
             "tool_requests_allowed": len(allowed_tool_requests),
@@ -2366,6 +2667,7 @@ class ENSDispatcher:
             "next_progression_enqueued": bool(next_progression),
             "next_progression": next_progression,
             "outbox_count": outbox_count,
+            "assistant_message_id": assistant_message_id,
             "step_event_id": step_event.event_id,
         }
 

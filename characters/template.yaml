@@ -232,6 +232,12 @@ memory_profile:
 # Can be set via UI using "Set as Profile" on any generated image
 profile_image: character_name_profile.png
 
+# FEATURES
+# --------
+# Feature-level capability toggles.
+features:
+  interactive_narrative: false
+
 # IMAGE GENERATION
 # ----------------
 # Can this character generate images?
