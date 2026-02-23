@@ -13,8 +13,10 @@ from chorus_engine.models.ens import (
     ENSDecision,
     ENSFloorControlState,
     ENSLoopSession,
+    ENSLoopStepEvent,
     ENSSchedulerTick,
     ENSSignalQueue,
+    SurfaceEgressIntent,
     ENSToolCallRequest,
 )
 
@@ -1215,4 +1217,521 @@ def test_v35_loop_progression_continue_enqueues_exactly_one_followup(helpers, db
         .count()
     )
     assert pending_followups == 1
+
+
+def test_v36_freeform_yield_text_without_structured_control_does_not_change_loop_state(helpers, db):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse("I can YIELD to you if needed, but continuing normally.")
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        relationship_id="rel-v36-freeform-yield",
+        conversation_id="conv-v36-freeform-yield",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    queued = asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic",
+            relationship_id="rel-v36-freeform-yield",
+            conversation_id="conv-v36-freeform-yield",
+            surface_id="web",
+            step_prompt="step with freeform yield word",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.signal_id == queued["signal_id"]
+    assert outcome.response_payload.get("control_action") is None
+    assert outcome.response_payload.get("state") == "running"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is False
+
+    updated = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+    assert updated is not None
+    assert updated.state == "running"
+    assert str(updated.stop_reason or "") == ""
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 0
+
+    event = (
+        db.query(ENSLoopStepEvent)
+        .filter(ENSLoopStepEvent.loop_id == loop_id)
+        .order_by(ENSLoopStepEvent.created_at_us.desc())
+        .first()
+    )
+    assert event is not None
+    assert event.signal_id == queued["signal_id"]
+    assert event.control_action is None
+    assert event.state_before == "running"
+    assert event.state_after == "running"
+
+
+def test_v37_visible_mode_continue_emits_once_and_enqueues_one_followup(helpers, db):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse(
+                "Visible step response.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"CONTINUE"},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        loop_mode="visible",
+        relationship_id="rel-v37-visible",
+        conversation_id="conv-v37-visible",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic",
+            relationship_id="rel-v37-visible",
+            conversation_id="conv-v37-visible",
+            surface_id="web",
+            step_prompt="visible continue",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("loop_mode") == "visible"
+    assert outcome.response_payload.get("control_action") == "CONTINUE"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is True
+    assert int(outcome.response_payload.get("outbox_count") or 0) == 1
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 1
+
+    intents = (
+        db.query(SurfaceEgressIntent)
+        .filter(SurfaceEgressIntent.relationship_id == "rel-v37-visible")
+        .all()
+    )
+    assert len(intents) == 1
+
+
+def test_v37_hidden_mode_auto_continues_without_per_step_emission(helpers, db):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse("Hidden step plain text with no control.")
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic.hidden",
+        loop_mode="hidden",
+        relationship_id="rel-v37-hidden",
+        conversation_id="conv-v37-hidden",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic.hidden",
+            relationship_id="rel-v37-hidden",
+            conversation_id="conv-v37-hidden",
+            surface_id="web",
+            step_prompt="hidden auto continue",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("loop_mode") == "hidden"
+    assert outcome.response_payload.get("control_action") is None
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is True
+    assert int(outcome.response_payload.get("outbox_count") or 0) == 0
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 1
+
+    intents = (
+        db.query(SurfaceEgressIntent)
+        .filter(SurfaceEgressIntent.relationship_id == "rel-v37-hidden")
+        .all()
+    )
+    assert len(intents) == 0
+
+
+def test_v37_visible_mode_preempt_pauses_after_step_without_followup(helpers, db, monkeypatch):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse(
+                "Visible preemptible response.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"CONTINUE"},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    # Simulate user arrival during visible step execution.
+    monkeypatch.setattr(
+        helpers.app_module.app_state["ens_runtime"].dispatcher,
+        "_has_newer_pending_user_signal",
+        lambda *args, **kwargs: True,
+    )
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic",
+        loop_mode="visible",
+        relationship_id="rel-v37-preempt",
+        conversation_id="conv-v37-preempt",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic",
+            relationship_id="rel-v37-preempt",
+            conversation_id="conv-v37-preempt",
+            surface_id="web",
+            step_prompt="visible preempt step",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("loop_mode") == "visible"
+    assert outcome.response_payload.get("state") == "paused"
+    assert outcome.response_payload.get("stop_reason") == "USER_PREEMPT"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is False
+
+    updated = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+    assert updated is not None
+    assert updated.state == "paused"
+    assert updated.stop_reason == "USER_PREEMPT"
+
+
+def test_v37_hidden_mode_complete_emits_once_and_stops(helpers, db):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse(
+                "Hidden final response.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"COMPLETE"},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic.hidden",
+        loop_mode="hidden",
+        relationship_id="rel-v37-hidden-complete",
+        conversation_id="conv-v37-hidden-complete",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic.hidden",
+            relationship_id="rel-v37-hidden-complete",
+            conversation_id="conv-v37-hidden-complete",
+            surface_id="web",
+            step_prompt="hidden complete",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("loop_mode") == "hidden"
+    assert outcome.response_payload.get("control_action") == "COMPLETE"
+    assert outcome.response_payload.get("state") == "stopped"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is False
+    assert int(outcome.response_payload.get("outbox_count") or 0) == 1
+
+    pending_followups = (
+        db.query(ENSSignalQueue)
+        .filter(ENSSignalQueue.signal_type == "loop_progression")
+        .filter(ENSSignalQueue.loop_id == loop_id)
+        .filter(ENSSignalQueue.status == "pending")
+        .count()
+    )
+    assert pending_followups == 0
+
+    intents = (
+        db.query(SurfaceEgressIntent)
+        .filter(SurfaceEgressIntent.relationship_id == "rel-v37-hidden-complete")
+        .all()
+    )
+    assert len(intents) == 1
+
+
+def test_v37_hidden_mode_preempt_stops_without_emission(helpers, db, monkeypatch):
+    class _LoopResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _LoopClient:
+        base_url = "http://test-llm"
+
+        async def health_check(self):
+            return True
+
+        async def generate(self, prompt, system_prompt=None, model=None, **kwargs):
+            _ = (prompt, system_prompt, model, kwargs)
+            return _LoopResponse("should not execute when hidden preempt triggers")
+
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+            _ = (messages, temperature, max_tokens, model)
+            return _LoopResponse("unused")
+
+        async def generate_vision(self, **kwargs):
+            _ = kwargs
+            return _LoopResponse("unused")
+
+    helpers.app_module.app_state["llm_client"] = _LoopClient()
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.v3_scheduler_enabled = True
+    ens_cfg.v3_loop_sessions_enabled = True
+
+    monkeypatch.setattr(
+        helpers.app_module.app_state["ens_runtime"].dispatcher,
+        "_has_newer_pending_user_signal",
+        lambda *args, **kwargs: True,
+    )
+
+    loop_id = str(uuid.uuid4())
+    session = ENSLoopSession(
+        loop_id=loop_id,
+        loop_kind="generic.hidden",
+        loop_mode="hidden",
+        relationship_id="rel-v37-hidden-preempt",
+        conversation_id="conv-v37-hidden-preempt",
+        surface_id="web",
+        state="running",
+    )
+    db.add(session)
+    db.commit()
+
+    runtime = helpers.app_module.app_state["ens_runtime"]
+    asyncio.run(
+        runtime.enqueue_loop_progression(
+            loop_id=loop_id,
+            loop_kind="generic.hidden",
+            relationship_id="rel-v37-hidden-preempt",
+            conversation_id="conv-v37-hidden-preempt",
+            surface_id="web",
+            step_prompt="hidden preempt",
+            character_id="test_char",
+        )
+    )
+    outcome = asyncio.run(runtime.scheduler_tick())
+    assert outcome is not None
+    assert outcome.response_payload.get("loop_mode") == "hidden"
+    assert outcome.response_payload.get("state") == "stopped"
+    assert outcome.response_payload.get("stop_reason") == "USER_PREEMPT"
+    assert bool(outcome.response_payload.get("next_progression_enqueued")) is False
+    assert int(outcome.response_payload.get("outbox_count") or 0) == 0
+
+    intents = (
+        db.query(SurfaceEgressIntent)
+        .filter(SurfaceEgressIntent.relationship_id == "rel-v37-hidden-preempt")
+        .all()
+    )
+    assert len(intents) == 0
 

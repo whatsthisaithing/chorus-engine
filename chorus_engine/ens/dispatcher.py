@@ -19,7 +19,14 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from chorus_engine.models.conversation import Message, MessageRole
-from chorus_engine.models.ens import ENSActionResult, ENSLoopSession, ENSToolCallRequest
+from chorus_engine.models.ens import (
+    ENSActionResult,
+    ENSLoopSession,
+    ENSLoopStepEvent,
+    ENSSignalQueue,
+    ENSSchedulerTick,
+    ENSToolCallRequest,
+)
 from chorus_engine.repositories import (
     ConversationSegmentRepository,
     ConversationRepository,
@@ -53,7 +60,11 @@ from chorus_engine.services.tool_payload import (
     validate_cold_recall_payload,
     validate_tool_payload,
 )
-from chorus_engine.ens.assistant_result import AssistantResult, ControlDirective, ToolRequest, normalize_assistant_result
+from chorus_engine.ens.assistant_result import (
+    AssistantResult,
+    assistant_result_from_normalized_dict,
+    normalize_assistant_result,
+)
 from chorus_engine.services.structured_response import (
     parse_structured_response,
     serialize_structured_response,
@@ -63,6 +74,7 @@ from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 from chorus_engine.ens.llm_control_plane_service import ControlPlaneRequest, LLMControlPlaneService
+from chorus_engine.ens.time_utils import next_created_at_us
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +84,7 @@ _ALLOWED_TOOLS_BY_LOOP_KIND = {
     # Expand in later slices; default remains deny-by-default for safety.
     "generic": set(),
 }
+_VALID_LOOP_MODES = {"visible", "hidden"}
 
 
 def _get_effective_template(character) -> str:
@@ -171,40 +184,7 @@ class ENSDispatcher:
         """Use canonical invocation-normalized AssistantResult when present."""
         normalized = invocation.get("assistant_result")
         if isinstance(normalized, dict):
-            control_obj = normalized.get("control")
-            control = None
-            if isinstance(control_obj, dict) and isinstance(control_obj.get("action"), str):
-                args = control_obj.get("args")
-                control = ControlDirective(
-                    action=control_obj["action"].strip().upper(),
-                    args=dict(args) if isinstance(args, dict) else {},
-                )
-            tool_requests: List[ToolRequest] = []
-            for item in normalized.get("tool_requests") or []:
-                if not isinstance(item, dict):
-                    continue
-                tool_name = item.get("tool_name")
-                if not isinstance(tool_name, str) or not tool_name.strip():
-                    continue
-                payload = item.get("payload")
-                tool_requests.append(
-                    ToolRequest(
-                        tool_name=tool_name.strip(),
-                        payload=dict(payload) if isinstance(payload, dict) else {},
-                        request_id=item.get("request_id") if isinstance(item.get("request_id"), str) else None,
-                    )
-                )
-            payload_obj = normalized.get("payload_obj")
-            return AssistantResult(
-                raw_content=raw_content,
-                display_text=str(normalized.get("display_text") or ""),
-                control=control,
-                tool_requests=tool_requests,
-                payload_present=bool(normalized.get("payload_present")),
-                payload_parseable=bool(normalized.get("payload_parseable")),
-                payload_obj=dict(payload_obj) if isinstance(payload_obj, dict) else None,
-                provider_raw=None,
-            )
+            return assistant_result_from_normalized_dict(raw_content, normalized)
         return normalize_assistant_result(raw_content=raw_content)
 
     async def execute(
@@ -229,6 +209,10 @@ class ENSDispatcher:
                     "metrics": {"replayed": True},
                     "output": existing.output_json,
                 }
+
+        if action.kind == "loop.progression.step":
+            action.params.setdefault("decision_id", decision_id)
+            action.params.setdefault("action_id", action.action_id)
 
         started = datetime.utcnow()
         try:
@@ -1137,7 +1121,11 @@ class ENSDispatcher:
         raw_content = invocation.get("output_text") or ""
         assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
         payload_obj = assistant_result.payload_obj
-        validated_tool_calls = validate_tool_payload(payload_obj)
+        normalized_tool_payload = {
+            "version": 1,
+            "tool_calls": [dict(req.payload or {}) for req in (assistant_result.tool_requests or [])],
+        }
+        validated_tool_calls = validate_tool_payload(normalized_tool_payload)
         display_text = assistant_result.display_text
         cold_recall_requested = False
         cold_recall_executed = False
@@ -1213,7 +1201,11 @@ class ENSDispatcher:
                                 raw_content = rerun_invocation.get("output_text") or ""
                                 assistant_result = self._assistant_result_from_invocation(raw_content, rerun_invocation)
                                 payload_obj = assistant_result.payload_obj
-                                validated_tool_calls = validate_tool_payload(payload_obj)
+                                normalized_tool_payload = {
+                                    "version": 1,
+                                    "tool_calls": [dict(req.payload or {}) for req in (assistant_result.tool_requests or [])],
+                                }
+                                validated_tool_calls = validate_tool_payload(normalized_tool_payload)
                                 display_text = assistant_result.display_text
                                 logger.info(
                                     "[MOMENT PIN] cold_recall_rerun_executed",
@@ -1293,7 +1285,11 @@ class ENSDispatcher:
                 repaired_raw = repair_invocation.get("output_text") or ""
                 repaired_assistant_result = self._assistant_result_from_invocation(repaired_raw, repair_invocation)
                 repaired_payload_obj = repaired_assistant_result.payload_obj
-                repaired_validated = validate_tool_payload(repaired_payload_obj)
+                repaired_tool_payload = {
+                    "version": 1,
+                    "tool_calls": [dict(req.payload or {}) for req in (repaired_assistant_result.tool_requests or [])],
+                }
+                repaired_validated = validate_tool_payload(repaired_tool_payload)
                 if _count_allowed_tool_calls(repaired_validated, allowed_tools_set) > 0:
                     logger.info(
                         "[MEDIA TOOLING] retry_payload_repair_succeeded",
@@ -1723,6 +1719,16 @@ class ENSDispatcher:
         return set(allowed or set())
 
     @staticmethod
+    def _loop_mode_for_session(loop_kind: str, requested_mode: Optional[str]) -> str:
+        mode = str(requested_mode or "").strip().lower()
+        if mode in _VALID_LOOP_MODES:
+            return mode
+        kind = str(loop_kind or "").strip().lower()
+        if kind.startswith("hidden") or kind.endswith(".hidden"):
+            return "hidden"
+        return "visible"
+
+    @staticmethod
     def _loop_tokens_used(invocation: Dict[str, Any]) -> int:
         usage = invocation.get("token_usage")
         if isinstance(usage, dict):
@@ -1732,6 +1738,76 @@ class ENSDispatcher:
                     return max(0, value)
         return 0
 
+    def _has_newer_pending_user_signal(
+        self,
+        db: Session,
+        *,
+        relationship_id: Optional[str],
+        current_signal_id: Optional[str],
+    ) -> bool:
+        if not relationship_id:
+            return False
+        current = None
+        if current_signal_id:
+            current = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_id == current_signal_id)
+                .first()
+            )
+        baseline_us = int(getattr(current, "created_at_us", 0) or 0)
+        q = (
+            db.query(ENSSignalQueue)
+            .filter(ENSSignalQueue.status == "pending")
+            .filter(ENSSignalQueue.priority_tier == "user")
+            .filter(ENSSignalQueue.relationship_id == relationship_id)
+        )
+        if baseline_us > 0:
+            q = q.filter(ENSSignalQueue.created_at_us > baseline_us)
+        return q.first() is not None
+
+    def _persist_loop_visible_egress(
+        self,
+        db: Session,
+        *,
+        session: ENSLoopSession,
+        step_index: int,
+        display_text: str,
+        signal_id: Optional[str],
+        control_action: Optional[str],
+    ) -> Optional[str]:
+        text = str(display_text or "").strip()
+        if not text:
+            return None
+        surface = str(session.surface_id or "").strip()
+        conversation_id = str(session.conversation_id or "").strip() or None
+        if not surface or not conversation_id:
+            return None
+        repo = SurfaceEgressIntentRepository(db)
+        idempotency_key = f"loop:visible:emit:{session.loop_id}:{step_index}"
+        intent, _created = repo.create_or_replay(
+            surface_id=surface,
+            surface_instance_id=None,
+            external_thread_id=conversation_id,
+            relationship_id=session.relationship_id,
+            conversation_id=conversation_id,
+            thread_id=None,
+            in_reply_to_message_id=None,
+            payload_json={
+                "content_type": "text",
+                "text": text,
+                "loop": {
+                    "loop_id": session.loop_id,
+                    "loop_mode": session.loop_mode,
+                    "step_index": step_index,
+                    "signal_id": signal_id,
+                    "control_action": control_action,
+                },
+            },
+            idempotency_key=idempotency_key,
+            trace_json={"loop_id": session.loop_id, "step_index": step_index},
+        )
+        return str(intent.id)
+
     async def _enqueue_loop_progression_from_session(
         self,
         db: Session,
@@ -1739,6 +1815,7 @@ class ENSDispatcher:
         session: ENSLoopSession,
         step_prompt: Optional[str],
         character_id: Optional[str],
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         from chorus_engine.ens.models import Signal
 
@@ -1751,6 +1828,8 @@ class ENSDispatcher:
             type="loop_progression",
             scope="SESSION",
             source="ens.loop",
+            idempotency_key=idempotency_key
+            or f"loop:progression:{session.loop_id}:{int(session.step_index or 0) + 1}",
             payload={
                 "loop_id": str(session.loop_id),
                 "loop_kind": str(session.loop_kind),
@@ -1775,6 +1854,7 @@ class ENSDispatcher:
     async def _create_loop_session(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         loop_id = str(params.get("loop_id") or str(uuid.uuid4())).strip()
         loop_kind = str(params.get("loop_kind") or "generic").strip() or "generic"
+        loop_mode = self._loop_mode_for_session(loop_kind, params.get("loop_mode"))
         relationship_id = str(params.get("relationship_id") or "").strip()
         if not relationship_id:
             raise RuntimeError("loop.session.create requires relationship_id")
@@ -1793,6 +1873,7 @@ class ENSDispatcher:
             session = ENSLoopSession(
                 loop_id=loop_id,
                 loop_kind=loop_kind,
+                loop_mode=loop_mode,
                 relationship_id=relationship_id,
                 conversation_id=params.get("conversation_id"),
                 surface_id=params.get("surface_id"),
@@ -1814,12 +1895,14 @@ class ENSDispatcher:
                 session=session,
                 step_prompt=params.get("step_prompt"),
                 character_id=params.get("character_id"),
+                idempotency_key=str(params.get("progression_idempotency_key") or "").strip() or None,
             )
 
         return {
             "loop_id": session.loop_id,
             "created": created,
             "loop_kind": session.loop_kind,
+            "loop_mode": session.loop_mode,
             "relationship_id": session.relationship_id,
             "conversation_id": session.conversation_id,
             "surface_id": session.surface_id,
@@ -1832,6 +1915,7 @@ class ENSDispatcher:
         loop_id = str(params.get("loop_id") or "").strip()
         if not loop_id:
             raise RuntimeError("loop.progression.step requires loop_id")
+        signal_id = str(params.get("signal_id") or "").strip() or None
 
         session = (
             db.query(ENSLoopSession)
@@ -1849,6 +1933,10 @@ class ENSDispatcher:
             }
 
         character_id = str(params.get("character_id") or "").strip() or None
+        step_index_before = int(session.step_index or 0)
+        state_before = str(session.state or "")
+        loop_mode = self._loop_mode_for_session(session.loop_kind, getattr(session, "loop_mode", None))
+        session.loop_mode = loop_mode
         character = self.app_state["characters"].get(character_id) if character_id else None
         effective = self.llm_invoker.resolve_effective_config(
             character=character,
@@ -1858,6 +1946,66 @@ class ENSDispatcher:
             params.get("step_prompt")
             or f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}."
         )
+
+        # Hidden loops preempt immediately when newer user input is waiting.
+        if loop_mode == "hidden" and self._has_newer_pending_user_signal(
+            db,
+            relationship_id=session.relationship_id,
+            current_signal_id=signal_id,
+        ):
+            session.state = "stopped"
+            session.stop_reason = "USER_PREEMPT"
+            db.commit()
+            step_event = ENSLoopStepEvent(
+                event_id=str(uuid.uuid4()),
+                loop_id=loop_id,
+                signal_id=signal_id,
+                tick_id=None,
+                decision_id=str(params.get("decision_id") or "") or None,
+                action_id=str(params.get("action_id") or "") or None,
+                relationship_id=session.relationship_id,
+                conversation_id=session.conversation_id,
+                surface_id=session.surface_id,
+                step_index_before=step_index_before,
+                step_index_after=int(session.step_index or 0),
+                step_count_after=int(session.step_count or 0),
+                state_before=state_before,
+                state_after=str(session.state or ""),
+                control_action=None,
+                tool_requests_count=0,
+                provider_finish_reason=None,
+                output_json={
+                    "loop_mode": loop_mode,
+                    "step_stop_reason": "USER_PREEMPT",
+                    "control_channel": "no_control_present",
+                    "parsed_from_text": False,
+                    "next_progression_enqueued": False,
+                    "outbox_count": 0,
+                },
+                created_at_us=next_created_at_us(),
+            )
+            db.add(step_event)
+            db.commit()
+            return {
+                "loop_id": loop_id,
+                "loop_kind": session.loop_kind,
+                "loop_mode": loop_mode,
+                "state": session.state,
+                "stop_reason": session.stop_reason,
+                "step_index": int(session.step_index or 0),
+                "step_count": int(session.step_count or 0),
+                "token_budget_used": int(session.token_budget_used or 0),
+                "tool_budget_used": int(session.tool_budget_used or 0),
+                "display_text": "",
+                "control_action": None,
+                "tool_requests_total": 0,
+                "tool_requests_allowed": 0,
+                "tool_requests_blocked": [],
+                "next_progression_enqueued": False,
+                "next_progression": None,
+                "outbox_count": 0,
+                "step_event_id": step_event.event_id,
+            }
 
         invocation = await self.llm_invoker.invoke(
             InvocationRequest(
@@ -1889,6 +2037,24 @@ class ENSDispatcher:
         raw_content = invocation.get("output_text") or ""
         assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
         control_action = assistant_result.control.action if assistant_result.control else None
+        control_channel = "structured_control_present" if control_action else "no_control_present"
+        parsed_from_text = False
+        logger.info(
+            "loop_control_resolution loop_id=%s signal_id=%s status=%s parsed_from_text=%s",
+            loop_id,
+            signal_id,
+            control_channel,
+            parsed_from_text,
+        )
+        raw_payload_control = ((assistant_result.payload_obj or {}).get("control") if isinstance(assistant_result.payload_obj, dict) else None)
+        if raw_payload_control is not None and assistant_result.control is None:
+            control_channel = "malformed_control_ignored"
+            logger.info(
+                "loop_control_malformed_ignored loop_id=%s signal_id=%s control=%s",
+                loop_id,
+                signal_id,
+                str(raw_payload_control),
+            )
 
         requested_tools = assistant_result.tool_requests or []
         allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
@@ -1902,20 +2068,68 @@ class ENSDispatcher:
         session.stop_reason = None
 
         enqueue_next = False
-        if control_action == "WAIT_FOR_USER":
-            session.state = "waiting_for_user"
-            session.stop_reason = "wait_for_user"
-        elif control_action == "COMPLETE":
-            session.state = "stopped"
-            session.stop_reason = "complete"
-        elif control_action == "YIELD":
-            session.state = "paused"
-            session.stop_reason = "yielded"
+        if loop_mode == "hidden":
+            if control_action == "COMPLETE":
+                session.state = "stopped"
+                session.stop_reason = "complete"
+            elif control_action == "WAIT_FOR_USER":
+                session.state = "waiting_for_user"
+                session.stop_reason = "wait_for_user"
+            else:
+                session.state = "running"
+                enqueue_next = True
         else:
-            session.state = "running"
-            enqueue_next = control_action == "CONTINUE"
+            if control_action == "WAIT_FOR_USER":
+                session.state = "waiting_for_user"
+                session.stop_reason = "wait_for_user"
+            elif control_action == "COMPLETE":
+                session.state = "stopped"
+                session.stop_reason = "complete"
+            elif control_action == "YIELD":
+                session.state = "running"
+                session.stop_reason = "yielded"
+            else:
+                session.state = "running"
+                enqueue_next = control_action == "CONTINUE"
 
+        # Visible loops: if newer user input is pending, pause after current step completes.
+        if loop_mode == "visible" and self._has_newer_pending_user_signal(
+            db,
+            relationship_id=session.relationship_id,
+            current_signal_id=signal_id,
+        ):
+            session.state = "paused"
+            session.stop_reason = "USER_PREEMPT"
+            enqueue_next = False
+
+        # Commit the step transition before any follow-up enqueue so step_index is
+        # advanced exactly once per executed step and the next progression key
+        # (loop:progression:{loop_id}:{step_index+1}) cannot be reused.
         db.commit()
+
+        outbox_count = 0
+        if loop_mode == "visible":
+            intent_id = self._persist_loop_visible_egress(
+                db,
+                session=session,
+                step_index=int(session.step_index or 0),
+                display_text=assistant_result.display_text,
+                signal_id=signal_id,
+                control_action=control_action,
+            )
+            if intent_id:
+                outbox_count = 1
+        elif loop_mode == "hidden" and control_action == "COMPLETE":
+            intent_id = self._persist_loop_visible_egress(
+                db,
+                session=session,
+                step_index=int(session.step_index or 0),
+                display_text=assistant_result.display_text,
+                signal_id=signal_id,
+                control_action=control_action,
+            )
+            if intent_id:
+                outbox_count = 1
 
         next_progression = None
         if enqueue_next:
@@ -1926,9 +2140,52 @@ class ENSDispatcher:
                 character_id=character_id,
             )
 
+        tick = None
+        if signal_id:
+            tick = (
+                db.query(ENSSchedulerTick)
+                .filter(ENSSchedulerTick.selected_signal_id == signal_id)
+                .order_by(ENSSchedulerTick.created_at_us.desc())
+                .first()
+            )
+        step_event = ENSLoopStepEvent(
+            event_id=str(uuid.uuid4()),
+            loop_id=loop_id,
+            signal_id=signal_id,
+            tick_id=(tick.tick_id if tick else None),
+            decision_id=str(params.get("decision_id") or "") or None,
+            action_id=str(params.get("action_id") or "") or None,
+            relationship_id=session.relationship_id,
+            conversation_id=session.conversation_id,
+            surface_id=session.surface_id,
+            step_index_before=step_index_before,
+            step_index_after=int(session.step_index or 0),
+            step_count_after=int(session.step_count or 0),
+            state_before=state_before,
+            state_after=str(session.state or ""),
+            control_action=control_action,
+            tool_requests_count=len(requested_tools),
+            provider_finish_reason=str(invocation.get("finish_reason") or "") or None,
+            output_json={
+                "display_text": assistant_result.display_text,
+                "loop_mode": loop_mode,
+                "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                "control_channel": control_channel,
+                "parsed_from_text": parsed_from_text,
+                "tool_requests_allowed": len(allowed_tool_requests),
+                "tool_requests_blocked": blocked_tool_requests,
+                "next_progression_enqueued": bool(next_progression),
+                "outbox_count": outbox_count,
+            },
+            created_at_us=next_created_at_us(),
+        )
+        db.add(step_event)
+        db.commit()
+
         return {
             "loop_id": loop_id,
             "loop_kind": session.loop_kind,
+            "loop_mode": loop_mode,
             "state": session.state,
             "stop_reason": session.stop_reason,
             "step_index": int(session.step_index or 0),
@@ -1942,6 +2199,8 @@ class ENSDispatcher:
             "tool_requests_blocked": blocked_tool_requests,
             "next_progression_enqueued": bool(next_progression),
             "next_progression": next_progression,
+            "outbox_count": outbox_count,
+            "step_event_id": step_event.event_id,
         }
 
     @staticmethod

@@ -8,7 +8,7 @@ this parsing logic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from chorus_engine.services.tool_payload import extract_tool_payload, parse_tool_payload
 
@@ -83,11 +83,63 @@ def _normalize_tool_requests(raw_tool_calls: Any) -> List[ToolRequest]:
     return normalized
 
 
+def _normalize_provider_raw(provider_raw: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(provider_raw, dict):
+        return dict(provider_raw)
+    return None
+
+
+def _select_structured_tier(
+    *,
+    provider_control: Optional[Dict[str, Any]],
+    provider_tool_requests: Optional[List[Dict[str, Any]]],
+    schema_control: Optional[Dict[str, Any]],
+    schema_tool_requests: Optional[List[Dict[str, Any]]],
+    sentinel_control: Optional[ControlDirective],
+    sentinel_tool_requests: List[ToolRequest],
+) -> Tuple[Optional[ControlDirective], List[ToolRequest], str]:
+    if provider_control is not None or provider_tool_requests is not None:
+        return (
+            _normalize_control(provider_control) if provider_control is not None else None,
+            _normalize_tool_requests(provider_tool_requests) if provider_tool_requests is not None else [],
+            "provider_native",
+        )
+    if schema_control is not None or schema_tool_requests is not None:
+        return (
+            _normalize_control(schema_control) if schema_control is not None else None,
+            _normalize_tool_requests(schema_tool_requests) if schema_tool_requests is not None else [],
+            "schema_structured",
+        )
+    if sentinel_control is not None or sentinel_tool_requests:
+        return sentinel_control, sentinel_tool_requests, "sentinel_fallback"
+    return None, [], "none"
+
+
+def assistant_result_from_normalized_dict(raw_content: str, normalized: Dict[str, Any]) -> AssistantResult:
+    """Build AssistantResult from normalized invocation payload."""
+    control_obj = normalized.get("control")
+    tool_requests_obj = normalized.get("tool_requests")
+    payload_obj = normalized.get("payload_obj")
+    provider_raw = normalized.get("provider_raw")
+    return AssistantResult(
+        raw_content=raw_content or "",
+        display_text=str(normalized.get("display_text") or ""),
+        control=_normalize_control(control_obj),
+        tool_requests=_normalize_tool_requests(tool_requests_obj),
+        payload_present=bool(normalized.get("payload_present")),
+        payload_parseable=bool(normalized.get("payload_parseable")),
+        payload_obj=dict(payload_obj) if isinstance(payload_obj, dict) else None,
+        provider_raw=_normalize_provider_raw(provider_raw),
+    )
+
+
 def normalize_assistant_result(
     *,
     raw_content: str,
     provider_control: Optional[Dict[str, Any]] = None,
     provider_tool_requests: Optional[List[Dict[str, Any]]] = None,
+    schema_control: Optional[Dict[str, Any]] = None,
+    schema_tool_requests: Optional[List[Dict[str, Any]]] = None,
     provider_raw: Optional[Dict[str, Any]] = None,
 ) -> AssistantResult:
     """Normalize provider output into canonical AssistantResult.
@@ -101,14 +153,17 @@ def normalize_assistant_result(
 
     sentinel_control = _normalize_control((payload_obj or {}).get("control"))
     sentinel_tool_requests = _normalize_tool_requests((payload_obj or {}).get("tool_calls"))
-
-    control = _normalize_control(provider_control) if provider_control is not None else sentinel_control
-    tool_requests = (
-        _normalize_tool_requests(provider_tool_requests)
-        if provider_tool_requests is not None
-        else sentinel_tool_requests
+    control, tool_requests, tier_used = _select_structured_tier(
+        provider_control=provider_control,
+        provider_tool_requests=provider_tool_requests,
+        schema_control=schema_control,
+        schema_tool_requests=schema_tool_requests,
+        sentinel_control=sentinel_control,
+        sentinel_tool_requests=sentinel_tool_requests,
     )
 
+    provider_raw_doc = _normalize_provider_raw(provider_raw) or {}
+    provider_raw_doc.setdefault("assistant_result_tier", tier_used)
     return AssistantResult(
         raw_content=raw_content or "",
         display_text=extraction.display_text,
@@ -117,5 +172,5 @@ def normalize_assistant_result(
         payload_present=extraction.payload_text is not None,
         payload_parseable=payload_obj is not None,
         payload_obj=payload_obj if isinstance(payload_obj, dict) else None,
-        provider_raw=provider_raw,
+        provider_raw=provider_raw_doc,
     )

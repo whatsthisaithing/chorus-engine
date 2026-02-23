@@ -102,6 +102,7 @@ class ENSRuntime:
         surface_id: Optional[str] = None,
         step_prompt: Optional[str] = None,
         character_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
         source: str = "ens.loop",
     ) -> Dict[str, Any]:
         """Enqueue one loop progression signal via the normal scheduler queue path."""
@@ -109,6 +110,7 @@ class ENSRuntime:
             type="loop_progression",
             scope="SESSION",
             source=source,
+            idempotency_key=idempotency_key,
             payload={
                 "loop_id": str(loop_id),
                 "loop_kind": str(loop_kind),
@@ -763,6 +765,8 @@ class ENSRuntime:
             if not self._v3_loop_sessions_enabled():
                 return []
             payload = dict(signal.payload or {})
+            payload.setdefault("signal_id", signal.signal_id)
+            payload.setdefault("trace_id", signal.trace_id)
             return [
                 ENSAction(
                     kind="loop.progression.step",

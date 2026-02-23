@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from chorus_engine.ens.models import ENSOutcome, Signal
 from chorus_engine.ens.arbitration import ArbitrationEngine, ArbitrationSelection
-from chorus_engine.models.ens import ENSFloorControlState, ENSSchedulerTick, ENSSignalQueue
+from chorus_engine.models.ens import ENSFloorControlState, ENSLoopSession, ENSSchedulerTick, ENSSignalQueue
 from chorus_engine.ens.time_utils import next_created_at_us
 
 
@@ -475,6 +475,15 @@ class ENSScheduler:
         row.completed_at = datetime.utcnow()
         row.claimed_at_us = None
         row.error_message = str(stop_reason)
+        if str(row.signal_type or "") == "loop_progression" and str(row.loop_id or ""):
+            loop = (
+                db.query(ENSLoopSession)
+                .filter(ENSLoopSession.loop_id == row.loop_id)
+                .first()
+            )
+            if loop is not None:
+                loop.state = "stopped"
+                loop.stop_reason = str(stop_reason)
         reason_trace = {
             "selection": "arbitration_v3",
             "phase": "budget_cooldown_stop",

@@ -200,6 +200,7 @@ class ENSLoopSession(Base):
 
     loop_id = Column(String(36), primary_key=True, default=_uuid)
     loop_kind = Column(String(100), nullable=False, index=True)
+    loop_mode = Column(String(20), nullable=False, default="visible", index=True)
     relationship_id = Column(String(36), nullable=False, index=True)
     conversation_id = Column(String(36), nullable=True, index=True)
     surface_id = Column(String(20), nullable=True, index=True)
@@ -215,6 +216,45 @@ class ENSLoopSession(Base):
     __table_args__ = (
         Index("ix_ens_loop_sessions_relationship_state", "relationship_id", "state"),
         Index("ix_ens_loop_sessions_surface_state", "surface_id", "state"),
+    )
+
+
+class ENSLoopStepEvent(Base):
+    """Auditable per-step loop execution event."""
+
+    __tablename__ = "ens_loop_step_events"
+
+    event_id = Column(String(36), primary_key=True, default=_uuid)
+    loop_id = Column(String(36), nullable=False, index=True)
+    signal_id = Column(String(36), nullable=True, index=True)
+    tick_id = Column(String(36), nullable=True, index=True)
+    decision_id = Column(String(36), nullable=True, index=True)
+    action_id = Column(String(36), nullable=True, index=True)
+    relationship_id = Column(String(36), nullable=True, index=True)
+    conversation_id = Column(String(36), nullable=True, index=True)
+    surface_id = Column(String(20), nullable=True, index=True)
+    step_index_before = Column(Integer, nullable=False, default=0)
+    step_index_after = Column(Integer, nullable=False, default=0)
+    step_count_after = Column(Integer, nullable=False, default=0)
+    state_before = Column(String(30), nullable=True, index=True)
+    state_after = Column(String(30), nullable=True, index=True)
+    control_action = Column(String(30), nullable=True, index=True)
+    tool_requests_count = Column(Integer, nullable=False, default=0)
+    provider_finish_reason = Column(String(30), nullable=True)
+    output_json = Column(JSON, nullable=True)
+    created_at_us = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ens_loop_step_events_loop_created", "loop_id", "created_at_us"),
+        Index("ix_ens_loop_step_events_signal", "signal_id", "created_at_us"),
+        Index(
+            "uq_ens_loop_step_events_loop_signal",
+            "loop_id",
+            "signal_id",
+            unique=True,
+            sqlite_where=text("signal_id IS NOT NULL"),
+        ),
     )
 
 

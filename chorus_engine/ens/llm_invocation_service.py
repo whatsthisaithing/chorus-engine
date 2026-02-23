@@ -193,6 +193,7 @@ class LLMInvocationService:
                             "payload_present": bool(normalized.payload_present),
                             "payload_parseable": bool(normalized.payload_parseable),
                             "payload_obj": dict(normalized.payload_obj or {}) if normalized.payload_obj else None,
+                            "provider_raw": dict(normalized.provider_raw or {}) if normalized.provider_raw else None,
                         },
                         "raw_response_excerpt": response.get("raw_response_excerpt"),
                         "token_usage": response.get("token_usage"),

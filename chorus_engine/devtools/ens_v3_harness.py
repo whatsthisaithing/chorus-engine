@@ -21,7 +21,7 @@ from chorus_engine.db.database import DATABASE_URL
 from chorus_engine.db.database import SessionLocal
 from chorus_engine.ens.models import Signal
 from chorus_engine.ens.runtime import ENSContext, ENSRuntime
-from chorus_engine.models.ens import ENSDecision, ENSLoopSession, ENSSchedulerTick, ENSSignalQueue
+from chorus_engine.models.ens import ENSDecision, ENSLoopSession, ENSLoopStepEvent, ENSSchedulerTick, ENSSignalQueue
 
 
 @dataclass
@@ -45,16 +45,54 @@ class _DummyResponse:
 
 class _HarnessLLMClient:
     base_url = "harness://llm"
+    _VALID_MODES = {
+        "yield_control",
+        "freeform_yield_no_control",
+        "sentinel_tool_call",
+        "continue_control",
+        "complete_control",
+    }
+
+    def __init__(self, mode: str = "yield_control") -> None:
+        self.mode = mode if mode in self._VALID_MODES else "yield_control"
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in self._VALID_MODES:
+            raise HarnessError(f"Unsupported mock assistant result mode: {mode}")
+        self.mode = mode
 
     async def health_check(self) -> bool:
         return True
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None, model: Optional[str] = None, **kwargs: Any) -> _DummyResponse:
         _ = (prompt, system_prompt, model, kwargs)
+        if self.mode == "freeform_yield_no_control":
+            return _DummyResponse("I can YIELD or COMPLETE if needed, but this is plain freeform text only.")
+        if self.mode == "sentinel_tool_call":
+            return _DummyResponse(
+                "Creating tool request from sentinel fallback.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"tool_calls":[{"id":"h_tool_1","tool":"image.generate","requires_approval":true,"args":{"prompt":"harness image"}}]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+        if self.mode == "continue_control":
+            return _DummyResponse(
+                "Continue step.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"CONTINUE","args":{}},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
+        if self.mode == "complete_control":
+            return _DummyResponse(
+                "Complete step.\n"
+                "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
+                '{"version":1,"control":{"action":"COMPLETE","args":{}},"tool_calls":[]}\n'
+                "---CHORUS_TOOL_PAYLOAD_END---"
+            )
         return _DummyResponse(
-            "Harness loop response.\n"
+            "I may COMPLETE eventually, but follow structured control.\n"
             "---CHORUS_TOOL_PAYLOAD_BEGIN---\n"
-            '{"version":1,"control":{"action":"YIELD"},"tool_calls":[]}\n'
+            '{"version":1,"control":{"action":"YIELD","args":{}},"tool_calls":[]}\n'
             "---CHORUS_TOOL_PAYLOAD_END---"
         )
 
@@ -72,7 +110,7 @@ class _HarnessLLMClient:
 class ENSV3Harness:
     """Dev harness wrapper around ENS runtime + DB models."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, mock_assistant_result: str = "yield_control") -> None:
         ensure_database_ready(DATABASE_URL)
         loader = ConfigLoader()
         system_config = loader.load_system_config()
@@ -80,7 +118,7 @@ class ENSV3Harness:
         app_state: Dict[str, Any] = {
             "system_config": system_config,
             "characters": characters,
-            "llm_client": _HarnessLLMClient(),
+            "llm_client": _HarnessLLMClient(mode=mock_assistant_result),
             "llm_invocation_service": None,
             "ens_tool_executor": None,
             "ens_scene_preview_executor": None,
@@ -93,6 +131,11 @@ class ENSV3Harness:
         app_state["ens_runtime"] = ENSRuntime(app_state)
         self.app_state = app_state
         self.runtime: ENSRuntime = app_state["ens_runtime"]
+
+    def _set_mock_mode(self, mode: str) -> None:
+        llm = self.app_state.get("llm_client")
+        if hasattr(llm, "set_mode"):
+            llm.set_mode(mode)
 
     def _queue_row_for_signal(self, signal_id: str) -> Optional[ENSSignalQueue]:
         db = SessionLocal()
@@ -115,6 +158,45 @@ class ENSV3Harness:
             if row is not None and str(row.status) in ("done", "failed", "completed"):
                 return row
         return row
+
+    def _create_loop_and_progression(
+        self,
+        *,
+        loop_kind: str,
+        relationship: str,
+        conversation: str,
+        surface: str,
+        step_prompt: str,
+        character_id: str = "test_char",
+    ) -> Tuple[str, Optional[str], str]:
+        loop_id = str(uuid.uuid4())
+        progression_idempotency_key = f"harness:loop_progression:{loop_id}:initial"
+        signal = Signal(
+            type="loop.session.create_requested",
+            scope="SESSION",
+            source="ens_v3_harness",
+            payload={
+                "loop_id": loop_id,
+                "loop_kind": loop_kind,
+                "relationship_id": relationship,
+                "conversation_id": conversation,
+                "surface_id": surface,
+                "step_prompt": step_prompt,
+                "character_id": character_id,
+                "progression_idempotency_key": progression_idempotency_key,
+            },
+            relationship_hint=relationship,
+            surface_id=surface,
+        )
+        outcome = asyncio.run(self.runtime.ingest(signal, ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        payload = dict(outcome.response_payload or {})
+        if "progression_enqueued" not in payload:
+            _ = self._wait_for_signal_completion(signal.signal_id, max_ticks=25)
+            replay = self.runtime._replay_outcome_for_signal(signal.signal_id, signal.trace_id)  # noqa: SLF001
+            if replay is not None:
+                payload = dict(replay.response_payload or {})
+        progression = payload.get("progression") or {}
+        return loop_id, progression.get("signal_id"), signal.signal_id
 
     @staticmethod
     def _print_header(title: str) -> None:
@@ -299,6 +381,7 @@ class ENSV3Harness:
         conversation: Optional[str],
     ) -> int:
         loop_id = str(uuid.uuid4())
+        progression_idempotency_key = f"harness:loop_progression:{loop_id}:initial"
         signal = Signal(
             type="loop.session.create_requested",
             scope="SESSION",
@@ -310,6 +393,7 @@ class ENSV3Harness:
                 "conversation_id": conversation,
                 "surface_id": surface,
                 "step_prompt": "Harness loop progression step.",
+                "progression_idempotency_key": progression_idempotency_key,
             },
             relationship_hint=relationship,
             surface_id=surface,
@@ -344,6 +428,7 @@ class ENSV3Harness:
         queue_ids: List[str] = []
         signal_ids: List[str] = []
         for _ in range(max(1, int(count))):
+            attempt = len(queue_ids)
             queued = asyncio.run(
                 self.runtime.enqueue_loop_progression(
                     loop_id=loop_id,
@@ -352,6 +437,7 @@ class ENSV3Harness:
                     conversation_id=conversation_id,
                     surface_id=surface_id,
                     step_prompt="Harness loop progression step.",
+                    idempotency_key=f"harness:loop_progression:{loop_id}:enqueue:{attempt}",
                 )
             )
             queue_ids.append(str(queued.get("queue_id")))
@@ -799,12 +885,565 @@ class ENSV3Harness:
 
         return results
 
+    def _verify_profile_3_6(self) -> List[CheckResult]:
+        results: List[CheckResult] = []
+        db = SessionLocal()
+        try:
+            pending_preexisting = db.query(ENSSignalQueue).filter(ENSSignalQueue.status == "pending").count()
+            if pending_preexisting > 0:
+                pending_rows = (
+                    db.query(ENSSignalQueue)
+                    .filter(ENSSignalQueue.status == "pending")
+                    .order_by(ENSSignalQueue.created_at_us.asc())
+                    .limit(10)
+                    .all()
+                )
+                results.append(
+                    self._check(
+                        "isolation_guard",
+                        False,
+                        f"Expected clean queue for deterministic verify; found {pending_preexisting} pre-existing pending signals.",
+                        excerpts=[self._signal_excerpt(r) for r in pending_rows] + self._last_tick_excerpts(5),
+                    )
+                )
+                return results
+        finally:
+            db.close()
+
+        run_id = f"harness36-{int(time.time())}"
+        relationship = f"rel-{run_id}"
+        conversation = f"conv-{run_id}"
+        surface = "web"
+
+        # Check A - StepEvent created exactly once
+        self._set_mock_mode("freeform_yield_no_control")
+        loop_id_a, progression_signal_id_a, _create_signal_id_a = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=relationship,
+            conversation=conversation,
+            surface=surface,
+            step_prompt="check A step event exact-once",
+        )
+        db = SessionLocal()
+        try:
+            pre_tick_events = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_a)
+                .count()
+            )
+        finally:
+            db.close()
+        first_outcome = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        _ = first_outcome
+        db = SessionLocal()
+        try:
+            events = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_a)
+                .order_by(ENSLoopStepEvent.created_at_us.asc())
+                .all()
+            )
+            event_count_after_first = len(events)
+            selected_tick = (
+                db.query(ENSSchedulerTick)
+                .filter(ENSSchedulerTick.selected_signal_id == progression_signal_id_a)
+                .order_by(ENSSchedulerTick.created_at_us.desc())
+                .first()
+            )
+            loop_row = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id_a).first()
+            excerpts = [self._loop_excerpt(loop_row)] if loop_row else []
+            excerpts.extend([f"step_event event_id={e.event_id} signal_id={e.signal_id} tick_id={e.tick_id}" for e in events])
+            if selected_tick:
+                excerpts.append(self._tick_excerpt(selected_tick))
+        finally:
+            db.close()
+        _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        replay = self.runtime._replay_outcome_for_signal(str(progression_signal_id_a or ""), str(uuid.uuid4()))
+        _ = replay
+        db = SessionLocal()
+        try:
+            events_after = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_a)
+                .order_by(ENSLoopStepEvent.created_at_us.asc())
+                .all()
+            )
+            event = events_after[0] if events_after else None
+            passed_a = bool(
+                pre_tick_events == 0
+                and event_count_after_first == 1
+                and len(events_after) == 1
+                and event is not None
+                and str(event.signal_id or "") == str(progression_signal_id_a or "")
+                and bool(str(event.tick_id or "").strip())
+            )
+            results.append(
+                self._check(
+                    "step_event_exactly_once_and_linked",
+                    passed_a,
+                    (
+                        f"pre_tick_events={pre_tick_events} "
+                        f"event_count_after_first={event_count_after_first} "
+                        f"event_count_after_replay={len(events_after)} "
+                        f"event_signal_id={(event.signal_id if event else 'na')} "
+                        f"progression_signal_id={progression_signal_id_a}"
+                    ),
+                    excerpts + [f"replay_called=True", *(f"step_event_post event_id={e.event_id}" for e in events_after)],
+                )
+            )
+        finally:
+            db.close()
+
+        # Check B - Sentinel Option A structured control works
+        self._set_mock_mode("yield_control")
+        loop_id_b, _progression_signal_id_b, _ = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=f"{relationship}-b",
+            conversation=f"{conversation}-b",
+            surface=surface,
+            step_prompt="check B sentinel option A control",
+        )
+        _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        db = SessionLocal()
+        try:
+            loop = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id_b).first()
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_b)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_b)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            passed_b = bool(
+                loop is not None
+                and loop.state == "running"
+                and str(loop.stop_reason or "") == "yielded"
+                and pending_progressions == 0
+                and event is not None
+                and str(event.control_action or "") == "YIELD"
+                and out.get("control_channel") == "structured_control_present"
+                and str(out.get("assistant_result_tier") or "") == "sentinel_fallback"
+            )
+            results.append(
+                self._check(
+                    "sentinel_option_a_control_yield_applied",
+                    passed_b,
+                    (
+                        f"loop_state={(loop.state if loop else 'na')} loop_stop_reason={(loop.stop_reason if loop else 'na')} "
+                        f"pending_progressions={pending_progressions} "
+                        f"control_action={(event.control_action if event else 'na')} "
+                        f"control_channel={out.get('control_channel')} "
+                        f"assistant_result_tier={out.get('assistant_result_tier')}"
+                    ),
+                    ([self._loop_excerpt(loop)] if loop else [])
+                    + ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        # Check C - freeform YIELD/COMPLETE without structured control does nothing
+        self._set_mock_mode("freeform_yield_no_control")
+        loop_id_c, _progression_signal_id_c, _ = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=f"{relationship}-c",
+            conversation=f"{conversation}-c",
+            surface=surface,
+            step_prompt="check C freeform yield does nothing",
+        )
+        _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        db = SessionLocal()
+        try:
+            loop = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id_c).first()
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_c)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            passed_c = bool(
+                loop is not None
+                and loop.state == "running"
+                and event is not None
+                and event.control_action is None
+                and out.get("control_channel") == "no_control_present"
+                and out.get("parsed_from_text") is False
+            )
+            results.append(
+                self._check(
+                    "freeform_yield_word_no_control_directive",
+                    passed_c,
+                    (
+                        f"loop_state={(loop.state if loop else 'na')} control_action={(event.control_action if event else 'na')} "
+                        f"control_channel={out.get('control_channel')} parsed_from_text={out.get('parsed_from_text')}"
+                    ),
+                    ([self._loop_excerpt(loop)] if loop else [])
+                    + ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        # Check D - Sentinel fallback tool calls route via AssistantResult.tool_requests
+        self._set_mock_mode("sentinel_tool_call")
+        loop_id_d, _progression_signal_id_d, _ = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=f"{relationship}-d",
+            conversation=f"{conversation}-d",
+            surface=surface,
+            step_prompt="check D sentinel tool fallback",
+        )
+        _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        db = SessionLocal()
+        try:
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_d)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            passed_d = bool(
+                event is not None
+                and int(event.tool_requests_count or 0) >= 1
+                and str(out.get("assistant_result_tier") or "") == "sentinel_fallback"
+            )
+            results.append(
+                self._check(
+                    "sentinel_tool_calls_route_via_assistant_result_tool_requests",
+                    passed_d,
+                    (
+                        f"tool_requests_count={(event.tool_requests_count if event else 'na')} "
+                        f"assistant_result_tier={out.get('assistant_result_tier')}"
+                    ),
+                    ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        return results
+
+    def _verify_profile_3_7(self) -> List[CheckResult]:
+        results: List[CheckResult] = []
+        db = SessionLocal()
+        try:
+            pending_preexisting = db.query(ENSSignalQueue).filter(ENSSignalQueue.status == "pending").count()
+            if pending_preexisting > 0:
+                pending_rows = (
+                    db.query(ENSSignalQueue)
+                    .filter(ENSSignalQueue.status == "pending")
+                    .order_by(ENSSignalQueue.created_at_us.asc())
+                    .limit(10)
+                    .all()
+                )
+                results.append(
+                    self._check(
+                        "isolation_guard",
+                        False,
+                        f"Expected clean queue for deterministic verify; found {pending_preexisting} pre-existing pending signals.",
+                        excerpts=[self._signal_excerpt(r) for r in pending_rows] + self._last_tick_excerpts(5),
+                    )
+                )
+                return results
+        finally:
+            db.close()
+
+        run_id = f"harness37-{int(time.time())}"
+        relationship = f"rel-{run_id}"
+        conversation = f"conv-{run_id}"
+        surface = "web"
+
+        # Check 1: Visible one step emits once and does not auto-enqueue on YIELD/default.
+        self._set_mock_mode("yield_control")
+        loop_id_1, progression_signal_id_1, _ = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=f"{relationship}-v1",
+            conversation=f"{conversation}-v1",
+            surface=surface,
+            step_prompt="3.7 check 1 visible one-step emit",
+        )
+        _ = self._wait_for_signal_completion(str(progression_signal_id_1 or ""), max_ticks=25)
+        db = SessionLocal()
+        try:
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_1)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_1)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            outbox_count = int(out.get("outbox_count") or 0)
+            passed = bool(
+                event is not None
+                and outbox_count == 1
+                and pending_progressions == 0
+            )
+            results.append(
+                self._check(
+                    "visible_one_step_one_emit",
+                    passed,
+                    f"outbox_count={outbox_count} pending_progressions={pending_progressions}",
+                    ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        # Check 2: Visible CONTINUE enqueues exactly one follow-up.
+        self._set_mock_mode("continue_control")
+        loop_id_2, progression_signal_id_2, _ = self._create_loop_and_progression(
+            loop_kind="generic",
+            relationship=f"{relationship}-v2",
+            conversation=f"{conversation}-v2",
+            surface=surface,
+            step_prompt="3.7 check 2 visible continue",
+        )
+        _ = self._wait_for_signal_completion(str(progression_signal_id_2 or ""), max_ticks=25)
+        db = SessionLocal()
+        try:
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_2)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_2)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            outbox_count = int(out.get("outbox_count") or 0)
+            passed = bool(
+                event is not None
+                and str(event.control_action or "") == "CONTINUE"
+                and outbox_count == 1
+                and pending_progressions == 1
+            )
+            results.append(
+                self._check(
+                    "visible_continue_enqueues_exactly_one_followup",
+                    passed,
+                    (
+                        f"control_action={(event.control_action if event else 'na')} "
+                        f"outbox_count={outbox_count} pending_progressions={pending_progressions}"
+                    ),
+                    ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        # Check 3: Hidden auto-continues with no per-step emission.
+        self._set_mock_mode("freeform_yield_no_control")
+        loop_id_3, progression_signal_id_3, _ = self._create_loop_and_progression(
+            loop_kind="generic.hidden",
+            relationship=f"{relationship}-h3",
+            conversation=f"{conversation}-h3",
+            surface=surface,
+            step_prompt="3.7 check 3 hidden auto-continue",
+        )
+        _ = self._wait_for_signal_completion(str(progression_signal_id_3 or ""), max_ticks=25)
+        db = SessionLocal()
+        try:
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_3)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_3)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            outbox_count = int(out.get("outbox_count") or 0)
+            passed = bool(
+                event is not None
+                and outbox_count == 0
+                and pending_progressions == 1
+            )
+            results.append(
+                self._check(
+                    "hidden_auto_continue_without_per_step_emit",
+                    passed,
+                    f"outbox_count={outbox_count} pending_progressions={pending_progressions}",
+                    ([f"step_event={event.event_id} output={out}"] if event else []),
+                )
+            )
+        finally:
+            db.close()
+
+        # Check 4: Hidden COMPLETE emits once and stops with no pending follow-up.
+        self._set_mock_mode("complete_control")
+        loop_id_4, progression_signal_id_4, _ = self._create_loop_and_progression(
+            loop_kind="generic.hidden",
+            relationship=f"{relationship}-h4",
+            conversation=f"{conversation}-h4",
+            surface=surface,
+            step_prompt="3.7 check 4 hidden complete",
+        )
+        _ = self._wait_for_signal_completion(str(progression_signal_id_4 or ""), max_ticks=25)
+        db = SessionLocal()
+        try:
+            loop = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id_4).first()
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_4)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_4)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            outbox_count = int(out.get("outbox_count") or 0)
+            passed = bool(
+                loop is not None
+                and loop.state == "stopped"
+                and event is not None
+                and str(event.control_action or "") == "COMPLETE"
+                and outbox_count == 1
+                and pending_progressions == 0
+            )
+            results.append(
+                self._check(
+                    "hidden_complete_emits_once_and_stops",
+                    passed,
+                    (
+                        f"loop_state={(loop.state if loop else 'na')} "
+                        f"control_action={(event.control_action if event else 'na')} "
+                        f"outbox_count={outbox_count} pending_progressions={pending_progressions}"
+                    ),
+                    (([self._loop_excerpt(loop)] if loop else []) + ([f"step_event={event.event_id} output={out}"] if event else [])),
+                )
+            )
+        finally:
+            db.close()
+
+        # Optional Check 5: Hidden preempt emits nothing.
+        self._set_mock_mode("freeform_yield_no_control")
+        loop_id_5, progression_signal_id_5, _ = self._create_loop_and_progression(
+            loop_kind="generic.hidden",
+            relationship=f"{relationship}-h5",
+            conversation=f"{conversation}-h5",
+            surface=surface,
+            step_prompt="3.7 optional hidden preempt",
+        )
+        queued_user = asyncio.run(
+            self._enqueue_signal(
+                signal_type="user.message",
+                surface_id=surface,
+                relationship_id=f"{relationship}-h5",
+                conversation_id=f"{conversation}-h5",
+                idempotency_key=f"harness:{run_id}:hidden-preempt-user",
+                payload={"content": "preempt hidden loop now"},
+            )
+        )
+        # First tick processes newer user work.
+        _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        # Second tick attempts loop progression; force pre-step preemption check for deterministic verification.
+        dispatcher = self.runtime.dispatcher
+        original_preempt_check = getattr(dispatcher, "_has_newer_pending_user_signal")
+        setattr(dispatcher, "_has_newer_pending_user_signal", lambda *args, **kwargs: True)
+        try:
+            _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+        finally:
+            setattr(dispatcher, "_has_newer_pending_user_signal", original_preempt_check)
+        db = SessionLocal()
+        try:
+            loop = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id_5).first()
+            event = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id_5)
+                .order_by(ENSLoopStepEvent.created_at_us.desc())
+                .first()
+            )
+            pending_progressions = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_type == "loop_progression")
+                .filter(ENSSignalQueue.loop_id == loop_id_5)
+                .filter(ENSSignalQueue.status == "pending")
+                .count()
+            )
+            row = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_id == progression_signal_id_5)
+                .first()
+            )
+            user_row = (
+                db.query(ENSSignalQueue)
+                .filter(ENSSignalQueue.signal_id == str(queued_user.get("signal_id") or ""))
+                .first()
+            )
+            out = dict((event.output_json if event else {}) or {})
+            outbox_count = int(out.get("outbox_count") or 0)
+            passed = bool(
+                user_row is not None
+                and user_row.status in ("done", "failed")
+                and row is not None
+                and row.status in ("done", "failed")
+                and loop is not None
+                and loop.state == "stopped"
+                and str(loop.stop_reason or "") == "USER_PREEMPT"
+                and event is not None
+                and outbox_count == 0
+                and pending_progressions == 0
+            )
+            results.append(
+                self._check(
+                    "hidden_preempt_emits_nothing_optional",
+                    passed,
+                    (
+                        f"user_status={(user_row.status if user_row else 'na')} "
+                        f"loop_state={(loop.state if loop else 'na')} loop_stop_reason={(loop.stop_reason if loop else 'na')} "
+                        f"progression_status={(row.status if row else 'na')} outbox_count={outbox_count} "
+                        f"pending_progressions={pending_progressions}"
+                    ),
+                    (([self._loop_excerpt(loop)] if loop else []) + ([self._signal_excerpt(user_row)] if user_row else []) + ([self._signal_excerpt(row)] if row else []) + ([f"step_event={event.event_id} output={out}"] if event else [])),
+                )
+            )
+        finally:
+            db.close()
+
+        return results
+
     def cmd_verify(self, *, profile: str) -> int:
         normalized = str(profile or "").strip().lower()
-        if normalized != "3_5":
+        if normalized not in ("3_5", "3_6", "3_7"):
             raise HarnessError(f"Unsupported profile: {profile}")
-        checks = self._verify_profile_3_5()
-        self._print_header("VERIFY REPORT (profile=3_5)")
+        if normalized == "3_5":
+            checks = self._verify_profile_3_5()
+        elif normalized == "3_6":
+            checks = self._verify_profile_3_6()
+        else:
+            checks = self._verify_profile_3_7()
+        self._print_header(f"VERIFY REPORT (profile={normalized})")
         failed = 0
         for idx, check in enumerate(checks, start=1):
             status = "PASS" if check.passed else "FAIL"
@@ -819,6 +1458,13 @@ class ENSV3Harness:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ENS v3 dev harness")
+    parser.add_argument(
+        "--mock-assistant-result",
+        type=str,
+        default="yield_control",
+        choices=["yield_control", "freeform_yield_no_control", "sentinel_tool_call", "continue_control", "complete_control"],
+        help="Harness-only mock LLM response mode used by loop progression checks",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_status = sub.add_parser("status", help="Show queue/scheduler/loop status snapshot")
@@ -865,7 +1511,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    harness = ENSV3Harness()
+    harness = ENSV3Harness(mock_assistant_result=args.mock_assistant_result)
     try:
         if args.command == "status":
             return harness.cmd_status(top=args.top)
