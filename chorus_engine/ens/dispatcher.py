@@ -1777,7 +1777,6 @@ class ENSDispatcher:
             "compression_policy": {"keep_last_k_steps": k},
             "latest_folded_artifact": (
                 {
-                    "artifact_id": artifact.artifact_id,
                     "from_step_index": int(artifact.from_step_index),
                     "to_step_index": int(artifact.to_step_index),
                     "output_hash": str(artifact.output_hash),
@@ -1788,7 +1787,6 @@ class ENSDispatcher:
             ),
             "recent_step_memory": [
                 {
-                    "event_id": row.event_id,
                     "step_index_after": int(row.step_index_after or 0),
                     "memory_payload_json": dict(row.memory_payload_json or {}),
                 }

@@ -632,6 +632,111 @@ class ENSV3Harness:
         print(f"  - loop_excerpt: {loop_excerpt}")
         return 0
 
+    def cmd_timeline(
+        self,
+        *,
+        loop_id: Optional[str],
+        relationship_id: Optional[str],
+        last_run: bool,
+        top: int = 200,
+    ) -> int:
+        requested_loop = str(loop_id or "").strip() or None
+        requested_relationship = str(relationship_id or "").strip() or None
+        db = SessionLocal()
+        try:
+            resolved_relationship = requested_relationship
+            resolved_loop = requested_loop
+            if last_run and not resolved_loop and not resolved_relationship:
+                latest_tick = (
+                    db.query(ENSSchedulerTick)
+                    .order_by(ENSSchedulerTick.created_at_us.desc())
+                    .first()
+                )
+                if latest_tick is not None and str(latest_tick.selected_signal_id or "").strip():
+                    selected = (
+                        db.query(ENSSignalQueue)
+                        .filter(ENSSignalQueue.signal_id == latest_tick.selected_signal_id)
+                        .first()
+                    )
+                    if selected is not None:
+                        resolved_relationship = str(selected.relationship_id or "").strip() or None
+                        if str(selected.loop_id or "").strip():
+                            resolved_loop = str(selected.loop_id)
+
+            tick_q = db.query(ENSSchedulerTick).order_by(ENSSchedulerTick.created_at_us.asc())
+            step_q = db.query(ENSLoopStepEvent).order_by(ENSLoopStepEvent.created_at_us.asc())
+            artifact_q = db.query(ENSLoopCompressionArtifact).order_by(
+                ENSLoopCompressionArtifact.created_at_us.asc(),
+                ENSLoopCompressionArtifact.to_step_index.asc(),
+            )
+            if resolved_loop:
+                step_q = step_q.filter(ENSLoopStepEvent.loop_id == resolved_loop)
+                artifact_q = artifact_q.filter(ENSLoopCompressionArtifact.loop_id == resolved_loop)
+                tick_q = tick_q.join(
+                    ENSSignalQueue,
+                    ENSSignalQueue.signal_id == ENSSchedulerTick.selected_signal_id,
+                    isouter=True,
+                ).filter(ENSSignalQueue.loop_id == resolved_loop)
+            elif resolved_relationship:
+                step_q = step_q.filter(ENSLoopStepEvent.relationship_id == resolved_relationship)
+                artifact_q = artifact_q.join(
+                    ENSLoopSession, ENSLoopSession.loop_id == ENSLoopCompressionArtifact.loop_id
+                ).filter(ENSLoopSession.relationship_id == resolved_relationship)
+                tick_q = tick_q.join(
+                    ENSSignalQueue,
+                    ENSSignalQueue.signal_id == ENSSchedulerTick.selected_signal_id,
+                    isouter=True,
+                ).filter(ENSSignalQueue.relationship_id == resolved_relationship)
+
+            ticks = tick_q.limit(max(1, int(top))).all()
+            steps = step_q.limit(max(1, int(top))).all()
+            artifacts = artifact_q.limit(max(1, int(top))).all()
+
+            self._print_header("Timeline Scope")
+            print(f"  - loop_id: {resolved_loop or '-'}")
+            print(f"  - relationship_id: {resolved_relationship or '-'}")
+            print(f"  - ticks: {len(ticks)}")
+            print(f"  - step_events: {len(steps)}")
+            print(f"  - compression_artifacts: {len(artifacts)}")
+
+            self._print_header("Ticks")
+            if not ticks:
+                print("  (none)")
+            for row in ticks:
+                reason = dict(row.reason_trace_json or {})
+                print(
+                    "  - "
+                    f"tick_id={row.tick_id} selected={row.selected_signal_id} "
+                    f"phase={reason.get('phase')} tier={reason.get('selected_priority_tier') or reason.get('priority_tier')} "
+                    f"selection={reason.get('selection')} stop_reason={reason.get('stop_reason')}"
+                )
+
+            self._print_header("Loop Step Events")
+            if not steps:
+                print("  (none)")
+            for row in steps:
+                out = dict(row.output_json or {})
+                print(
+                    "  - "
+                    f"event_id={row.event_id} loop_id={row.loop_id} step={row.step_index_after} "
+                    f"state={row.state_before}->{row.state_after} control={row.control_action} "
+                    f"compression_artifact_id={row.compression_artifact_id or '-'} "
+                    f"outbox={int(out.get('outbox_count') or 0)}"
+                )
+
+            self._print_header("Compression Artifacts")
+            if not artifacts:
+                print("  (none)")
+            for row in artifacts:
+                print(
+                    "  - "
+                    f"artifact_id={row.artifact_id} loop_id={row.loop_id} from={row.from_step_index} to={row.to_step_index} "
+                    f"input_hash={row.input_hash} output_hash={row.output_hash} config_hash={row.config_hash}"
+                )
+            return 0
+        finally:
+            db.close()
+
     @staticmethod
     def _check(name: str, passed: bool, details: str, excerpts: Optional[List[str]] = None) -> CheckResult:
         return CheckResult(name=name, passed=bool(passed), details=details, excerpts=list(excerpts or []))
@@ -1708,6 +1813,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_tick.add_argument("--n", type=int, required=True)
     p_tick.add_argument("--max-ms", type=int, default=None)
 
+    p_timeline = sub.add_parser("timeline", help="Print scheduler/loop/compression timeline from DB")
+    p_timeline.add_argument("--loop", type=str, default=None, dest="loop_id")
+    p_timeline.add_argument("--relationship", type=str, default=None, dest="relationship_id")
+    p_timeline.add_argument("--last-run", action="store_true")
+    p_timeline.add_argument("--top", type=int, default=200)
+
     p_reset = sub.add_parser("reset", help="Reset harness-managed scheduler/loop state (non-destructive)")
     p_reset.add_argument("--scope", type=str, choices=["queue", "loop", "all"], default="queue")
     p_reset.add_argument("--queue", action="store_true")
@@ -1751,6 +1862,13 @@ def main() -> int:
             return harness.cmd_loop_enqueue(loop_id=args.loop_id, count=args.n)
         if args.command == "tick":
             return harness.cmd_tick(count=args.n, max_ms=args.max_ms)
+        if args.command == "timeline":
+            return harness.cmd_timeline(
+                loop_id=args.loop_id,
+                relationship_id=args.relationship_id,
+                last_run=bool(args.last_run),
+                top=args.top,
+            )
         if args.command == "reset":
             return harness.cmd_reset(
                 scope=args.scope,

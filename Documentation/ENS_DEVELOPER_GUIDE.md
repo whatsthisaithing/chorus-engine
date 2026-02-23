@@ -365,3 +365,69 @@ Implementation evolved alongside planning docs under:
 - `Private/InternalPlanning/ENS/Discussion/`
 
 Use them for historical rationale, but treat code references above as source of truth for behavior.
+
+---
+
+## ENS v3 Operational Addendum
+
+This section is additive to all prior guidance and does not replace v2-era behavior notes.
+
+### New v3 Runtime Flags
+
+Set under `ens`:
+
+- `v3_scheduler_enabled`
+- `v3_arbitration_enabled`
+- `v3_loop_sessions_enabled`
+- `v3_structured_control_enabled`
+- `v3_assistant_result_enabled`
+- `v3_context_compression_enabled`
+- `v3_sentinel_fallback_enabled`
+
+Compression knobs:
+- `loop_memory_compress_every_n_steps`
+- `loop_memory_keep_last_k_steps`
+
+### Adding New Ingress in v3
+
+1. Normalize ingress to `Signal`.
+2. Enqueue/ingest via ENS runtime.
+3. Add planning in `runtime._propose_actions`.
+4. Add dispatcher action implementation.
+5. Add replay/idempotency and scheduler-path tests.
+
+### Adding New `loop_kind`
+
+1. Define `loop_kind` name (for policy/tool gating).
+2. Choose `loop_mode` (`visible`/`hidden`) at loop creation.
+3. Configure loop-kind tool allowlist in dispatcher.
+4. Validate control semantics with structured `AssistantResult.control` only.
+
+### Adding New Tool + Loop Gating
+
+1. Implement tool action path.
+2. Ensure tool requests come from `AssistantResult.tool_requests`.
+3. Gate by `loop_kind` allowlist.
+4. Add allowed + blocked test coverage.
+
+### Debug Workflow (v3)
+
+Harness:
+- `scripts/ens_v3_harness.bat status`
+- `scripts/ens_v3_harness.bat tick --n <N>`
+- `scripts/ens_v3_harness.bat verify --profile 3_5|3_6|3_7|3_8`
+- `scripts/ens_v3_harness.bat timeline --loop <loop_id>`
+- `scripts/ens_v3_harness.bat timeline --relationship <relationship_id>`
+- `scripts/ens_v3_harness.bat timeline --last-run`
+
+Replay:
+- `chorus_engine/devtools/replay_v3.py`
+- `extract_run_signature(...)` in `chorus_engine/ens/decision_store.py`
+
+### Common v3 Footguns
+
+- Running loop steps in-process (must be signal-by-signal).
+- Parsing control/tool directives from freeform text.
+- Re-introducing surface reopen gating.
+- Using unstable idempotency keys.
+- Comparing timestamps/raw provider blobs in replay determinism tests.

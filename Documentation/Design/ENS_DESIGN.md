@@ -337,3 +337,71 @@ Short version:
 - Relationship-aware routing/policy activation.
 - Full provider-agnostic model switching endpoint contract.
 - Streaming full ENS ownership.
+
+---
+
+## ENS v3 Addendum (Signals, Scheduler, Loops, Compression, Replay)
+
+This addendum layers v3 behavior on top of existing ENS v2 documentation.
+
+### v3 Mental Model
+
+- Everything runnable is a `Signal` in `ens_signal_queue`.
+- Scheduler tick is the runnable boundary (`pending -> running -> done|failed`).
+- Arbitration is deterministic:
+  - USER preemption
+  - non-user fairness rotation
+  - tie-break by `(created_at_us, signal_id)`
+- Loops are signal producers only (`loop_progression`), never in-process execution loops.
+
+### Structured Control / Tool Channels
+
+- Control directives are accepted only from `AssistantResult.control`.
+- Tool directives are accepted only from `AssistantResult.tool_requests`.
+- Freeform content must not drive control/tool behavior.
+
+### Loop Modes (v3.7)
+
+- `visible`: one selected progression signal = one step = one emit. `CONTINUE` enqueues exactly one follow-up progression.
+- `hidden`: one selected progression signal = one step. No per-step emit; terminal emit on `COMPLETE`.
+
+### Working-Memory Compression (v3.8)
+
+- Scope: loop working memory only, not conversation transcript.
+- Incremental deterministic window:
+  - `from = last_compressed_step_index + 1`
+  - `to = step_index - K`
+  - no-op if `to < from`
+- Artifacts persisted in `ENSLoopCompressionArtifact` with `input_hash`, `config_hash`, `output_hash`.
+
+### Replay / Determinism (v3.9)
+
+- Replay uses deterministic mock provider (`chorus_engine/devtools/mock_llm_provider.py`) for CI-safe determinism.
+- Compare signatures, not timestamps:
+  - selected signal sequence
+  - reason-trace hash sequence
+  - terminal loop states
+  - step-event counts
+  - compression artifact ranges/hashes
+- Utilities:
+  - `chorus_engine/devtools/replay_v3.py`
+  - `extract_run_signature(...)` in `chorus_engine/ens/decision_store.py`
+
+### Dev Harness Operations
+
+- Verify profiles:
+  - `scripts/ens_v3_harness.bat verify --profile 3_5`
+  - `scripts/ens_v3_harness.bat verify --profile 3_6`
+  - `scripts/ens_v3_harness.bat verify --profile 3_7`
+  - `scripts/ens_v3_harness.bat verify --profile 3_8`
+- Timeline dump:
+  - `scripts/ens_v3_harness.bat timeline --loop <loop_id>`
+  - `scripts/ens_v3_harness.bat timeline --relationship <relationship_id>`
+  - `scripts/ens_v3_harness.bat timeline --last-run`
+
+### v3 Guardrails (Do Not Break)
+
+- No runnable bypass of scheduler.
+- No in-process loop execution.
+- No freeform control/tool parsing.
+- No surface reopen gating (attention lock/cooldowns influence fairness only).
