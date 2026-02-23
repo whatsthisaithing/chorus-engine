@@ -616,6 +616,18 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS v3: enable deterministic context compression hooks",
     )
+    loop_memory_compress_every_n_steps: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        description="ENS v3 compression: trigger fold compression every N loop steps",
+    )
+    loop_memory_keep_last_k_steps: int = Field(
+        default=6,
+        ge=1,
+        le=500,
+        description="ENS v3 compression: keep last K raw loop steps uncompressed",
+    )
     v3_sentinel_fallback_enabled: bool = Field(
         default=False,
         description="ENS v3: keep sentinel payload parsing fallback enabled",

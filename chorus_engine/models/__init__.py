@@ -26,6 +26,7 @@ from .ens import (
     ENSFloorControlState,
     ENSLoopSession,
     ENSLoopStepEvent,
+    ENSLoopCompressionArtifact,
 )
 from .relationship import Relationship, RelationshipSurface
 
@@ -64,6 +65,7 @@ __all__ = [
     "ENSFloorControlState",
     "ENSLoopSession",
     "ENSLoopStepEvent",
+    "ENSLoopCompressionArtifact",
     "Relationship",
     "RelationshipSurface",
 ]

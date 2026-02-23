@@ -21,7 +21,14 @@ from chorus_engine.db.database import DATABASE_URL
 from chorus_engine.db.database import SessionLocal
 from chorus_engine.ens.models import Signal
 from chorus_engine.ens.runtime import ENSContext, ENSRuntime
-from chorus_engine.models.ens import ENSDecision, ENSLoopSession, ENSLoopStepEvent, ENSSchedulerTick, ENSSignalQueue
+from chorus_engine.models.ens import (
+    ENSDecision,
+    ENSLoopCompressionArtifact,
+    ENSLoopSession,
+    ENSLoopStepEvent,
+    ENSSchedulerTick,
+    ENSSignalQueue,
+)
 
 
 @dataclass
@@ -641,6 +648,58 @@ class ENSV3Harness:
             return [self._tick_excerpt(r) for r in rows]
         finally:
             db.close()
+
+    def _collect_loop_compression_snapshot(self, loop_id: str) -> Dict[str, Any]:
+        db = SessionLocal()
+        try:
+            artifacts = (
+                db.query(ENSLoopCompressionArtifact)
+                .filter(ENSLoopCompressionArtifact.loop_id == loop_id)
+                .order_by(ENSLoopCompressionArtifact.to_step_index.asc(), ENSLoopCompressionArtifact.created_at_us.asc())
+                .all()
+            )
+            events = (
+                db.query(ENSLoopStepEvent)
+                .filter(ENSLoopStepEvent.loop_id == loop_id)
+                .order_by(ENSLoopStepEvent.step_index_after.asc(), ENSLoopStepEvent.created_at_us.asc())
+                .all()
+            )
+            session = db.query(ENSLoopSession).filter(ENSLoopSession.loop_id == loop_id).first()
+            triggered_steps = [int(e.step_index_after or 0) for e in events if str(e.compression_artifact_id or "").strip()]
+            return {
+                "loop": session,
+                "events": events,
+                "artifacts": artifacts,
+                "triggered_steps": triggered_steps,
+            }
+        finally:
+            db.close()
+
+    def _run_loop_steps_for_compression(
+        self,
+        *,
+        loop_kind: str,
+        relationship: str,
+        conversation: str,
+        surface: str,
+        target_steps: int,
+    ) -> Dict[str, Any]:
+        loop_id, progression_signal_id, _ = self._create_loop_and_progression(
+            loop_kind=loop_kind,
+            relationship=relationship,
+            conversation=conversation,
+            surface=surface,
+            step_prompt="compression profile deterministic step",
+        )
+        _ = progression_signal_id
+        max_ticks = max(10, int(target_steps) * 4)
+        for _ in range(max_ticks):
+            _ = asyncio.run(self.runtime.scheduler_tick(ENSContext(app_state=self.app_state, surface="system", source="harness")))
+            snap = self._collect_loop_compression_snapshot(loop_id)
+            loop = snap.get("loop")
+            if loop is not None and int(loop.step_index or 0) >= int(target_steps):
+                return {"loop_id": loop_id, **snap}
+        raise HarnessError(f"Compression profile failed to reach target_steps={target_steps} for loop_id={loop_id}")
 
     def _verify_profile_3_5(self) -> List[CheckResult]:
         results: List[CheckResult] = []
@@ -1433,16 +1492,172 @@ class ENSV3Harness:
 
         return results
 
+    def _verify_profile_3_8(self) -> List[CheckResult]:
+        results: List[CheckResult] = []
+        db = SessionLocal()
+        try:
+            pending_preexisting = db.query(ENSSignalQueue).filter(ENSSignalQueue.status == "pending").count()
+            if pending_preexisting > 0:
+                pending_rows = (
+                    db.query(ENSSignalQueue)
+                    .filter(ENSSignalQueue.status == "pending")
+                    .order_by(ENSSignalQueue.created_at_us.asc())
+                    .limit(10)
+                    .all()
+                )
+                results.append(
+                    self._check(
+                        "isolation_guard",
+                        False,
+                        f"Expected clean queue for deterministic verify; found {pending_preexisting} pre-existing pending signals.",
+                        excerpts=[self._signal_excerpt(r) for r in pending_rows] + self._last_tick_excerpts(5),
+                    )
+                )
+                return results
+        finally:
+            db.close()
+
+        ens_cfg = self.app_state["system_config"].ens
+        ens_cfg.v3_context_compression_enabled = True
+        ens_cfg.loop_memory_compress_every_n_steps = 4
+        ens_cfg.loop_memory_keep_last_k_steps = 2
+
+        run_id = f"harness38-{int(time.time())}"
+        surface = "web"
+        n = int(ens_cfg.loop_memory_compress_every_n_steps)
+        k = int(ens_cfg.loop_memory_keep_last_k_steps)
+        target_steps = 12
+
+        self._set_mock_mode("continue_control")
+        run_a = self._run_loop_steps_for_compression(
+            loop_kind="generic.hidden",
+            relationship=f"rel-{run_id}-a",
+            conversation=f"conv-{run_id}-a",
+            surface=surface,
+            target_steps=target_steps,
+        )
+        run_b = self._run_loop_steps_for_compression(
+            loop_kind="generic.hidden",
+            relationship=f"rel-{run_id}-b",
+            conversation=f"conv-{run_id}-b",
+            surface=surface,
+            target_steps=target_steps,
+        )
+
+        artifacts_a: List[ENSLoopCompressionArtifact] = list(run_a.get("artifacts") or [])
+        artifacts_b: List[ENSLoopCompressionArtifact] = list(run_b.get("artifacts") or [])
+        events_a: List[ENSLoopStepEvent] = list(run_a.get("events") or [])
+        loop_a: Optional[ENSLoopSession] = run_a.get("loop")
+        triggered_steps_a = [int(x) for x in (run_a.get("triggered_steps") or [])]
+        triggered_steps_b = [int(x) for x in (run_b.get("triggered_steps") or [])]
+        expected_trigger_steps = [step for step in range(1, target_steps + 1) if step > k and (step % n) == 0]
+
+        # 1) deterministic trigger point
+        results.append(
+            self._check(
+                "compression_trigger_point_deterministic",
+                triggered_steps_a == expected_trigger_steps,
+                f"compression_triggered_at_steps={triggered_steps_a}",
+                excerpts=[
+                    f"expected_trigger_steps={expected_trigger_steps}",
+                    *(f"artifact_id={a.artifact_id} from={a.from_step_index} to={a.to_step_index}" for a in artifacts_a),
+                ],
+            )
+        )
+
+        # 2) incremental window correctness (first + second compression)
+        window_ok = False
+        window_details = "insufficient_artifacts"
+        excerpts: List[str] = []
+        if len(artifacts_a) >= 2:
+            first = artifacts_a[0]
+            second = artifacts_a[1]
+            first_to_expected = expected_trigger_steps[0] - k
+            second_to_expected = expected_trigger_steps[1] - k
+            window_ok = bool(
+                int(first.from_step_index) == 0
+                and int(first.to_step_index) == int(first_to_expected)
+                and int(second.from_step_index) == int(first.to_step_index) + 1
+                and int(second.to_step_index) == int(second_to_expected)
+            )
+            window_details = (
+                f"first=({first.from_step_index},{first.to_step_index}) expected=(0,{first_to_expected}) "
+                f"second=({second.from_step_index},{second.to_step_index}) expected=({int(first.to_step_index)+1},{second_to_expected})"
+            )
+            excerpts = [f"artifact_id={a.artifact_id} from={a.from_step_index} to={a.to_step_index}" for a in artifacts_a[:3]]
+        results.append(self._check("incremental_window_correctness", window_ok, window_details, excerpts))
+
+        # 3) deterministic artifact hashing across equivalent runs
+        hashes_a = [(a.input_hash, a.output_hash, a.config_hash) for a in artifacts_a]
+        hashes_b = [(a.input_hash, a.output_hash, a.config_hash) for a in artifacts_b]
+        results.append(
+            self._check(
+                "deterministic_artifact_hashes_across_runs",
+                hashes_a == hashes_b and len(hashes_a) > 0,
+                f"hash_triplets_a={len(hashes_a)} hash_triplets_b={len(hashes_b)} equal={hashes_a == hashes_b}",
+                excerpts=[
+                    *(f"a[{idx}] input={h[0]} output={h[1]} config={h[2]}" for idx, h in enumerate(hashes_a)),
+                    *(f"b[{idx}] input={h[0]} output={h[1]} config={h[2]}" for idx, h in enumerate(hashes_b)),
+                ][:10],
+            )
+        )
+
+        # 4) no compression of recent K steps
+        recent_ok = False
+        details_recent = "missing_loop_or_artifact"
+        if loop_a is not None and artifacts_a:
+            final_artifact = artifacts_a[-1]
+            loop_step_index = int(loop_a.step_index or 0)
+            expected_to = loop_step_index - k
+            recent_step_threshold = int(final_artifact.to_step_index) + 1
+            recent_events = [e for e in events_a if int(e.step_index_after or 0) >= recent_step_threshold]
+            recent_ok = bool(
+                int(final_artifact.to_step_index) == expected_to
+                and len(recent_events) >= k
+                and all(int(e.step_index_after or 0) > int(final_artifact.to_step_index) for e in recent_events)
+                and all(isinstance(e.memory_payload_json, dict) for e in recent_events)
+            )
+            details_recent = (
+                f"loop_step_index={loop_step_index} final_artifact_to={final_artifact.to_step_index} expected_to={expected_to} "
+                f"recent_events_count={len(recent_events)} keep_k={k}"
+            )
+        results.append(self._check("no_compression_of_recent_k_steps", recent_ok, details_recent))
+
+        # 5) replay stability proxy (second deterministic run)
+        replay_ok = bool(
+            triggered_steps_a == triggered_steps_b
+            and hashes_a == hashes_b
+            and len(artifacts_a) == len(artifacts_b)
+        )
+        results.append(
+            self._check(
+                "replay_stability_same_triggers_hashes_counts",
+                replay_ok,
+                (
+                    f"trigger_steps_a={triggered_steps_a} trigger_steps_b={triggered_steps_b} "
+                    f"artifact_count_a={len(artifacts_a)} artifact_count_b={len(artifacts_b)}"
+                ),
+                excerpts=[
+                    f"run_a_loop_id={run_a.get('loop_id')}",
+                    f"run_b_loop_id={run_b.get('loop_id')}",
+                ],
+            )
+        )
+
+        return results
+
     def cmd_verify(self, *, profile: str) -> int:
         normalized = str(profile or "").strip().lower()
-        if normalized not in ("3_5", "3_6", "3_7"):
+        if normalized not in ("3_5", "3_6", "3_7", "3_8"):
             raise HarnessError(f"Unsupported profile: {profile}")
         if normalized == "3_5":
             checks = self._verify_profile_3_5()
         elif normalized == "3_6":
             checks = self._verify_profile_3_6()
-        else:
+        elif normalized == "3_7":
             checks = self._verify_profile_3_7()
+        else:
+            checks = self._verify_profile_3_8()
         self._print_header(f"VERIFY REPORT (profile={normalized})")
         failed = 0
         for idx, check in enumerate(checks, start=1):

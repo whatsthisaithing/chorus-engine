@@ -208,6 +208,7 @@ class ENSLoopSession(Base):
     step_count = Column(Integer, nullable=False, default=0)
     token_budget_used = Column(Integer, nullable=False, default=0)
     tool_budget_used = Column(Integer, nullable=False, default=0)
+    last_compressed_step_index = Column(Integer, nullable=False, default=-1, index=True)
     state = Column(String(30), nullable=False, default="running", index=True)
     stop_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -241,13 +242,16 @@ class ENSLoopStepEvent(Base):
     control_action = Column(String(30), nullable=True, index=True)
     tool_requests_count = Column(Integer, nullable=False, default=0)
     provider_finish_reason = Column(String(30), nullable=True)
+    memory_payload_json = Column(JSON, nullable=True)
     output_json = Column(JSON, nullable=True)
+    compression_artifact_id = Column(String(36), nullable=True, index=True)
     created_at_us = Column(Integer, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
         Index("ix_ens_loop_step_events_loop_created", "loop_id", "created_at_us"),
         Index("ix_ens_loop_step_events_signal", "signal_id", "created_at_us"),
+        Index("ix_ens_loop_step_events_loop_step_after", "loop_id", "step_index_after"),
         Index(
             "uq_ens_loop_step_events_loop_signal",
             "loop_id",
@@ -255,6 +259,28 @@ class ENSLoopStepEvent(Base):
             unique=True,
             sqlite_where=text("signal_id IS NOT NULL"),
         ),
+    )
+
+
+class ENSLoopCompressionArtifact(Base):
+    """Deterministic folded working-memory artifact for loop progression."""
+
+    __tablename__ = "ens_loop_compression_artifacts"
+
+    artifact_id = Column(String(36), primary_key=True, default=_uuid)
+    loop_id = Column(String(36), nullable=False, index=True)
+    from_step_index = Column(Integer, nullable=False)
+    to_step_index = Column(Integer, nullable=False)
+    input_hash = Column(String(64), nullable=False, index=True)
+    config_hash = Column(String(64), nullable=False, index=True)
+    output_hash = Column(String(64), nullable=False, index=True)
+    folded_json = Column(JSON, nullable=False, default=dict)
+    created_at_us = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ens_loop_compression_artifacts_loop_to_step", "loop_id", "to_step_index"),
+        Index("ix_ens_loop_compression_artifacts_loop_created", "loop_id", "created_at_us"),
     )
 
 

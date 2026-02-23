@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import (
     ENSActionResult,
+    ENSLoopCompressionArtifact,
     ENSLoopSession,
     ENSLoopStepEvent,
     ENSSignalQueue,
@@ -65,6 +66,12 @@ from chorus_engine.ens.assistant_result import (
     assistant_result_from_normalized_dict,
     normalize_assistant_result,
 )
+from chorus_engine.ens.loop_memory_compression import (
+    build_step_memory_payload,
+    canonical_json,
+    canonical_hash,
+    fold_memory_payloads,
+)
 from chorus_engine.services.structured_response import (
     parse_structured_response,
     serialize_structured_response,
@@ -85,6 +92,7 @@ _ALLOWED_TOOLS_BY_LOOP_KIND = {
     "generic": set(),
 }
 _VALID_LOOP_MODES = {"visible", "hidden"}
+_LOOP_COMPRESSION_ALGO_VERSION = "fold_v1"
 
 
 def _get_effective_template(character) -> str:
@@ -1738,6 +1746,139 @@ class ENSDispatcher:
                     return max(0, value)
         return 0
 
+    def _compression_policy(self) -> Dict[str, int]:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        n = int(getattr(ens_cfg, "loop_memory_compress_every_n_steps", 10) if ens_cfg else 10)
+        k = int(getattr(ens_cfg, "loop_memory_keep_last_k_steps", 6) if ens_cfg else 6)
+        return {"n": max(1, n), "k": max(1, k)}
+
+    def _compression_enabled(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        return bool(ens_cfg and getattr(ens_cfg, "v3_context_compression_enabled", False))
+
+    def _build_loop_prompt_context(self, db: Session, *, session: ENSLoopSession) -> Dict[str, Any]:
+        policy = self._compression_policy()
+        k = policy["k"]
+        artifact = (
+            db.query(ENSLoopCompressionArtifact)
+            .filter(ENSLoopCompressionArtifact.loop_id == session.loop_id)
+            .order_by(ENSLoopCompressionArtifact.to_step_index.desc(), ENSLoopCompressionArtifact.created_at_us.desc())
+            .first()
+        )
+        recent = (
+            db.query(ENSLoopStepEvent)
+            .filter(ENSLoopStepEvent.loop_id == session.loop_id)
+            .order_by(ENSLoopStepEvent.step_index_after.desc(), ENSLoopStepEvent.created_at_us.desc())
+            .limit(k)
+            .all()
+        )
+        recent_sorted = sorted(recent, key=lambda row: (int(row.step_index_after or 0), int(row.created_at_us or 0)))
+        return {
+            "compression_policy": {"keep_last_k_steps": k},
+            "latest_folded_artifact": (
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "from_step_index": int(artifact.from_step_index),
+                    "to_step_index": int(artifact.to_step_index),
+                    "output_hash": str(artifact.output_hash),
+                    "folded_json": dict(artifact.folded_json or {}),
+                }
+                if artifact is not None
+                else None
+            ),
+            "recent_step_memory": [
+                {
+                    "event_id": row.event_id,
+                    "step_index_after": int(row.step_index_after or 0),
+                    "memory_payload_json": dict(row.memory_payload_json or {}),
+                }
+                for row in recent_sorted
+            ],
+        }
+
+    def _maybe_compress_loop_memory(
+        self,
+        db: Session,
+        *,
+        session: ENSLoopSession,
+        step_event: ENSLoopStepEvent,
+    ) -> Optional[ENSLoopCompressionArtifact]:
+        if not self._compression_enabled():
+            return None
+        policy = self._compression_policy()
+        n = policy["n"]
+        k = policy["k"]
+        step_index = int(step_event.step_index_after or 0)
+        if step_index <= k or (step_index % n) != 0:
+            return None
+
+        last_compressed = int(getattr(session, "last_compressed_step_index", -1) or -1)
+        from_step = last_compressed + 1
+        to_step = step_index - k
+        if to_step < from_step:
+            return None
+
+        prior = (
+            db.query(ENSLoopCompressionArtifact)
+            .filter(ENSLoopCompressionArtifact.loop_id == session.loop_id)
+            .order_by(ENSLoopCompressionArtifact.to_step_index.desc(), ENSLoopCompressionArtifact.created_at_us.desc())
+            .first()
+        )
+        selected_events = (
+            db.query(ENSLoopStepEvent)
+            .filter(ENSLoopStepEvent.loop_id == session.loop_id)
+            .filter(ENSLoopStepEvent.step_index_after >= from_step)
+            .filter(ENSLoopStepEvent.step_index_after <= to_step)
+            .order_by(ENSLoopStepEvent.step_index_after.asc(), ENSLoopStepEvent.created_at_us.asc())
+            .all()
+        )
+        selected_payloads = [dict(row.memory_payload_json or {}) for row in selected_events]
+        input_hash = canonical_hash(selected_payloads)
+        config_doc = {
+            "algorithm_version": _LOOP_COMPRESSION_ALGO_VERSION,
+            "mode": "fold",
+            "policy": {"n": n, "k": k},
+            "window": {"from": from_step, "to": to_step, "last_compressed_before": last_compressed},
+            "fold_rules": {
+                "merge_keys": ["facts", "goals", "decisions", "tool_results"],
+                "update_strategy": "last_write_wins",
+                "bounded_lists": True,
+                "list_cap": 64,
+            },
+        }
+        config_hash = canonical_hash(config_doc)
+        folded_json = fold_memory_payloads(
+            prior_folded_json=(dict(prior.folded_json or {}) if prior is not None else None),
+            selected_payloads=selected_payloads,
+            list_cap=64,
+        )
+        output_hash = canonical_hash(folded_json)
+
+        artifact = ENSLoopCompressionArtifact(
+            artifact_id=str(uuid.uuid4()),
+            loop_id=session.loop_id,
+            from_step_index=from_step,
+            to_step_index=to_step,
+            input_hash=input_hash,
+            config_hash=config_hash,
+            output_hash=output_hash,
+            folded_json=folded_json,
+            created_at_us=next_created_at_us(),
+        )
+        db.add(artifact)
+        db.flush()
+        step_event.compression_artifact_id = artifact.artifact_id
+        session.last_compressed_step_index = to_step
+        logger.info(
+            "loop_memory_compressed loop_id=%s step_index=%s from=%s to=%s artifact_id=%s",
+            session.loop_id,
+            step_index,
+            from_step,
+            to_step,
+            artifact.artifact_id,
+        )
+        return artifact
+
     def _has_newer_pending_user_signal(
         self,
         db: Session,
@@ -1881,6 +2022,7 @@ class ENSDispatcher:
                 step_count=0,
                 token_budget_used=0,
                 tool_budget_used=0,
+                last_compressed_step_index=-1,
                 state=initial_state,
                 stop_reason=None,
             )
@@ -1942,10 +2084,16 @@ class ENSDispatcher:
             character=character,
             invocation_kind="chat",
         )
-        step_prompt = str(
-            params.get("step_prompt")
-            or f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}."
-        )
+        explicit_prompt = str(params.get("step_prompt") or "").strip()
+        if explicit_prompt:
+            step_prompt = explicit_prompt
+        else:
+            context_doc = self._build_loop_prompt_context(db, session=session)
+            step_prompt = (
+                f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}.\n"
+                "Deterministic working memory context (folded + recent raw):\n"
+                f"{canonical_json(context_doc)}"
+            )
 
         # Hidden loops preempt immediately when newer user input is waiting.
         if loop_mode == "hidden" and self._has_newer_pending_user_signal(
@@ -1974,6 +2122,15 @@ class ENSDispatcher:
                 control_action=None,
                 tool_requests_count=0,
                 provider_finish_reason=None,
+                memory_payload_json={
+                    "schema_version": 1,
+                    "step_index": int(session.step_index or 0),
+                    "facts": {},
+                    "goals": {},
+                    "decisions": {"state_after": str(session.state or ""), "preempted": True},
+                    "tool_results": {"allowed_count": 0, "blocked_count": 0},
+                    "scratch": [],
+                },
                 output_json={
                     "loop_mode": loop_mode,
                     "step_stop_reason": "USER_PREEMPT",
@@ -2166,6 +2323,16 @@ class ENSDispatcher:
             control_action=control_action,
             tool_requests_count=len(requested_tools),
             provider_finish_reason=str(invocation.get("finish_reason") or "") or None,
+            memory_payload_json=build_step_memory_payload(
+                step_index_after=int(session.step_index or 0),
+                control_action=control_action,
+                state_after=str(session.state or ""),
+                display_text=assistant_result.display_text,
+                tool_requests_allowed=[r.tool_name for r in allowed_tool_requests],
+                tool_requests_blocked=blocked_tool_requests,
+                finish_reason=str(invocation.get("finish_reason") or "") or None,
+                assistant_result_tier=str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            ),
             output_json={
                 "display_text": assistant_result.display_text,
                 "loop_mode": loop_mode,
@@ -2180,6 +2347,7 @@ class ENSDispatcher:
             created_at_us=next_created_at_us(),
         )
         db.add(step_event)
+        _ = self._maybe_compress_loop_memory(db, session=session, step_event=step_event)
         db.commit()
 
         return {

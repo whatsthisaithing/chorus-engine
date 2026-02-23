@@ -274,6 +274,8 @@ ens:
   v3_structured_control_enabled: false  # Accept control only from structured AssistantResult.control
   v3_assistant_result_enabled: false  # Enable canonical AssistantResult normalization path
   v3_context_compression_enabled: false  # Enable deterministic context compression hooks
+  loop_memory_compress_every_n_steps: 10  # Compression trigger cadence for loop working-memory folding
+  loop_memory_keep_last_k_steps: 6  # Keep this many latest loop steps uncompressed
   v3_sentinel_fallback_enabled: true  # Keep sentinel payload fallback active for compatibility
   
   # Permanent scheduler operation knobs (retained after migration)
