@@ -5913,13 +5913,24 @@ async def pause_interactive_narrative(loop_id: str, db: Session = Depends(get_db
     if str(row.loop_kind or "") != "narrative.v1":
         raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
     conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
+    thread_id = None
+    if conversation is not None:
+        threads = ThreadRepository(db).list_by_conversation(conversation.id)
+        if threads:
+            thread_id = threads[0].id
     assistant_id = str(conversation.character_id) if conversation and conversation.character_id else None
     signal = Signal(
         type="loop.session.pause_requested",
         scope="SESSION",
         source="external",
         assistant_id=assistant_id,
-        payload={"loop_id": loop_id},
+        payload={
+            "loop_id": loop_id,
+            "conversation_id": (conversation.id if conversation else None),
+            "thread_id": thread_id,
+            "surface_id": row.surface_id,
+            "external_thread_id": thread_id,
+        },
         relationship_hint=row.relationship_id,
         surface_id=row.surface_id,
     )
@@ -5968,13 +5979,25 @@ async def resume_interactive_narrative(loop_id: str, db: Session = Depends(get_d
     if str(row.loop_kind or "") != "narrative.v1":
         raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
     conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
+    thread_id = None
+    if conversation is not None:
+        threads = ThreadRepository(db).list_by_conversation(conversation.id)
+        if threads:
+            thread_id = threads[0].id
     assistant_id = str(conversation.character_id) if conversation and conversation.character_id else None
     signal = Signal(
         type="loop.session.resume_requested",
         scope="SESSION",
         source="external",
         assistant_id=assistant_id,
-        payload={"loop_id": loop_id, "auto_enqueue": False},
+        payload={
+            "loop_id": loop_id,
+            "auto_enqueue": False,
+            "conversation_id": (conversation.id if conversation else None),
+            "thread_id": thread_id,
+            "surface_id": row.surface_id,
+            "external_thread_id": thread_id,
+        },
         relationship_hint=row.relationship_id,
         surface_id=row.surface_id,
     )

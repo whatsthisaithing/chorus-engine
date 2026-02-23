@@ -137,7 +137,7 @@ class SystemPromptGenerator:
 
         if loop_step:
             parts.append(self._generate_loop_step_mode_block())
-            if str(loop_kind or "").strip() == "narrative.v1":
+            if str(loop_kind or "").strip().lower() == "narrative.v1":
                 parts.append(self._generate_narrative_v1_control_rules_block())
         
         # 6. Add structured response contract (always enforced)
@@ -557,7 +557,7 @@ class SystemPromptGenerator:
         supported_tools_block = "\n".join(supported_tools)
 
         contract = """**Control / Tool Payload Contract (Mandatory When Requested):**
-- If you emit a tool call, place it AFTER </assistant_response>.
+- If you emit a payload, place it AFTER </assistant_response>.
 - Use these exact sentinels:
 ---CHORUS_TOOL_PAYLOAD_BEGIN---
 {JSON payload}
@@ -566,8 +566,7 @@ class SystemPromptGenerator:
 - Sentinels must match exactly.
 - Do not mention or explain tool JSON in visible prose.
 - Never output tool JSON as prose, markdown, fenced code blocks, or raw JSON text.
-- Tool payloads must appear only inside the exact required sentinel markers.
-- If you are not 100% certain you can format the sentinel block correctly, emit no payload.
+- Payloads must appear only inside the exact required sentinel markers.
 
 JSON schema (version 1):
 {
@@ -598,9 +597,21 @@ Only one tool call is recommended."""
             "- `control` is REQUIRED for loop steps.",
             "- `control` is OPTIONAL in normal conversation turns.",
             "- `tool_calls` must remain an array (may be empty).",
+            "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.",
             "- Never encode control decisions in prose.",
             "- Never emit control outside the sentinel payload.",
         ]
+        if loop_step:
+            clarifications.extend(
+                [
+                    "- **This is a loop step. Payload is mandatory. Do NOT omit the sentinel payload.**",
+                    "- If you are unsure, emit a minimal valid payload with `control.action = YIELD` and `tool_calls = []`.",
+                ]
+            )
+        else:
+            clarifications.append(
+                "- If you are not 100% certain you can format the sentinel block correctly, emit no payload."
+            )
         if not loop_step:
             clarifications.append("- If not producing control or tool calls, do not emit a sentinel payload block.")
         return "\n".join([contract] + clarifications)
@@ -611,6 +622,8 @@ Only one tool call is recommended."""
             "This message is part of an ENS loop progression step.",
             "",
             "You MUST:",
+            "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
+            "- If you want the story to continue, **do not** start another `<assistant_response>` root. Instead, set `control.action = CONTINUE` in the sentinel payload.",
             "- Emit exactly one control payload inside the sentinel block.",
             "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
             "- Keep `tool_calls` empty unless explicitly allowed.",
@@ -625,10 +638,11 @@ Only one tool call is recommended."""
     def _generate_narrative_v1_control_rules_block(self) -> str:
         lines = [
             "**Interactive Narrative Control Selection Rules:**",
-            "- Use YIELD when you ask the user a question, when a meaningful player decision is required,",
-            "  before irreversible consequences, or at a natural pause point.",
-            "- Use CONTINUE when advancing environment/NPC behavior or consequences already implied",
-            "  without removing user agency.",
+            "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
+            "- Prefer CONTINUE for environmental progression, NPC reactions, travel/montage, and consequences already implied.",
+            "- Use YIELD only when a meaningful user decision or direct response is required,",
+            "  or before an irreversible choice affecting the user's character.",
+            "- Avoid asking questions by default; ask only when truly necessary.",
             "- Use COMPLETE when the scene resolves naturally and the narrative arc concludes cleanly.",
             "- Do not artificially prolong scenes.",
             "- Do not generate multiple major beats in one step.",
@@ -667,7 +681,8 @@ Only one tool call is recommended."""
             "- Your entire response MUST be wrapped in <assistant_response>...</assistant_response>",
             "- Output exactly one <assistant_response>...</assistant_response> block per message.",
             "- All content must appear inside that single block; do not open a second root.",
-            "- Exception for tool payload placement: if (and only if) you emit a tool call, you may place exactly one sentinel tool payload block immediately after </assistant_response>.",
+            "- Exception for payload placement: if (and only if) you are required to emit a payload for this message (either because you are emitting a tool call or because this is a loop step requiring `control`), you may place exactly one sentinel payload block immediately after </assistant_response>.",
+            "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.",
             "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block.",
             "- Only allowed child tags may be used",
             "- Do not create any other tags or sections. Never append notes, state updates, metadata, or commentary.",

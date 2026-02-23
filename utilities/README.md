@@ -147,6 +147,49 @@ run_script.bat utilities/general_chat_segmentation_backfill/run_segment_reset.py
 
 See `utilities/general_chat_segmentation_backfill/README.md` for filters, dry-run mode, and reset details.
 
+### `replay_user_message_llm.py`
+
+Replay a target message turn and invoke the LLM directly (no ENS path).
+Best-effort exact replay for assistant responses:
+- Prefers exact debug-captured `messages_for_llm` when available
+- Falls back to prompt reconstruction from DB/thread history
+
+**Usage:**
+```bash
+run_script.bat utilities/replay_user_message_llm.py <message_id>
+```
+
+**Dry-run (build payload only, no model invocation):**
+```bash
+run_script.bat utilities/replay_user_message_llm.py <message_id> --no-invoke
+```
+
+**Force reconstruction (ignore debug-captured payloads):**
+```bash
+run_script.bat utilities/replay_user_message_llm.py <message_id> --force-reconstruct
+```
+
+**Rebuild only the system prompt (preserve transcript messages):**
+```bash
+run_script.bat utilities/replay_user_message_llm.py <message_id> --rebuild-system-prompt
+```
+
+**Output:**
+- Timestamped JSON bundle in `data/debug/llm_replay_outputs/`
+- Includes resolved replay mode, full `messages_for_llm`, model settings, and raw response/error details
+- When `--rebuild-system-prompt` is used, bundle includes `system_prompt_comparison` (original vs rebuilt)
+- Includes `original_target_payload_analysis` with payload diagnostics for the original target response:
+  - sentinel presence flags (`has_sentinel_begin`, `has_sentinel_end`, `has_sentinel_payload`)
+  - parsed payload (`sentinel_payload_parsed`) or parse failure (`sentinel_payload_parse_error`)
+  - likely malformed/unwrapped payload hints (`likely_payload_outside_sentinel`, `likely_payload_snippets`)
+- Includes `original_target_display_analysis` with display-format diagnostics for the original target response:
+  - `<assistant_response>` block count (`assistant_response_block_count`)
+  - whether visible text exists outside `<assistant_response>` (`has_display_text_outside_assistant_response`)
+  - whether visible text exists inside `<assistant_response>` but outside supported template tags (`has_untagged_display_text_inside_assistant_response`)
+  - unknown tags detected inside `<assistant_response>` (`unknown_tags_inside_assistant_response`)
+- When invocation runs, `llm.payload_analysis` contains the same diagnostics for the replayed raw response
+- When invocation runs, `llm.display_analysis` contains the same display-format diagnostics for the replayed raw response
+
 ---
 
 ## Future Scripts
