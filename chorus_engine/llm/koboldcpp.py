@@ -46,6 +46,8 @@ class KoboldCppLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a completion using OpenAI-compatible chat completions endpoint.
@@ -70,6 +72,7 @@ class KoboldCppLLMClient(BaseLLMClient):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             
+            _ = (tools, tool_choice)  # KoboldCpp native tools unsupported in v1.
             payload = {
                 "model": self.model,  # KoboldCpp ignores this, but required by API spec
                 "messages": messages,
@@ -93,7 +96,8 @@ class KoboldCppLLMClient(BaseLLMClient):
             
             # OpenAI-compatible response format
             choice = data.get("choices", [{}])[0]
-            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
+            message = choice.get("message", {}) or {}
+            content = normalize_mojibake(message.get("content", ""))
             used_model = data.get("model", self.model)
             finish_reason = choice.get("finish_reason")
             if not content.strip():
@@ -107,7 +111,9 @@ class KoboldCppLLMClient(BaseLLMClient):
                 content=content,
                 model=used_model,
                 finish_reason=finish_reason,
-                usage=data.get("usage")
+                usage=data.get("usage"),
+                tool_calls=message.get("tool_calls"),
+                raw_message=message if isinstance(message, dict) else None,
             )
         
         except httpx.HTTPStatusError as e:
@@ -137,6 +143,8 @@ class KoboldCppLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate with conversation history using chat completions endpoint.
@@ -154,6 +162,7 @@ class KoboldCppLLMClient(BaseLLMClient):
             LLMError: If generation fails
         """
         try:
+            _ = (tools, tool_choice)  # KoboldCpp native tools unsupported in v1.
             payload = {
                 "model": self.model,  # Required by API spec, but KoboldCpp uses loaded model
                 "messages": messages,
@@ -176,7 +185,8 @@ class KoboldCppLLMClient(BaseLLMClient):
             data = response.json()
             
             choice = data.get("choices", [{}])[0]
-            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
+            message = choice.get("message", {}) or {}
+            content = normalize_mojibake(message.get("content", ""))
             used_model = data.get("model", self.model)
             finish_reason = choice.get("finish_reason")
             if not content.strip():
@@ -190,7 +200,9 @@ class KoboldCppLLMClient(BaseLLMClient):
                 content=content,
                 model=used_model,
                 finish_reason=finish_reason,
-                usage=data.get("usage")
+                usage=data.get("usage"),
+                tool_calls=message.get("tool_calls"),
+                raw_message=message if isinstance(message, dict) else None,
             )
         
         except httpx.HTTPStatusError as e:

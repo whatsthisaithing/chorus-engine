@@ -644,7 +644,7 @@ def test_v3_scheduler_no_double_emit_on_replay(client, db, helpers):
         async def health_check(self):
             return True
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LLMResponse(
                 "<assistant_response><speech>Here you go.</speech></assistant_response>\n"
@@ -718,7 +718,7 @@ def test_v3_scheduler_tool_call_sentinel_fallback_still_works(client, db, helper
         async def health_check(self):
             return True
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LLMResponse(
                 "<assistant_response><speech>Sending one.</speech></assistant_response>\n"
@@ -1154,7 +1154,7 @@ def test_v35_loop_progression_continue_enqueues_exactly_one_followup(helpers, db
                 "---CHORUS_TOOL_PAYLOAD_END---"
             )
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1234,7 +1234,7 @@ def test_v36_freeform_yield_text_without_structured_control_does_not_change_loop
             _ = (prompt, system_prompt, model, kwargs)
             return _LoopResponse("I can YIELD to you if needed, but continuing normally.")
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1331,7 +1331,7 @@ def test_v37_visible_mode_continue_emits_once_and_enqueues_one_followup(helpers,
                 "---CHORUS_TOOL_PAYLOAD_END---"
             )
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1414,7 +1414,7 @@ def test_v37_hidden_mode_auto_continues_without_per_step_emission(helpers, db):
             _ = (prompt, system_prompt, model, kwargs)
             return _LoopResponse("Hidden step plain text with no control.")
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1502,7 +1502,7 @@ def test_v37_visible_mode_preempt_pauses_after_step_without_followup(helpers, db
                 "---CHORUS_TOOL_PAYLOAD_END---"
             )
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1586,7 +1586,7 @@ def test_v37_hidden_mode_complete_emits_once_and_stops(helpers, db):
                 "---CHORUS_TOOL_PAYLOAD_END---"
             )
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1670,7 +1670,7 @@ def test_v37_hidden_mode_preempt_stops_without_emission(helpers, db, monkeypatch
             _ = (prompt, system_prompt, model, kwargs)
             return _LoopResponse("should not execute when hidden preempt triggers")
 
-        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+        async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
             _ = (messages, temperature, max_tokens, model)
             return _LoopResponse("unused")
 
@@ -1734,4 +1734,5 @@ def test_v37_hidden_mode_preempt_stops_without_emission(helpers, db, monkeypatch
         .all()
     )
     assert len(intents) == 0
+
 

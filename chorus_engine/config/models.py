@@ -45,6 +45,17 @@ class LLMConfig(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     timeout_seconds: int = Field(default=120, gt=0)
     unload_during_image_generation: bool = Field(default=False, description="Unload model from VRAM during image generation to free memory")
+    ollama_legacy_chat_api_enabled: bool = Field(
+        default=False,
+        description="Compat-only: use Ollama legacy /api/chat transport instead of OpenAI-compatible /v1/chat/completions.",
+    )
+    ollama_capture_raw_http_debug: bool = Field(
+        default=False,
+        description=(
+            "Debug-only: capture raw request/response payloads for Ollama calls "
+            "to data/debug/requests/*.json"
+        ),
+    )
     
     # Integrated provider specific fields
     n_gpu_layers: Optional[int] = Field(default=-1, description="GPU layers for integrated provider (-1=all, 0=CPU only)")
@@ -632,6 +643,44 @@ class ENSConfig(BaseModel):
         default=False,
         description="ENS v3: keep sentinel payload parsing fallback enabled",
     )
+    native_tool_transport_enabled: bool = Field(
+        default=False,
+        description="ENS: enable provider-native tool transport for supported engines.",
+    )
+    native_tool_transport_force_sentinel: bool = Field(
+        default=False,
+        description="ENS: force sentinel-only parsing path even when native transport is available.",
+    )
+    native_tool_transport_sentinel_fallback_enabled: bool = Field(
+        default=True,
+        description="ENS: allow sentinel fallback when native transport attempt yields no control/tools.",
+    )
+    native_tool_transport_narrative_v11_split_enabled: bool = Field(
+        default=False,
+        description="ENS: enable narrative.v1 split loop-step flow (Stage A beat + Stage B control evaluation).",
+    )
+    native_tool_transport_debug_override_mode: str = Field(
+        default="off",
+        description=(
+            "ENS debug-only native transport override mode: "
+            "off|chat_control_only|loop_image_only|both."
+        ),
+    )
+
+    @field_validator("native_tool_transport_debug_override_mode", mode="before")
+    @classmethod
+    def _normalize_native_tool_transport_debug_override_mode(cls, value):
+        # YAML 1.1 may coerce unquoted 'off' into boolean False.
+        if isinstance(value, bool):
+            value = "both" if value else "off"
+        normalized = str(value or "off").strip().lower()
+        allowed = {"off", "chat_control_only", "loop_image_only", "both"}
+        if normalized not in allowed:
+            raise ValueError(
+                "native_tool_transport_debug_override_mode must be one of: "
+                "off, chat_control_only, loop_image_only, both"
+            )
+        return normalized
     scheduler_sync_ticks_per_ingress: int = Field(
         default=1,
         ge=0,

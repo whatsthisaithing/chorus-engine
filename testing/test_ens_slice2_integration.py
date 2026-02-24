@@ -16,7 +16,7 @@ class _ToolPayloadLLMClient:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
         return _ToolPayloadResponse(self.payload_text)
 
 
@@ -30,7 +30,7 @@ class _ColdRecallProbeLLMClient:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
         self.call_count += 1
         has_archival_transcript = any(
             isinstance(m, dict)
@@ -59,7 +59,7 @@ class _MediaRepairLLMClient:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
         _ = (temperature, max_tokens, model)
         self.call_count += 1
         last_user = ""
@@ -401,3 +401,4 @@ def test_slice2_explicit_media_request_repair_recovers_missing_payload(client, d
     tool_rows = db.query(ENSToolCallRequest).all()
     assert len(tool_rows) == 1
     assert tool_rows[0].tool_name == "image.generate"
+

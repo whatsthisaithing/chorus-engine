@@ -147,31 +147,33 @@ run_script.bat utilities/general_chat_segmentation_backfill/run_segment_reset.py
 
 See `utilities/general_chat_segmentation_backfill/README.md` for filters, dry-run mode, and reset details.
 
-### `replay_user_message_llm.py`
+### `inspect_turn_llm.py`
 
-Replay a target message turn and invoke the LLM directly (no ENS path).
-Best-effort exact replay for assistant responses:
+Inspect a target message turn and optionally invoke the LLM directly (no ENS path).
+Best-effort exact reconstruction for assistant responses:
 - Prefers exact debug-captured `messages_for_llm` when available
 - Falls back to prompt reconstruction from DB/thread history
 
 **Usage:**
 ```bash
-run_script.bat utilities/replay_user_message_llm.py <message_id>
+run_script.bat utilities/inspect_turn_llm.py <message_id>
 ```
 
-**Dry-run (build payload only, no model invocation):**
+By default, this is diagnostics-only (no provider invocation).
+
+**Optional provider replay (explicit):**
 ```bash
-run_script.bat utilities/replay_user_message_llm.py <message_id> --no-invoke
+run_script.bat utilities/inspect_turn_llm.py <message_id> --invoke
 ```
 
 **Force reconstruction (ignore debug-captured payloads):**
 ```bash
-run_script.bat utilities/replay_user_message_llm.py <message_id> --force-reconstruct
+run_script.bat utilities/inspect_turn_llm.py <message_id> --force-reconstruct
 ```
 
 **Rebuild only the system prompt (preserve transcript messages):**
 ```bash
-run_script.bat utilities/replay_user_message_llm.py <message_id> --rebuild-system-prompt
+run_script.bat utilities/inspect_turn_llm.py <message_id> --rebuild-system-prompt
 ```
 
 **Output:**

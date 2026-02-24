@@ -1,23 +1,129 @@
 """Ollama LLM client implementation."""
 
+import base64
 import json
 from typing import List
 
 from .text_normalization import normalize_mojibake
 import logging
 from typing import Optional, AsyncIterator
+from datetime import datetime
+from pathlib import Path
 from .base import BaseLLMClient, LLMResponse, LLMError
 import httpx
+from .request_debug_context import get_request_debug_context
 
 logger = logging.getLogger(__name__)
 
 
 class OllamaLLMClient(BaseLLMClient):
     """Client for interacting with Ollama API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float,
+        temperature: float,
+        max_tokens: int,
+        context_window: int = 8192,
+        use_legacy_chat_api: bool = False,
+        capture_raw_http_debug: bool = False,
+    ):
+        super().__init__(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            context_window=context_window,
+        )
+        self.use_legacy_chat_api = bool(use_legacy_chat_api)
+        self.capture_raw_http_debug = bool(capture_raw_http_debug)
+
+    async def _post_with_optional_raw_capture(self, endpoint_path: str, payload: dict) -> httpx.Response:
+        request_body_bytes = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        response = await self.client.post(
+            f"{self.base_url}{endpoint_path}",
+            content=request_body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        if self.capture_raw_http_debug:
+            self._write_raw_http_capture(
+                endpoint_path=endpoint_path,
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
+            )
+        return response
+
+    def _write_raw_http_capture(
+        self,
+        *,
+        endpoint_path: str,
+        payload: dict,
+        request_body_bytes: bytes,
+        response: httpx.Response,
+    ) -> None:
+        try:
+            ctx = get_request_debug_context()
+            conversation_id = str(ctx.get("conversation_id") or "unknown").strip() or "unknown"
+            chat_type = str(ctx.get("chat_type") or "normal").strip().lower() or "normal"
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+            endpoint_slug = endpoint_path.strip("/").replace("/", "_")
+            filename = f"{conversation_id}_{chat_type}_{timestamp}_{endpoint_slug}.json"
+            out_dir = Path("data/debug/requests")
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            response_body_bytes = bytes(response.content or b"")
+            request_text = request_body_bytes.decode("utf-8", errors="replace")
+            response_text = response_body_bytes.decode("utf-8", errors="replace")
+
+            doc = {
+                "captured_at_utc": datetime.utcnow().isoformat() + "Z",
+                "conversation_id": conversation_id,
+                "chat_type": chat_type,
+                "context": ctx,
+                "provider": "ollama",
+                "base_url": self.base_url,
+                "endpoint_path": endpoint_path,
+                "model": str(payload.get("model") or self.model),
+                "status_code": response.status_code,
+                "request": {
+                    "content_type": "application/json",
+                    "body_text": request_text,
+                    "body_bytes_b64": base64.b64encode(request_body_bytes).decode("ascii"),
+                },
+                "response": {
+                    "content_type": response.headers.get("content-type"),
+                    "body_text": response_text,
+                    "body_bytes_b64": base64.b64encode(response_body_bytes).decode("ascii"),
+                },
+            }
+
+            (out_dir / filename).write_text(
+                json.dumps(doc, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to capture raw Ollama HTTP exchange: %s", exc)
+
+    @staticmethod
+    def _parse_openai_choice(data: dict) -> tuple[dict, dict]:
+        choice = (data.get("choices") or [{}])[0] or {}
+        message = choice.get("message", {}) or {}
+        return choice, message
     
     async def health_check(self) -> bool:
         """Check if Ollama is available."""
         try:
+            response = await self.client.get(f"{self.base_url}/v1/models")
+            if response.status_code == 200:
+                return True
             response = await self.client.get(f"{self.base_url}/api/tags")
             return response.status_code == 200
         except Exception as e:
@@ -33,6 +139,8 @@ class OllamaLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a completion from the LLM using chat endpoint.
@@ -57,36 +165,52 @@ class OllamaLLMClient(BaseLLMClient):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             
-            payload = {
-                "model": model if model is not None else self.model,
-                "messages": messages,
-                "stream": False
-            }
-            
-            # Add options if needed
-            if temperature is not None or max_tokens is not None:
-                payload["options"] = {}
-                if temperature is not None:
-                    payload["options"]["temperature"] = temperature
-                else:
-                    payload["options"]["temperature"] = self.temperature
-                if max_tokens is not None:
-                    payload["options"]["num_predict"] = max_tokens
-            
-            response = await self.client.post(
-                f"{self.base_url}/api/chat",
-                json=payload
-            )
-            response.raise_for_status()
-
-            if response.encoding is None or response.encoding.lower() != "utf-8":
-                response.encoding = "utf-8"
-
-            response_text = response.text
-            data = response.json()
-            content = normalize_mojibake(data.get("message", {}).get("content", ""))
+            if self.use_legacy_chat_api:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                }
+                if temperature is not None or max_tokens is not None:
+                    payload["options"] = {}
+                    payload["options"]["temperature"] = self.temperature if temperature is None else temperature
+                    if max_tokens is not None:
+                        payload["options"]["num_predict"] = max_tokens
+                response = await self._post_with_optional_raw_capture("/api/chat", payload)
+                response.raise_for_status()
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
+                response_text = response.text
+                data = response.json()
+                message = data.get("message", {}) or {}
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = data.get("done_reason")
+                tool_calls = None
+                raw_message = message if isinstance(message, dict) else None
+            else:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                if tools:
+                    payload["tools"] = tools
+                    if tool_choice is not None:
+                        payload["tool_choice"] = tool_choice
+                response = await self._post_with_optional_raw_capture("/v1/chat/completions", payload)
+                response.raise_for_status()
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
+                response_text = response.text
+                data = response.json()
+                choice, message = self._parse_openai_choice(data)
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = choice.get("finish_reason")
+                tool_calls = message.get("tool_calls")
+                raw_message = message if isinstance(message, dict) else None
             if not content.strip():
-                options = payload.get("options", {})
                 logger.warning(
                     f"[OLLAMA] Empty response raw preview: "
                     f"len={len(response_text)}, "
@@ -96,11 +220,9 @@ class OllamaLLMClient(BaseLLMClient):
                 logger.warning(
                     f"[OLLAMA] Empty response content: "
                     f"model={data.get('model', model if model is not None else self.model)}, "
-                    f"done_reason={data.get('done_reason')}, "
-                    f"temperature={options.get('temperature')}, "
-                    f"num_predict={options.get('num_predict')}, "
-                    f"prompt_tokens={data.get('prompt_eval_count', 0)}, "
-                    f"output_tokens={data.get('eval_count', 0)}"
+                    f"done_reason={finish_reason}, "
+                    f"prompt_tokens={data.get('prompt_eval_count', 0) or data.get('usage', {}).get('prompt_tokens', 0)}, "
+                    f"output_tokens={data.get('eval_count', 0) or data.get('usage', {}).get('completion_tokens', 0)}"
                 )
             
             # Log Ollama timing metrics for debugging
@@ -108,8 +230,8 @@ class OllamaLLMClient(BaseLLMClient):
             prompt_eval_dur = data.get("prompt_eval_duration", 0) / 1e9
             eval_dur = data.get("eval_duration", 0) / 1e9
             total_dur = data.get("total_duration", 0) / 1e9
-            prompt_tokens = data.get("prompt_eval_count", 0)
-            output_tokens = data.get("eval_count", 0)
+            prompt_tokens = data.get("prompt_eval_count", 0) or data.get("usage", {}).get("prompt_tokens", 0)
+            output_tokens = data.get("eval_count", 0) or data.get("usage", {}).get("completion_tokens", 0)
             
             if load_dur > 1.0 or total_dur > 30:  # Log if model loaded or took >30s
                 logger.info(
@@ -121,9 +243,9 @@ class OllamaLLMClient(BaseLLMClient):
             # Use the model from response to confirm what Ollama actually used
             used_model = data.get("model", model if model is not None else self.model)
             usage = {
-                "prompt_tokens": data.get("prompt_eval_count", 0),
-                "completion_tokens": data.get("eval_count", 0),
-                "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": prompt_tokens + output_tokens,
                 "load_duration_s": load_dur,
                 "prompt_eval_duration_s": prompt_eval_dur,
                 "eval_duration_s": eval_dur,
@@ -133,8 +255,10 @@ class OllamaLLMClient(BaseLLMClient):
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=data.get("done_reason"),
-                usage=usage
+                finish_reason=finish_reason,
+                usage=usage,
+                tool_calls=tool_calls,
+                raw_message=raw_message,
             )
         
         except httpx.HTTPError as e:
@@ -159,29 +283,61 @@ class OllamaLLMClient(BaseLLMClient):
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt, "images": image_base64_list})
-            payload = {
-                "model": model if model is not None else self.model,
-                "messages": messages,
-                "stream": False,
-            }
-            payload["options"] = {
-                "temperature": self.temperature if temperature is None else temperature,
-                "num_predict": self.max_tokens if max_tokens is None else max_tokens,
-            }
-            response = await self.client.post(f"{self.base_url}/api/chat", json=payload)
+            if self.use_legacy_chat_api:
+                messages.append({"role": "user", "content": prompt, "images": image_base64_list})
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.temperature if temperature is None else temperature,
+                        "num_predict": self.max_tokens if max_tokens is None else max_tokens,
+                    },
+                }
+                endpoint = f"{self.base_url}/api/chat"
+            else:
+                content_parts = [{"type": "text", "text": prompt}]
+                for image_base64 in image_base64_list:
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{image_mime_type};base64,{image_base64}"},
+                        }
+                    )
+                messages.append({"role": "user", "content": content_parts})
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                endpoint = f"{self.base_url}/v1/chat/completions"
+            response = await self.client.post(endpoint, json=payload)
             response.raise_for_status()
             data = response.json()
-            content = normalize_mojibake(data.get("message", {}).get("content", ""))
+            if self.use_legacy_chat_api:
+                message = data.get("message", {}) or {}
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = data.get("done_reason")
+            else:
+                choice, message = self._parse_openai_choice(data)
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = choice.get("finish_reason")
             return LLMResponse(
                 content=content,
                 model=data.get("model", model if model is not None else self.model),
-                finish_reason=data.get("done_reason"),
+                finish_reason=finish_reason,
                 usage={
-                    "prompt_tokens": data.get("prompt_eval_count", 0),
-                    "completion_tokens": data.get("eval_count", 0),
-                    "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                    "prompt_tokens": data.get("prompt_eval_count", 0) or data.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": data.get("eval_count", 0) or data.get("usage", {}).get("completion_tokens", 0),
+                    "total_tokens": (
+                        (data.get("prompt_eval_count", 0) or data.get("usage", {}).get("prompt_tokens", 0))
+                        + (data.get("eval_count", 0) or data.get("usage", {}).get("completion_tokens", 0))
+                    ),
                 },
+                tool_calls=(message.get("tool_calls") if isinstance(message, dict) else None),
+                raw_message=(message if isinstance(message, dict) else None),
             )
         except httpx.HTTPError as e:
             raise LLMError(f"HTTP error during vision generation: {e}")
@@ -194,6 +350,8 @@ class OllamaLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a completion with full conversation history.
@@ -212,30 +370,45 @@ class OllamaLLMClient(BaseLLMClient):
             LLMError: If generation fails
         """
         try:
-            payload = {
-                "model": model if model is not None else self.model,
-                "messages": messages,
-                "stream": False
-            }
-            
-            # Always add options with temperature and max_tokens
-            payload["options"] = {}
-            if temperature is not None:
-                payload["options"]["temperature"] = temperature
+            if self.use_legacy_chat_api:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                }
+                payload["options"] = {
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "num_predict": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                logger.debug(
+                    "Ollama request: model=%s temp=%s max_tokens=%s messages=%s",
+                    payload["model"],
+                    payload["options"]["temperature"],
+                    payload["options"]["num_predict"],
+                    len(messages),
+                )
+                response = await self._post_with_optional_raw_capture("/api/chat", payload)
             else:
-                payload["options"]["temperature"] = self.temperature
-            if max_tokens is not None:
-                payload["options"]["num_predict"] = max_tokens
-            else:
-                payload["options"]["num_predict"] = self.max_tokens
-            
-            # Log basic request info
-            logger.debug(f"Ollama request: model={payload['model']}, temp={payload['options']['temperature']}, max_tokens={payload['options']['num_predict']}, messages={len(messages)}")
-            
-            response = await self.client.post(
-                f"{self.base_url}/api/chat",
-                json=payload
-            )
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                if tools:
+                    payload["tools"] = tools
+                    if tool_choice is not None:
+                        payload["tool_choice"] = tool_choice
+                logger.debug(
+                    "Ollama(OpenAI) request: model=%s temp=%s max_tokens=%s messages=%s tools=%s",
+                    payload["model"],
+                    payload["temperature"],
+                    payload["max_tokens"],
+                    len(messages),
+                    len(tools or []),
+                )
+                response = await self._post_with_optional_raw_capture("/v1/chat/completions", payload)
             response.raise_for_status()
 
             if response.encoding is None or response.encoding.lower() != "utf-8":
@@ -243,9 +416,19 @@ class OllamaLLMClient(BaseLLMClient):
 
             response_text = response.text
             data = response.json()
-            content = normalize_mojibake(data.get("message", {}).get("content", ""))
+            if self.use_legacy_chat_api:
+                message = data.get("message", {}) or {}
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = data.get("done_reason")
+                tool_calls = None
+                raw_message = message if isinstance(message, dict) else None
+            else:
+                choice, message = self._parse_openai_choice(data)
+                content = normalize_mojibake(message.get("content", ""))
+                finish_reason = choice.get("finish_reason")
+                tool_calls = message.get("tool_calls")
+                raw_message = message if isinstance(message, dict) else None
             if not content.strip():
-                options = payload.get("options", {})
                 logger.warning(
                     f"[OLLAMA] Empty response raw preview (history): "
                     f"len={len(response_text)}, "
@@ -255,11 +438,9 @@ class OllamaLLMClient(BaseLLMClient):
                 logger.warning(
                     f"[OLLAMA] Empty response content (history): "
                     f"model={data.get('model', model if model is not None else self.model)}, "
-                    f"done_reason={data.get('done_reason')}, "
-                    f"temperature={options.get('temperature')}, "
-                    f"num_predict={options.get('num_predict')}, "
-                    f"prompt_tokens={data.get('prompt_eval_count', 0)}, "
-                    f"output_tokens={data.get('eval_count', 0)}"
+                    f"done_reason={finish_reason}, "
+                    f"prompt_tokens={data.get('prompt_eval_count', 0) or data.get('usage', {}).get('prompt_tokens', 0)}, "
+                    f"output_tokens={data.get('eval_count', 0) or data.get('usage', {}).get('completion_tokens', 0)}"
                 )
             
             # Use the model from response to confirm what Ollama actually used
@@ -270,16 +451,21 @@ class OllamaLLMClient(BaseLLMClient):
             return LLMResponse(
                 content=content,
                 model=used_model,
-                finish_reason=data.get("done_reason"),
+                finish_reason=finish_reason,
                 usage={
-                    "prompt_tokens": data.get("prompt_eval_count", 0),
-                    "completion_tokens": data.get("eval_count", 0),
-                    "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                    "prompt_tokens": data.get("prompt_eval_count", 0) or data.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": data.get("eval_count", 0) or data.get("usage", {}).get("completion_tokens", 0),
+                    "total_tokens": (
+                        (data.get("prompt_eval_count", 0) or data.get("usage", {}).get("prompt_tokens", 0))
+                        + (data.get("eval_count", 0) or data.get("usage", {}).get("completion_tokens", 0))
+                    ),
                     "load_duration_s": data.get("load_duration", 0) / 1e9,
                     "prompt_eval_duration_s": data.get("prompt_eval_duration", 0) / 1e9,
                     "eval_duration_s": data.get("eval_duration", 0) / 1e9,
                     "total_duration_s": data.get("total_duration", 0) / 1e9
-                }
+                },
+                tool_calls=tool_calls,
+                raw_message=raw_message,
             )
             
         except httpx.HTTPError as e:
@@ -316,25 +502,31 @@ class OllamaLLMClient(BaseLLMClient):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "stream": True
-            }
-            
-            # Add options if needed
-            if temperature is not None or max_tokens is not None:
-                payload["options"] = {}
-                if temperature is not None:
-                    payload["options"]["temperature"] = temperature
-                else:
-                    payload["options"]["temperature"] = self.temperature
-                if max_tokens is not None:
-                    payload["options"]["num_predict"] = max_tokens
-            
+            if self.use_legacy_chat_api:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": True,
+                }
+                if temperature is not None or max_tokens is not None:
+                    payload["options"] = {}
+                    payload["options"]["temperature"] = self.temperature if temperature is None else temperature
+                    if max_tokens is not None:
+                        payload["options"]["num_predict"] = max_tokens
+                endpoint = f"{self.base_url}/api/chat"
+            else:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                endpoint = f"{self.base_url}/v1/chat/completions"
+
             async with self.client.stream(
                 "POST",
-                f"{self.base_url}/api/chat",
+                endpoint,
                 json=payload
             ) as response:
                 response.raise_for_status()
@@ -343,15 +535,30 @@ class OllamaLLMClient(BaseLLMClient):
                     response.encoding = "utf-8"
                 
                 async for line in response.aiter_lines():
-                    if line.strip():
-                        try:
+                    if not line.strip():
+                        continue
+                    try:
+                        if self.use_legacy_chat_api:
                             data = json.loads(line)
                             if "message" in data:
                                 content = normalize_mojibake(data["message"].get("content", ""))
                                 if content:
                                     yield content
-                        except json.JSONDecodeError:
-                            continue
+                        else:
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            data = json.loads(data_str)
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {}) or {}
+                                content = normalize_mojibake(delta.get("content", ""))
+                                if content:
+                                    yield content
+                    except json.JSONDecodeError:
+                        continue
                             
         except httpx.HTTPError as e:
             raise LLMError(f"HTTP error during LLM streaming: {e}")
@@ -381,29 +588,42 @@ class OllamaLLMClient(BaseLLMClient):
             LLMError: If streaming fails
         """
         try:
-            payload = {
-                "model": model if model is not None else self.model,
-                "messages": messages,
-                "stream": True
-            }
-            
-            # Add options if needed
-            if temperature is not None or max_tokens is not None:
-                payload["options"] = {}
-                if temperature is not None:
-                    payload["options"]["temperature"] = temperature
-                else:
-                    payload["options"]["temperature"] = self.temperature
-                if max_tokens is not None:
-                    payload["options"]["num_predict"] = max_tokens
-                else:
-                    payload["options"]["num_predict"] = self.max_tokens
-            
-            logger.debug(f"Ollama stream: model={payload['model']}, temp={payload.get('options', {}).get('temperature', self.temperature)}, messages={len(messages)}")
+            if self.use_legacy_chat_api:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": True,
+                }
+                if temperature is not None or max_tokens is not None:
+                    payload["options"] = {}
+                    payload["options"]["temperature"] = self.temperature if temperature is None else temperature
+                    payload["options"]["num_predict"] = self.max_tokens if max_tokens is None else max_tokens
+                endpoint = f"{self.base_url}/api/chat"
+                logger.debug(
+                    "Ollama stream: model=%s temp=%s messages=%s",
+                    payload["model"],
+                    payload.get("options", {}).get("temperature", self.temperature),
+                    len(messages),
+                )
+            else:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                endpoint = f"{self.base_url}/v1/chat/completions"
+                logger.debug(
+                    "Ollama(OpenAI) stream: model=%s temp=%s messages=%s",
+                    payload["model"],
+                    payload["temperature"],
+                    len(messages),
+                )
             
             async with self.client.stream(
                 "POST",
-                f"{self.base_url}/api/chat",
+                endpoint,
                 json=payload
             ) as response:
                 response.raise_for_status()
@@ -413,26 +633,36 @@ class OllamaLLMClient(BaseLLMClient):
                 
                 chunk_count = 0
                 async for line in response.aiter_lines():
-                    if line.strip():
-                        try:
+                    if not line.strip():
+                        continue
+                    try:
+                        if self.use_legacy_chat_api:
                             data = json.loads(line)
-                            
-                            # Log any errors from Ollama
                             if "error" in data:
                                 logger.error(f"Ollama error: {data['error']}")
-                            
                             if "message" in data:
                                 content = normalize_mojibake(data["message"].get("content", ""))
                                 if content:
                                     chunk_count += 1
                                     yield content
-                            
-                            # Warn if stream ended with no content
                             if data.get("done") and chunk_count == 0:
                                 logger.warning(f"Ollama returned zero content, reason: {data.get('done_reason', 'unknown')}")
-                                        
-                        except json.JSONDecodeError:
-                            continue
+                        else:
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            data = json.loads(data_str)
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {}) or {}
+                                content = normalize_mojibake(delta.get("content", ""))
+                                if content:
+                                    chunk_count += 1
+                                    yield content
+                    except json.JSONDecodeError:
+                        continue
                 
                 logger.debug(f"Ollama stream completed: {chunk_count} chunks")
                             

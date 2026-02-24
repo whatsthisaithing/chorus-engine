@@ -12,6 +12,8 @@ class LLMResponse(BaseModel):
     model: str
     finish_reason: Optional[str] = None
     usage: Optional[dict] = None
+    tool_calls: Optional[list[dict]] = None
+    raw_message: Optional[dict] = None
 
 
 class LLMError(Exception):
@@ -74,6 +76,8 @@ class BaseLLMClient(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a non-streaming completion.
@@ -100,6 +104,8 @@ class BaseLLMClient(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a non-streaming completion with conversation history.

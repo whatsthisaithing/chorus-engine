@@ -1,8 +1,9 @@
 """
-Replay a conversation turn directly against the configured LLM (without ENS).
+Inspect a conversation turn and optionally replay it against the configured LLM.
 
-Primary goal:
-- Recreate an assistant response as closely as possible.
+Primary goals:
+- Capture high-fidelity diagnostics for an existing turn.
+- Optionally replay the turn against the current LLM config.
 
 Behavior:
 1) Given a target message ID, detect role (assistant/user) unless overridden.
@@ -10,7 +11,7 @@ Behavior:
    (`prompt_capture.messages_for_llm`) when available.
 3) Fall back to prompt reconstruction via PromptAssemblyService when debug capture
    is unavailable.
-4) Invoke LLM directly (optional) and write a unique JSON debug bundle.
+4) Optionally invoke LLM directly and write a unique JSON debug bundle.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from chorus_engine.config.loader import ConfigLoader
 from chorus_engine.db.database import SessionLocal, init_db
+from chorus_engine.ens.tool_registry import native_tool_definitions
 from chorus_engine.llm.client import create_llm_client
 from chorus_engine.models.conversation import MessageRole
 from chorus_engine.repositories.conversation_repository import ConversationRepository
@@ -67,7 +69,7 @@ def _build_output_path(output_dir: Path, message_id: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     suffix = str(uuid.uuid4())[:8]
-    return output_dir / f"llm_replay_{message_id}_{stamp}_{suffix}.json"
+    return output_dir / f"llm_turn_diagnostics_{message_id}_{stamp}_{suffix}.json"
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -117,6 +119,36 @@ def _load_loop_action_result_index() -> Dict[str, Dict[str, Any]]:
         assistant_message_id = output.get("assistant_message_id")
         if assistant_message_id:
             index[str(assistant_message_id)] = row
+    return index
+
+
+def _load_turn_action_result_index() -> Dict[str, Dict[str, Any]]:
+    path = Path("data/debug_logs/ens/action_results.jsonl")
+    rows = _read_jsonl(path)
+    by_decision: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        decision_id = str(row.get("decision_id") or "").strip()
+        if not decision_id:
+            continue
+        by_decision.setdefault(decision_id, []).append(row)
+
+    index: Dict[str, Dict[str, Any]] = {}
+    for decision_id, decision_rows in by_decision.items():
+        llm_row = next((r for r in decision_rows if r.get("kind") == "llm.invoke.chat"), None)
+        adjudicate_row = next((r for r in decision_rows if r.get("kind") == "tool_payload.adjudicate"), None)
+        persist_row = next((r for r in decision_rows if r.get("kind") == "tool_call.persist_pending"), None)
+        message_rows = [r for r in decision_rows if r.get("kind") == "message.write_assistant"]
+        for mrow in message_rows:
+            message_id = str(((mrow.get("output") or {}).get("message_id")) or "").strip()
+            if not message_id:
+                continue
+            index[message_id] = {
+                "decision_id": decision_id,
+                "llm_invoke_chat": llm_row,
+                "tool_payload_adjudicate": adjudicate_row,
+                "tool_call_persist_pending": persist_row,
+                "message_write_assistant": mrow,
+            }
     return index
 
 
@@ -366,18 +398,93 @@ def _analyze_display_format(text: str) -> Dict[str, Any]:
     return result
 
 
+def _infer_llm_engine(llm_client: Any) -> str:
+    name = llm_client.__class__.__name__.lower()
+    if "ollama" in name:
+        return "ollama"
+    if "lmstudio" in name:
+        return "lmstudio"
+    if "kobold" in name:
+        return "koboldcpp"
+    return "unknown"
+
+
+def _infer_api_path_for_history(llm_client: Any, engine: str) -> str:
+    if engine == "ollama":
+        return "/api/chat" if bool(getattr(llm_client, "use_legacy_chat_api", False)) else "/v1/chat/completions"
+    return "/v1/chat/completions"
+
+
+def _native_capabilities_for_engine(engine: str) -> Dict[str, bool]:
+    normalized = str(engine or "").strip().lower()
+    if normalized in {"ollama", "lmstudio"}:
+        return {"supports_native_tools": True, "supports_tool_choice": True}
+    return {"supports_native_tools": False, "supports_tool_choice": False}
+
+
+def _extract_native_tool_details(response: Any) -> Dict[str, Any]:
+    tool_calls = getattr(response, "tool_calls", None)
+    raw_message = getattr(response, "raw_message", None)
+
+    native_from_response: List[Dict[str, Any]] = []
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            native_from_response.append(
+                {
+                    "id": call.get("id"),
+                    "type": call.get("type"),
+                    "name": fn.get("name") or call.get("name"),
+                    "arguments": fn.get("arguments") if fn else call.get("arguments"),
+                    "raw": call,
+                }
+            )
+
+    native_from_raw_message: List[Dict[str, Any]] = []
+    if isinstance(raw_message, dict):
+        raw_tool_calls = raw_message.get("tool_calls")
+        if isinstance(raw_tool_calls, list):
+            for call in raw_tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+                native_from_raw_message.append(
+                    {
+                        "id": call.get("id"),
+                        "type": call.get("type"),
+                        "name": fn.get("name") or call.get("name"),
+                        "arguments": fn.get("arguments") if fn else call.get("arguments"),
+                        "raw": call,
+                    }
+                )
+
+    return {
+        "tool_calls_present": bool(native_from_response),
+        "tool_calls_count": len(native_from_response),
+        "tool_calls": native_from_response,
+        "raw_message_present": isinstance(raw_message, dict),
+        "raw_message_keys": sorted(list(raw_message.keys())) if isinstance(raw_message, dict) else [],
+        "raw_message_tool_calls_present": bool(native_from_raw_message),
+        "raw_message_tool_calls_count": len(native_from_raw_message),
+        "raw_message_tool_calls": native_from_raw_message,
+    }
+
+
 async def _run(args: argparse.Namespace) -> int:
     init_db()
     db = SessionLocal()
     output: Dict[str, Any] = {
-        "script": "utilities/replay_user_message_llm.py",
+        "script": "utilities/inspect_turn_llm.py",
         "timestamp_utc": datetime.utcnow().isoformat(),
         "input": {
             "target_message_id": args.message_id,
             "target_role": args.target_role,
             "force_reconstruct": args.force_reconstruct,
             "rebuild_system_prompt": args.rebuild_system_prompt,
-            "no_invoke": args.no_invoke,
+            "include_native_tools": args.include_native_tools,
+            "invoke": args.invoke,
             "no_memories": args.no_memories,
             "max_history_messages": args.max_history_messages,
             "model_override": args.model,
@@ -443,6 +550,7 @@ async def _run(args: argparse.Namespace) -> int:
         messages_for_llm: Optional[List[Dict[str, str]]] = None
         replay_source: Dict[str, Any] = {"mode": None}
         loop_action_index = _load_loop_action_result_index()
+        turn_action_index = _load_turn_action_result_index()
         loop_action = loop_action_index.get(str(target_message.id))
         matched_event_for_output: Optional[Dict[str, Any]] = None
 
@@ -559,6 +667,17 @@ async def _run(args: argparse.Namespace) -> int:
             output["error"] = "Unable to build replay payload."
             return 1
 
+        original_system_prompt = ""
+        if messages_for_llm and messages_for_llm[0].get("role") == "system":
+            original_system_prompt = messages_for_llm[0].get("content") or ""
+
+        output["original_system_prompt"] = {
+            "available": bool(original_system_prompt),
+            "length": len(original_system_prompt),
+            "content": original_system_prompt if original_system_prompt else None,
+            "source": "messages_for_llm",
+        }
+
         # Optional mode: regenerate only the system prompt using current prompt builder,
         # while preserving the rest of the replay transcript messages.
         if args.rebuild_system_prompt:
@@ -625,10 +744,6 @@ async def _run(args: argparse.Namespace) -> int:
                 if rebuilt_messages and rebuilt_messages[0].get("role") == "system":
                     rebuilt_system_prompt = rebuilt_messages[0].get("content") or ""
 
-                original_system_prompt = ""
-                if messages_for_llm and messages_for_llm[0].get("role") == "system":
-                    original_system_prompt = messages_for_llm[0].get("content") or ""
-
                 if rebuilt_system_prompt and messages_for_llm and messages_for_llm[0].get("role") == "system":
                     messages_for_llm = list(messages_for_llm)
                     messages_for_llm[0] = {"role": "system", "content": rebuilt_system_prompt}
@@ -687,13 +802,73 @@ async def _run(args: argparse.Namespace) -> int:
         output["replay_source"] = replay_source
         output["messages_for_llm"] = messages_for_llm
 
+        turn_action_bundle = turn_action_index.get(str(target_message.id))
+        output["original_native_tool_transport"] = {
+            "available": False,
+            "reason": "no_turn_action_bundle",
+        }
+        if turn_action_bundle:
+            llm_row = turn_action_bundle.get("llm_invoke_chat") or {}
+            llm_out = (llm_row.get("output") or {}) if isinstance(llm_row, dict) else {}
+            adjudicate_row = turn_action_bundle.get("tool_payload.adjudicate") or turn_action_bundle.get("tool_payload_adjudicate") or {}
+            adjudicate_out = (adjudicate_row.get("output") or {}) if isinstance(adjudicate_row, dict) else {}
+            persist_row = turn_action_bundle.get("tool_call_persist_pending") or {}
+            persist_out = (persist_row.get("output") or {}) if isinstance(persist_row, dict) else {}
+            output["original_native_tool_transport"] = {
+                "available": True,
+                "decision_id": turn_action_bundle.get("decision_id"),
+                "llm_action_result_id": llm_row.get("action_result_id") if isinstance(llm_row, dict) else None,
+                "llm_timestamp": llm_row.get("timestamp") if isinstance(llm_row, dict) else None,
+                "provider": llm_out.get("provider"),
+                "engine": llm_out.get("engine"),
+                "model": llm_out.get("model"),
+                "finish_reason": llm_out.get("finish_reason"),
+                "completion_flags": llm_out.get("completion_flags") or [],
+                "assistant_result_tier": llm_out.get("assistant_result_tier"),
+                "assistant_result_control": llm_out.get("assistant_result_control"),
+                "assistant_result_tool_requests": llm_out.get("assistant_result_tool_requests") or [],
+                "tool_payload_present": llm_out.get("tool_payload_present"),
+                "tool_payload_parseable": llm_out.get("tool_payload_parseable"),
+                "tool_parse_status": llm_out.get("tool_parse_status"),
+                "tool_call_count": llm_out.get("tool_call_count"),
+                "tool_names": llm_out.get("tool_names") or [],
+                "pending_tool_calls_from_llm": llm_out.get("pending_tool_calls") or [],
+                "adjudication_action_result_id": adjudicate_row.get("action_result_id") if isinstance(adjudicate_row, dict) else None,
+                "adjudication_timestamp": adjudicate_row.get("timestamp") if isinstance(adjudicate_row, dict) else None,
+                "adjudication_accepted_tool_calls": adjudicate_out.get("accepted_tool_calls") or [],
+                "adjudication_blocked_reasons": adjudicate_out.get("blocked_reasons") or [],
+                "adjudication_pending_tool_calls": adjudicate_out.get("pending_tool_calls") or [],
+                "persist_pending_action_result_id": persist_row.get("action_result_id") if isinstance(persist_row, dict) else None,
+                "persist_pending_timestamp": persist_row.get("timestamp") if isinstance(persist_row, dict) else None,
+                "persist_pending_tool_calls": persist_out.get("pending_tool_calls") or [],
+            }
+
+        target_message_content_text = str(target_message.content or "")
+        output["original_target_response"] = {
+            "db_message_content": target_message_content_text,
+            "raw_content": None,
+            "display_content": target_message_content_text,
+            "source_event_type": None,
+            "source_event_timestamp": None,
+            "matched_event_available": False,
+        }
+
         # Analyze payload presence/quality on original target output when raw event exists.
         if matched_event_for_output is not None:
-            original_raw = (
-                matched_event_for_output.get("raw_content")
-                or matched_event_for_output.get("display_content")
-                or ""
+            original_raw_content = str(matched_event_for_output.get("raw_content") or "")
+            original_display_content = str(
+                matched_event_for_output.get("display_content")
+                or target_message_content_text
             )
+            original_raw = original_raw_content or original_display_content
+            output["original_target_response"] = {
+                "db_message_content": target_message_content_text,
+                "raw_content": original_raw_content if original_raw_content else None,
+                "display_content": original_display_content,
+                "source_event_type": matched_event_for_output.get("type"),
+                "source_event_timestamp": matched_event_for_output.get("timestamp"),
+                "matched_event_available": True,
+            }
             output["original_target_payload_analysis"] = _analyze_payload(str(original_raw))
             output["original_target_payload_analysis"]["source_event_type"] = matched_event_for_output.get("type")
             output["original_target_payload_analysis"]["source_event_timestamp"] = matched_event_for_output.get("timestamp")
@@ -702,8 +877,33 @@ async def _run(args: argparse.Namespace) -> int:
             output["original_target_display_analysis"]["source_event_timestamp"] = matched_event_for_output.get("timestamp")
 
         llm_result: Dict[str, Any] = {"invoked": False}
-        if not args.no_invoke:
+        if args.invoke:
             llm_client = create_llm_client(system_config.llm)
+            engine = _infer_llm_engine(llm_client)
+            capabilities = _native_capabilities_for_engine(engine)
+            ens_cfg = getattr(system_config, "ens", None)
+            replay_is_loop_step = bool(loop_action)
+            requested_tools: Optional[List[Dict[str, Any]]] = None
+            requested_tool_choice: Optional[Any] = None
+            requested_allowed_media_tools: List[str] = []
+            if args.include_native_tools:
+                media_gate_snapshot = {}
+                if isinstance(matched_event_for_output, dict):
+                    media_gate_snapshot = matched_event_for_output.get("media_gate_snapshot") or {}
+                if isinstance(media_gate_snapshot, dict):
+                    allowed_from_event = media_gate_snapshot.get("allowed_tools_final") or []
+                    if isinstance(allowed_from_event, list):
+                        requested_allowed_media_tools = [
+                            str(name).strip() for name in allowed_from_event if isinstance(name, str) and str(name).strip()
+                        ]
+                requested_tools = native_tool_definitions(
+                    allowed_media_tools=set(requested_allowed_media_tools),
+                    include_control=replay_is_loop_step,
+                    include_cold_recall=True,
+                )
+                if requested_tools:
+                    requested_tool_choice = "auto"
+
             started = datetime.utcnow()
             health_ok = await llm_client.health_check()
             llm_result["health_check_ok"] = bool(health_ok)
@@ -712,8 +912,11 @@ async def _run(args: argparse.Namespace) -> int:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 model=model,
+                tools=requested_tools,
+                tool_choice=requested_tool_choice,
             )
             finished = datetime.utcnow()
+            native_tool_details = _extract_native_tool_details(response)
             llm_result.update(
                 {
                     "invoked": True,
@@ -725,13 +928,58 @@ async def _run(args: argparse.Namespace) -> int:
                         "model": response.model,
                         "finish_reason": response.finish_reason,
                         "usage": response.usage,
+                        "tool_calls": getattr(response, "tool_calls", None),
+                        "raw_message": getattr(response, "raw_message", None),
                     },
+                    "transport_diagnostics": {
+                        "engine": engine,
+                        "provider": str(system_config.llm.provider),
+                        "base_url": str(system_config.llm.base_url),
+                        "api_path_for_generate_with_history": _infer_api_path_for_history(llm_client, engine),
+                        "api_endpoint_for_generate_with_history": (
+                            f"{str(system_config.llm.base_url).rstrip('/')}{_infer_api_path_for_history(llm_client, engine)}"
+                        ),
+                        "native_capabilities": capabilities,
+                        "ens_native_tool_transport_enabled": bool(
+                            ens_cfg and getattr(ens_cfg, "native_tool_transport_enabled", False)
+                        ),
+                        "ens_native_tool_transport_force_sentinel": bool(
+                            ens_cfg and getattr(ens_cfg, "native_tool_transport_force_sentinel", False)
+                        ),
+                        "ens_native_tool_transport_sentinel_fallback_enabled": bool(
+                            ens_cfg and getattr(ens_cfg, "native_tool_transport_sentinel_fallback_enabled", True)
+                        ),
+                        "ollama_legacy_chat_api_enabled": bool(getattr(llm_client, "use_legacy_chat_api", False))
+                        if engine == "ollama"
+                        else None,
+                        "native_transport_mode_inferred": (
+                            "native"
+                            if (
+                                capabilities.get("supports_native_tools")
+                                and bool(ens_cfg and getattr(ens_cfg, "native_tool_transport_enabled", False))
+                                and not bool(ens_cfg and getattr(ens_cfg, "native_tool_transport_force_sentinel", False))
+                                and not (engine == "ollama" and bool(getattr(llm_client, "use_legacy_chat_api", False)))
+                            )
+                            else "sentinel"
+                        ),
+                        "invoke_with_native_tools_requested": bool(args.include_native_tools),
+                        "request_tools_count": len(requested_tools or []),
+                        "request_tool_names": [
+                            str(((t.get("function") or {}).get("name")) or "")
+                            for t in (requested_tools or [])
+                            if isinstance(t, dict)
+                        ],
+                        "request_allowed_media_tools_from_event": requested_allowed_media_tools,
+                        "request_tool_choice": requested_tool_choice,
+                        "loop_step_context_detected": replay_is_loop_step,
+                    },
+                    "native_tool_response_details": native_tool_details,
                     "payload_analysis": _analyze_payload(response.content or ""),
                     "display_analysis": _analyze_display_format(response.content or ""),
                 }
             )
         else:
-            llm_result["note"] = "Invocation skipped (--no-invoke)."
+            llm_result["note"] = "Invocation skipped by default. Pass --invoke to run provider replay."
 
         output["llm"] = llm_result
         output["status"] = "ok"
@@ -751,8 +999,8 @@ async def _run(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay a target message turn by rebuilding (or reusing exact captured) messages_for_llm "
-            "and optionally invoking the configured LLM directly."
+            "Inspect a target message turn by rebuilding (or reusing exact captured) messages_for_llm, "
+            "with optional direct provider replay."
         )
     )
     parser.add_argument("message_id", help="Target message ID (assistant preferred; user supported)")
@@ -780,7 +1028,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default="data/debug/llm_replay_outputs",
         help="Directory for debug output JSON files",
     )
-    parser.add_argument("--no-invoke", action="store_true", help="Build payload only; skip LLM call")
+    parser.add_argument(
+        "--invoke",
+        action="store_true",
+        help="Invoke the provider LLM for replay (default is diagnostics-only without invocation).",
+    )
+    parser.add_argument(
+        "--no-invoke",
+        action="store_false",
+        dest="invoke",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--no-memories", action="store_true", help="Disable memory retrieval in assembly")
     parser.add_argument(
         "--max-history-messages",
@@ -794,6 +1052,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--primary-user", default=None, help="Override primary user")
     parser.add_argument("--conversation-source", default=None, help="Override conversation source")
     parser.add_argument("--user-id", default=None, help="Override user id scope")
+    parser.add_argument(
+        "--include-native-tools",
+        action="store_true",
+        help=(
+            "Include ENS native tool definitions (and tool_choice=auto) in replay invocation. "
+            "Useful for inspecting provider-native tool transport behavior."
+        ),
+    )
+    parser.set_defaults(invoke=False)
     return parser
 
 

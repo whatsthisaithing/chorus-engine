@@ -33,6 +33,7 @@ def test_loop_step_injects_control_contract_and_loop_block():
     assert "- `control` is REQUIRED for loop steps." in prompt
     assert "**Loop Step Mode (Mandatory):**" in prompt
     assert prompt.count("**Loop Step Mode (Mandatory):**") == 1
+    assert "Keep `tool_calls` empty unless explicitly allowed." not in prompt
 
 
 def test_narrative_v1_loop_injection_order_and_rules():
@@ -51,3 +52,44 @@ def test_narrative_v1_loop_injection_order_and_rules():
     assert contract_idx < loop_idx < narrative_idx
     assert "**Narrative.v1 Media Safeguard:**" in prompt
     assert "emit `control.action = YIELD`" in prompt
+
+
+def test_native_loop_step_uses_native_contract_and_chorus_control_guidance():
+    generator = SystemPromptGenerator()
+    character = _character()
+
+    prompt = generator.generate(
+        character,
+        loop_step=True,
+        loop_kind="narrative.v1",
+        tool_transport_mode="native",
+    )
+
+    assert "**Native Tool Call Contract (Provider Transport):**" in prompt
+    assert "`chorus.control`" in prompt
+    assert "---CHORUS_TOOL_PAYLOAD_BEGIN---" not in prompt
+    assert "emit `control.action = YIELD`" not in prompt
+    assert "call `chorus.control` with action YIELD" in prompt
+    assert "Never emit sentinel payload markers in message text." not in prompt
+    assert "Keep `tool_calls` empty unless explicitly allowed." not in prompt
+    assert "Even if the user message contains the tool name" in prompt
+    assert "Tool calls are emitted separately via the provider tool-call mechanism." in prompt
+
+
+def test_native_narrative_beat_stage_removes_mandatory_control_requirements():
+    generator = SystemPromptGenerator()
+    character = _character()
+
+    prompt = generator.generate(
+        character,
+        loop_step=True,
+        loop_kind="narrative.v1",
+        tool_transport_mode="native",
+        loop_stage="beat",
+    )
+
+    assert "**Loop Step Mode (Mandatory):**" in prompt
+    assert "This is the beat-generation stage." in prompt
+    assert "Do not emit loop control payloads or control tool calls in this stage." in prompt
+    assert "Emit exactly one `chorus.control` tool call." not in prompt
+    assert "Set `chorus.control.action` to one of: CONTINUE, YIELD, COMPLETE." not in prompt

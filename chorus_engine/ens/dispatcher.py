@@ -1072,6 +1072,14 @@ class ENSDispatcher:
 
         media_gate_snapshot = params.get("media_gate_snapshot") or {}
         source = (params.get("conversation_source") or conversation.source or "web")
+        effective = self.llm_invoker.resolve_effective_config(
+            character=character,
+            invocation_kind="chat",
+        )
+        tool_transport_mode = self.llm_invoker.native_tool_transport_mode(
+            engine=effective.engine,
+            invocation_kind="chat",
+        )
 
         prompt_assembler = PromptAssemblyService(
             db=db,
@@ -1108,13 +1116,9 @@ class ENSDispatcher:
                 "is_iteration_request": bool(media_gate_snapshot.get("is_iteration_request")),
             },
             segment_context=params.get("segment_context"),
+            tool_transport_mode=tool_transport_mode,
         )
         messages = prompt_assembler.format_for_api(prompt_components)
-
-        effective = self.llm_invoker.resolve_effective_config(
-            character=character,
-            invocation_kind="chat",
-        )
         request = InvocationRequest(
             invocation_kind="chat",
             idempotency_key=params.get("idempotency_key") or f"llm:chat:{thread_id}:{params.get('user_message_id') or 'na'}",
@@ -1132,6 +1136,7 @@ class ENSDispatcher:
             metadata={
                 "conversation_source": source,
                 "media_gate_snapshot": media_gate_snapshot,
+                "tool_transport_mode": tool_transport_mode,
             },
         )
         invocation = await self.llm_invoker.invoke(request)
@@ -1477,6 +1482,23 @@ class ENSDispatcher:
             "tool_call_count": tool_call_count,
             "tool_names": tool_names,
             "pending_tool_calls": pending_tool_calls,
+            "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            "assistant_result_tool_requests": [
+                {
+                    "tool_name": req.tool_name,
+                    "payload": dict(req.payload or {}),
+                    "request_id": req.request_id,
+                }
+                for req in (assistant_result.tool_requests or [])
+            ],
+            "assistant_result_control": (
+                {
+                    "action": assistant_result.control.action,
+                    "args": dict(assistant_result.control.args or {}),
+                }
+                if assistant_result.control
+                else None
+            ),
             "assistant_metadata": assistant_metadata,
             "general_chat_bootstrap_injected": bool(prompt_components.general_chat_bootstrap_injected),
             "general_chat_bootstrap_fingerprint": prompt_components.general_chat_bootstrap_fingerprint,
@@ -1503,6 +1525,7 @@ class ENSDispatcher:
         }
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         capture_full_prompt = bool(ens_cfg and getattr(ens_cfg, "debug_capture_full_prompt", False))
+        native_transport = invocation.get("native_transport") or {}
         log_event = {
             "type": "ens_llm_turn",
             "thread_id": thread_id,
@@ -1524,6 +1547,25 @@ class ENSDispatcher:
             "finish_reason": result.get("finish_reason"),
             "output_empty": result.get("output_empty"),
             "completion_flags": result.get("completion_flags"),
+            "assistant_result_tier": result.get("assistant_result_tier"),
+            "assistant_result_control": result.get("assistant_result_control"),
+            "assistant_result_tool_requests_count": len(result.get("assistant_result_tool_requests") or []),
+            "native_transport": {
+                "attempted": bool((native_transport or {}).get("attempted")),
+                "plan": dict((native_transport or {}).get("plan") or {}),
+                "requested_tool_choice": (native_transport or {}).get("requested_tool_choice"),
+                "requested_tool_names": [
+                    str(((tool.get("function") or {}).get("name")) or "")
+                    for tool in ((native_transport or {}).get("requested_tools") or [])
+                    if isinstance(tool, dict)
+                ],
+                "provider_tool_calls_count": (
+                    len((native_transport or {}).get("provider_tool_calls_raw") or [])
+                    if isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+                    else 0
+                ),
+                "provider_raw_message_present": isinstance((native_transport or {}).get("provider_raw_message"), dict),
+            },
         }
         if capture_full_prompt:
             log_event["prompt_capture"] = {
@@ -1544,7 +1586,13 @@ class ENSDispatcher:
         raw_content = llm_output.get("raw_content") or llm_output.get("content") or ""
         assistant_result = normalize_assistant_result(raw_content=raw_content)
         payload_obj = assistant_result.payload_obj
-        media_tool_calls = validate_tool_payload(payload_obj)
+        normalized_tool_payload = {
+            "version": 1,
+            "tool_calls": [dict(req.get("payload") or {}) for req in (llm_output.get("assistant_result_tool_requests") or [])],
+        }
+        media_tool_calls = validate_tool_payload(normalized_tool_payload)
+        if not media_tool_calls:
+            media_tool_calls = validate_tool_payload(payload_obj)
         cold_recall_call = validate_cold_recall_payload(payload_obj)
         parse_status = "ok" if assistant_result.payload_parseable else "none_or_invalid"
 
@@ -2114,6 +2162,63 @@ class ENSDispatcher:
     def _is_narrative_v1(loop_kind: str) -> bool:
         return str(loop_kind or "").strip() == "narrative.v1"
 
+    def _narrative_v11_split_enabled(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return False
+        return bool(getattr(ens_cfg, "native_tool_transport_narrative_v11_split_enabled", False))
+
+    @staticmethod
+    def _loop_stage_b_control_messages(
+        *,
+        beat_text: str,
+        user_input_text: str,
+        step_index: int,
+        loop_kind: str,
+        tool_transport_mode: str,
+    ) -> List[Dict[str, str]]:
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        system_lines = [
+            "You are a loop control evaluator.",
+            "Decide exactly one control action for the next loop step.",
+            "",
+            "Allowed actions:",
+            "- CONTINUE: advance autoplay immediately.",
+            "- YIELD: pause for user input.",
+            "- COMPLETE: end the loop.",
+            "",
+            "Policy:",
+            "- Default to CONTINUE.",
+            "- Choose YIELD when the beat asks the user a direct question, requires a choice, or clearly pauses/waits for input.",
+            "- Choose COMPLETE when the beat clearly ends the scene/story arc.",
+            "- Output no prose.",
+        ]
+        if native_transport:
+            system_lines.extend(
+                [
+                    "- Emit exactly one native `chorus.control` tool call with {\"action\":\"CONTINUE|YIELD|COMPLETE\"}.",
+                    "- Do not include JSON/tool text in visible content.",
+                ]
+            )
+        else:
+            system_lines.extend(
+                [
+                    "- Emit exactly one Chorus sentinel payload containing control.action.",
+                    "- No visible prose outside the payload/sentinel requirement.",
+                ]
+            )
+        user_text = (
+            f"Loop kind: {loop_kind}\n"
+            f"Step index: {step_index}\n"
+            f"Last user input: {user_input_text or 'continue'}\n\n"
+            "Beat text:\n"
+            f"{beat_text or ''}"
+        )
+        return [
+            {"role": "system", "content": "\n".join(system_lines)},
+            {"role": "user", "content": user_text},
+        ]
+
     def _consecutive_continue_count(self, db: Session, *, loop_id: str) -> int:
         rows = (
             db.query(ENSLoopStepEvent.control_action)
@@ -2132,25 +2237,37 @@ class ENSDispatcher:
         return count
 
     @staticmethod
-    def _loop_step_prompt_addendum(loop_kind: str) -> str:
+    def _loop_step_prompt_addendum(loop_kind: str, *, stage: str = "full") -> str:
+        stage_norm = str(stage or "full").strip().lower()
         base = [
             "Loop Step Mode (Mandatory):",
             "- This message is one loop step.",
-            "- You MUST include a control payload in the Chorus sentinel block.",
-            "- Choose exactly one action: CONTINUE, WAIT_FOR_USER, COMPLETE, or YIELD.",
             "- Write one narrative beat only.",
             "- Do not encode control decisions in prose.",
-            "- Do not emit tool calls unless explicitly allowed for this loop kind.",
         ]
+        if stage_norm != "beat":
+            base.extend(
+                [
+                    "- You MUST include a control payload in the Chorus sentinel block.",
+                    "- Choose exactly one action: CONTINUE, WAIT_FOR_USER, COMPLETE, or YIELD.",
+                    "- Do not emit tool calls unless explicitly allowed for this loop kind.",
+                ]
+            )
+        else:
+            base.extend(
+                [
+                    "- Control selection is handled in a separate control-evaluation stage.",
+                    "- Do not emit control payloads or control tool calls in this stage.",
+                ]
+            )
         if str(loop_kind or "").strip() == "narrative.v1":
             base.extend(
                 [
                     "",
                     "Interactive Narrative Control Selection Rules:",
-                    "- Use WAIT_FOR_USER or YIELD when asking a question, at a meaningful choice point, or before irreversible consequences.",
-                    "- Use CONTINUE when advancing immediate consequences or NPC/environment beats without removing user agency.",
-                    "- Use COMPLETE when the scene resolves naturally.",
-                    "- In narrative.v1, WAIT_FOR_USER and YIELD are equivalent wait controls.",
+                    "- Advance immediate consequences or NPC/environment beats without removing user agency.",
+                    "- Ask questions only when meaningful user choice is required.",
+                    "- Keep progression natural; do not force cliffhangers every beat.",
                 ]
             )
         return "\n".join(base)
@@ -2260,8 +2377,16 @@ class ENSDispatcher:
             character=character,
             invocation_kind="chat",
         )
+        tool_transport_mode = self.llm_invoker.native_tool_transport_mode(
+            engine=effective.engine,
+            invocation_kind="chat",
+        )
+        split_narrative_v11 = self._is_narrative_v1(session.loop_kind) and self._narrative_v11_split_enabled()
         explicit_prompt = str(params.get("step_prompt") or "").strip()
-        prompt_addendum = self._loop_step_prompt_addendum(session.loop_kind)
+        prompt_addendum = self._loop_step_prompt_addendum(
+            session.loop_kind,
+            stage=("beat" if split_narrative_v11 else "full"),
+        )
         loop_system_prompt = getattr(character, "system_prompt", None)
         step_messages = None
         prompt_token_breakdown = None
@@ -2277,6 +2402,8 @@ class ENSDispatcher:
                 media_gate_context=None,
                 loop_step=True,
                 loop_kind=str(session.loop_kind or ""),
+                tool_transport_mode=tool_transport_mode,
+                loop_stage=("beat" if split_narrative_v11 else None),
             )
             if self._is_narrative_v1(session.loop_kind) and conversation is not None:
                 thread_repo = ThreadRepository(db)
@@ -2314,6 +2441,8 @@ class ENSDispatcher:
                         segment_context=params.get("segment_context"),
                         loop_step=True,
                         loop_kind=str(session.loop_kind or ""),
+                        tool_transport_mode=tool_transport_mode,
+                        loop_stage=("beat" if split_narrative_v11 else None),
                     )
                     step_messages = prompt_assembler.format_for_api(prompt_components)
                     step_messages.append({"role": "user", "content": (explicit_prompt or "continue")})
@@ -2401,7 +2530,7 @@ class ENSDispatcher:
                 "step_event_id": step_event.event_id,
             }
 
-        request_kwargs = dict(
+        stage_a_request_kwargs = dict(
             invocation_kind="chat",
             idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
             model_id=effective.model_id,
@@ -2416,14 +2545,17 @@ class ENSDispatcher:
                 "loop_id": loop_id,
                 "loop_kind": session.loop_kind,
                 "relationship_id": session.relationship_id,
+                "tool_transport_mode": tool_transport_mode,
+                "loop_stage": ("beat" if split_narrative_v11 else "full"),
             },
         )
         if step_messages is not None:
-            request_kwargs["messages"] = step_messages
+            stage_a_request_kwargs["messages"] = step_messages
         else:
-            request_kwargs["prompt"] = step_prompt
-            request_kwargs["system_prompt"] = loop_system_prompt
-        invocation = await self.llm_invoker.invoke(InvocationRequest(**request_kwargs))
+            stage_a_request_kwargs["prompt"] = step_prompt
+            stage_a_request_kwargs["system_prompt"] = loop_system_prompt
+
+        invocation = await self.llm_invoker.invoke(InvocationRequest(**stage_a_request_kwargs))
         if invocation.get("status") != "success":
             session.state = "errored"
             session.stop_reason = (invocation.get("error") or {}).get("message") or "loop_step_invocation_failed"
@@ -2432,20 +2564,78 @@ class ENSDispatcher:
 
         raw_content = invocation.get("output_text") or ""
         assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
+        requested_tools = assistant_result.tool_requests or []
+        native_transport = invocation.get("native_transport") or {}
+
+        stage_b_invocation: Optional[Dict[str, Any]] = None
+        stage_b_assistant_result: Optional[AssistantResult] = None
+        stage_b_native_transport: Dict[str, Any] = {}
+        stage_b_defaulted_wait = False
+        stage_b_error: Optional[str] = None
+
         control_action = assistant_result.control.action if assistant_result.control else None
+        control_source_result = assistant_result
+
+        if split_narrative_v11:
+            stage_b_messages = self._loop_stage_b_control_messages(
+                beat_text=assistant_result.display_text or raw_content,
+                user_input_text=(explicit_prompt or "continue"),
+                step_index=int(session.step_index or 0) + 1,
+                loop_kind=str(session.loop_kind or ""),
+                tool_transport_mode=tool_transport_mode,
+            )
+            stage_b_request = InvocationRequest(
+                invocation_kind="chat",
+                idempotency_key=f"loop:step:control:{loop_id}:{int(session.step_index or 0) + 1}",
+                model_id=effective.model_id,
+                provider=effective.provider,
+                engine=effective.engine,
+                conversation_id=session.conversation_id,
+                surface_id=session.surface_id,
+                character_id=character_id,
+                messages=stage_b_messages,
+                temperature=0.1,
+                max_tokens=64,
+                metadata={
+                    "loop_id": loop_id,
+                    "loop_kind": session.loop_kind,
+                    "relationship_id": session.relationship_id,
+                    "tool_transport_mode": tool_transport_mode,
+                    "loop_stage": "control",
+                },
+            )
+            stage_b_invocation = await self.llm_invoker.invoke(stage_b_request)
+            if stage_b_invocation.get("status") == "success":
+                stage_b_raw_content = stage_b_invocation.get("output_text") or ""
+                stage_b_assistant_result = self._assistant_result_from_invocation(stage_b_raw_content, stage_b_invocation)
+                stage_b_native_transport = dict(stage_b_invocation.get("native_transport") or {})
+                control_action = stage_b_assistant_result.control.action if stage_b_assistant_result.control else None
+                control_source_result = stage_b_assistant_result
+            else:
+                stage_b_error = (stage_b_invocation.get("error") or {}).get("message") or "stage_b_control_invocation_failed"
+
+            if not control_action:
+                control_action = "WAIT_FOR_USER"
+                stage_b_defaulted_wait = True
+
         if self._is_narrative_v1(session.loop_kind) and not control_action:
             control_action = "WAIT_FOR_USER"
         control_channel = "structured_control_present" if control_action else "no_control_present"
         parsed_from_text = False
         logger.info(
-            "loop_control_resolution loop_id=%s signal_id=%s status=%s parsed_from_text=%s",
+            "loop_control_resolution loop_id=%s signal_id=%s status=%s parsed_from_text=%s split=%s",
             loop_id,
             signal_id,
             control_channel,
             parsed_from_text,
+            split_narrative_v11,
         )
-        raw_payload_control = ((assistant_result.payload_obj or {}).get("control") if isinstance(assistant_result.payload_obj, dict) else None)
-        if raw_payload_control is not None and assistant_result.control is None:
+        raw_payload_control = (
+            (control_source_result.payload_obj or {}).get("control")
+            if isinstance(control_source_result.payload_obj, dict)
+            else None
+        )
+        if raw_payload_control is not None and control_source_result.control is None:
             control_channel = "malformed_control_ignored"
             logger.info(
                 "loop_control_malformed_ignored loop_id=%s signal_id=%s control=%s",
@@ -2454,7 +2644,7 @@ class ENSDispatcher:
                 str(raw_payload_control),
             )
 
-        requested_tools = assistant_result.tool_requests or []
+        provider_raw = (control_source_result.provider_raw or {})
         allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
         allowed_tool_requests = [r for r in requested_tools if r.tool_name in allowed_tools]
         blocked_tool_requests = [r.tool_name for r in requested_tools if r.tool_name not in allowed_tools]
@@ -2472,13 +2662,67 @@ class ENSDispatcher:
             "raw_content": raw_content,
             "display_content": assistant_result.display_text,
             "control_action": control_action,
-            "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            "assistant_result_tier": str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
             "tool_requests_total": len(requested_tools),
             "tool_requests_allowed": len(allowed_tool_requests),
             "tool_requests_blocked": blocked_tool_requests,
             "finish_reason": invocation.get("finish_reason"),
             "output_empty": bool(invocation.get("output_empty")),
             "completion_flags": invocation.get("completion_flags") or [],
+            "split_narrative_v11": bool(split_narrative_v11),
+            "stage_a": {
+                "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                "finish_reason": invocation.get("finish_reason"),
+                "output_empty": bool(invocation.get("output_empty")),
+                "completion_flags": invocation.get("completion_flags") or [],
+            },
+            "stage_b": {
+                "invoked": bool(split_narrative_v11),
+                "status": (stage_b_invocation.get("status") if isinstance(stage_b_invocation, dict) else None),
+                "assistant_result_tier": (
+                    str((stage_b_assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown")
+                    if stage_b_assistant_result
+                    else None
+                ),
+                "finish_reason": (stage_b_invocation.get("finish_reason") if isinstance(stage_b_invocation, dict) else None),
+                "defaulted_wait": bool(stage_b_defaulted_wait),
+                "error": stage_b_error,
+            },
+            "native_transport": {
+                "attempted": bool((native_transport or {}).get("attempted")),
+                "plan": dict((native_transport or {}).get("plan") or {}),
+                "requested_tool_choice": (native_transport or {}).get("requested_tool_choice"),
+                "requested_tool_names": [
+                    str(((tool.get("function") or {}).get("name")) or "")
+                    for tool in ((native_transport or {}).get("requested_tools") or [])
+                    if isinstance(tool, dict)
+                ],
+                "provider_tool_calls_count": (
+                    len((native_transport or {}).get("provider_tool_calls_raw") or [])
+                    if isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+                    else 0
+                ),
+                "provider_raw_message_present": isinstance((native_transport or {}).get("provider_raw_message"), dict),
+            },
+            "stage_b_native_transport": (
+                {
+                    "attempted": bool((stage_b_native_transport or {}).get("attempted")),
+                    "plan": dict((stage_b_native_transport or {}).get("plan") or {}),
+                    "requested_tool_choice": (stage_b_native_transport or {}).get("requested_tool_choice"),
+                    "requested_tool_names": [
+                        str(((tool.get("function") or {}).get("name")) or "")
+                        for tool in ((stage_b_native_transport or {}).get("requested_tools") or [])
+                        if isinstance(tool, dict)
+                    ],
+                    "provider_tool_calls_count": (
+                        len((stage_b_native_transport or {}).get("provider_tool_calls_raw") or [])
+                        if isinstance((stage_b_native_transport or {}).get("provider_tool_calls_raw"), list)
+                        else 0
+                    ),
+                }
+                if split_narrative_v11
+                else None
+            ),
         }
         if capture_full_prompt:
             loop_log_event["prompt_capture"] = {
@@ -2493,7 +2737,8 @@ class ENSDispatcher:
 
         session.step_index = int(session.step_index or 0) + 1
         session.step_count = int(session.step_count or 0) + 1
-        session.token_budget_used = int(session.token_budget_used or 0) + self._loop_tokens_used(invocation)
+        stage_b_tokens = self._loop_tokens_used(stage_b_invocation or {}) if split_narrative_v11 else 0
+        session.token_budget_used = int(session.token_budget_used or 0) + self._loop_tokens_used(invocation) + stage_b_tokens
         session.tool_budget_used = int(session.tool_budget_used or 0) + len(allowed_tool_requests)
         session.stop_reason = None
 
@@ -2628,16 +2873,76 @@ class ENSDispatcher:
                 tool_requests_allowed=[r.tool_name for r in allowed_tool_requests],
                 tool_requests_blocked=blocked_tool_requests,
                 finish_reason=str(invocation.get("finish_reason") or "") or None,
-                assistant_result_tier=str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                assistant_result_tier=str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
             ),
             output_json={
                 "display_text": assistant_result.display_text,
                 "loop_mode": loop_mode,
-                "assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                "assistant_result_tier": str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                "finish_reason": invocation.get("finish_reason"),
                 "control_channel": control_channel,
                 "parsed_from_text": parsed_from_text,
+                "split_narrative_v11": bool(split_narrative_v11),
+                "stage_a_finish_reason": invocation.get("finish_reason"),
+                "stage_a_assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                "stage_a_output_empty": bool(invocation.get("output_empty")),
+                "stage_b_invoked": bool(split_narrative_v11),
+                "stage_b_status": (stage_b_invocation.get("status") if isinstance(stage_b_invocation, dict) else None),
+                "stage_b_finish_reason": (stage_b_invocation.get("finish_reason") if isinstance(stage_b_invocation, dict) else None),
+                "stage_b_assistant_result_tier": (
+                    str((stage_b_assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown")
+                    if stage_b_assistant_result
+                    else None
+                ),
+                "stage_b_defaulted_wait": bool(stage_b_defaulted_wait),
+                "stage_b_error": stage_b_error,
                 "tool_requests_allowed": len(allowed_tool_requests),
                 "tool_requests_blocked": blocked_tool_requests,
+                "tool_requests_total": len(requested_tools),
+                "assistant_result_control": (
+                    {
+                        "action": control_source_result.control.action,
+                        "args": dict(control_source_result.control.args or {}),
+                    }
+                    if control_source_result.control
+                    else None
+                ),
+                "assistant_result_tool_requests": [
+                    {
+                        "tool_name": req.tool_name,
+                        "payload": dict(req.payload or {}),
+                        "request_id": req.request_id,
+                    }
+                    for req in (assistant_result.tool_requests or [])
+                ],
+                "native_transport_attempted": bool((native_transport or {}).get("attempted")),
+                "native_transport_plan": dict((native_transport or {}).get("plan") or {}),
+                "requested_tool_choice": (native_transport or {}).get("requested_tool_choice"),
+                "requested_tool_names": [
+                    str(((tool.get("function") or {}).get("name")) or "")
+                    for tool in ((native_transport or {}).get("requested_tools") or [])
+                    if isinstance(tool, dict)
+                ],
+                "requested_tools": (native_transport or {}).get("requested_tools") or [],
+                "provider_tool_calls_raw": (native_transport or {}).get("provider_tool_calls_raw"),
+                "provider_tool_calls_returned": isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+                and len(((native_transport or {}).get("provider_tool_calls_raw") or [])) > 0,
+                "provider_tool_calls_count": (
+                    len((native_transport or {}).get("provider_tool_calls_raw") or [])
+                    if isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+                    else 0
+                ),
+                "provider_raw_message": (native_transport or {}).get("provider_raw_message"),
+                "native_tool_calls_total": provider_raw.get("native_tool_calls_total"),
+                "native_control_calls": provider_raw.get("native_control_calls"),
+                "native_tool_requests": provider_raw.get("native_tool_requests"),
+                "native_tool_parse_failures": provider_raw.get("native_tool_parse_failures"),
+                "stage_b_native_transport_attempted": bool((stage_b_native_transport or {}).get("attempted")) if split_narrative_v11 else False,
+                "stage_b_provider_tool_calls_count": (
+                    len((stage_b_native_transport or {}).get("provider_tool_calls_raw") or [])
+                    if isinstance((stage_b_native_transport or {}).get("provider_tool_calls_raw"), list)
+                    else 0
+                ) if split_narrative_v11 else 0,
                 "next_progression_enqueued": bool(next_progression),
                 "outbox_count": outbox_count,
                 "assistant_message_id": assistant_message_id,
@@ -2664,6 +2969,54 @@ class ENSDispatcher:
             "tool_requests_total": len(requested_tools),
             "tool_requests_allowed": len(allowed_tool_requests),
             "tool_requests_blocked": blocked_tool_requests,
+            "assistant_result_tier": str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            "finish_reason": invocation.get("finish_reason"),
+            "split_narrative_v11": bool(split_narrative_v11),
+            "stage_a_finish_reason": invocation.get("finish_reason"),
+            "stage_a_assistant_result_tier": str((assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+            "stage_b_status": (stage_b_invocation.get("status") if isinstance(stage_b_invocation, dict) else None),
+            "stage_b_finish_reason": (stage_b_invocation.get("finish_reason") if isinstance(stage_b_invocation, dict) else None),
+            "stage_b_assistant_result_tier": (
+                str((stage_b_assistant_result.provider_raw or {}).get("assistant_result_tier") or "unknown")
+                if stage_b_assistant_result
+                else None
+            ),
+            "stage_b_defaulted_wait": bool(stage_b_defaulted_wait),
+            "stage_b_error": stage_b_error,
+            "assistant_result_control": (
+                {
+                    "action": control_source_result.control.action,
+                    "args": dict(control_source_result.control.args or {}),
+                }
+                if control_source_result.control
+                else None
+            ),
+            "assistant_result_tool_requests": [
+                {
+                    "tool_name": req.tool_name,
+                    "payload": dict(req.payload or {}),
+                    "request_id": req.request_id,
+                }
+                for req in (assistant_result.tool_requests or [])
+            ],
+            "native_transport_attempted": bool((native_transport or {}).get("attempted")),
+            "native_transport_plan": dict((native_transport or {}).get("plan") or {}),
+            "requested_tool_choice": (native_transport or {}).get("requested_tool_choice"),
+            "requested_tool_names": [
+                str(((tool.get("function") or {}).get("name")) or "")
+                for tool in ((native_transport or {}).get("requested_tools") or [])
+                if isinstance(tool, dict)
+            ],
+            "requested_tools": (native_transport or {}).get("requested_tools") or [],
+            "provider_tool_calls_raw": (native_transport or {}).get("provider_tool_calls_raw"),
+            "provider_tool_calls_returned": isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+            and len(((native_transport or {}).get("provider_tool_calls_raw") or [])) > 0,
+            "provider_tool_calls_count": (
+                len((native_transport or {}).get("provider_tool_calls_raw") or [])
+                if isinstance((native_transport or {}).get("provider_tool_calls_raw"), list)
+                else 0
+            ),
+            "provider_raw_message": (native_transport or {}).get("provider_raw_message"),
             "next_progression_enqueued": bool(next_progression),
             "next_progression": next_progression,
             "outbox_count": outbox_count,

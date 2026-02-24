@@ -34,7 +34,8 @@ class DummyLLMClient:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+        _ = (tools, tool_choice)
         last_user = ""
         for m in reversed(messages):
             if m.get("role") == "user":

@@ -39,6 +39,8 @@ class LMStudioLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a completion using OpenAI-compatible chat completions endpoint.
@@ -70,6 +72,10 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            if tools:
+                payload["tools"] = tools
+                if tool_choice is not None:
+                    payload["tool_choice"] = tool_choice
             
             logger.debug(f"LM Studio request: model={payload['model']}, messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
@@ -86,7 +92,8 @@ class LMStudioLLMClient(BaseLLMClient):
             
             # OpenAI-compatible response format
             choice = data.get("choices", [{}])[0]
-            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
+            message = choice.get("message", {}) or {}
+            content = normalize_mojibake(message.get("content", ""))
             used_model = data.get("model", model if model is not None else self.model)
             finish_reason = choice.get("finish_reason")
             if not content.strip():
@@ -100,7 +107,9 @@ class LMStudioLLMClient(BaseLLMClient):
                 content=content,
                 model=used_model,
                 finish_reason=finish_reason,
-                usage=data.get("usage")
+                usage=data.get("usage"),
+                tool_calls=message.get("tool_calls"),
+                raw_message=message if isinstance(message, dict) else None,
             )
         
         except httpx.HTTPStatusError as e:
@@ -181,6 +190,8 @@ class LMStudioLLMClient(BaseLLMClient):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> LLMResponse:
         """
         Generate a completion with full conversation history.
@@ -206,6 +217,10 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            if tools:
+                payload["tools"] = tools
+                if tool_choice is not None:
+                    payload["tool_choice"] = tool_choice
             
             # Debug logging to help diagnose verbosity issues
             logger.info(f"LM Studio generation request:")
@@ -227,7 +242,8 @@ class LMStudioLLMClient(BaseLLMClient):
             
             # OpenAI-compatible response format
             choice = data.get("choices", [{}])[0]
-            content = normalize_mojibake(choice.get("message", {}).get("content", ""))
+            message = choice.get("message", {}) or {}
+            content = normalize_mojibake(message.get("content", ""))
             used_model = data.get("model", model if model is not None else self.model)
             finish_reason = choice.get("finish_reason")
             
@@ -243,7 +259,9 @@ class LMStudioLLMClient(BaseLLMClient):
                 content=content,
                 model=used_model,
                 finish_reason=finish_reason,
-                usage=data.get("usage")
+                usage=data.get("usage"),
+                tool_calls=message.get("tool_calls"),
+                raw_message=message if isinstance(message, dict) else None,
             )
             
         except httpx.HTTPError as e:

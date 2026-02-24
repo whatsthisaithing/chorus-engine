@@ -16,7 +16,7 @@ class _LLMClientWithPayload:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
         return _LLMResponse(self.payload_text)
 
 
@@ -407,3 +407,4 @@ def test_slice25_acknowledgement_turn_blocks_proactive_media_offer(client, db, h
     assert adjudicate is not None
     output = adjudicate.output_json or {}
     assert output.get("tool_call_count") == 0
+

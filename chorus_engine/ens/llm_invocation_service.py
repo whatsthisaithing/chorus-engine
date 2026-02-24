@@ -8,11 +8,22 @@ import json
 import logging
 import random
 import time
+import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from chorus_engine.ens.assistant_result import normalize_assistant_result
+from chorus_engine.llm.request_debug_context import (
+    reset_request_debug_context,
+    set_request_debug_context,
+)
+from chorus_engine.ens.tool_registry import (
+    TOOL_CHORUS_CONTROL,
+    TOOL_IMAGE_GENERATE,
+    native_tool_definitions,
+    requires_approval_default,
+)
 
 NON_DETERMINISTIC_METADATA_KEYS = {
     "trace_id",
@@ -65,6 +76,8 @@ class InvocationRequest:
     stop: Optional[List[str]] = None
     vision_images: Optional[List[str]] = None
     vision_image_mime_type: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -101,6 +114,271 @@ class LLMInvocationService:
             return value
 
         return _clean(metadata or {})
+
+    @staticmethod
+    def _provider_native_tool_capabilities(engine: Optional[str]) -> Dict[str, bool]:
+        normalized = str(engine or "").strip().lower()
+        if normalized in {"ollama", "lmstudio"}:
+            return {"supports_native_tools": True, "supports_tool_choice": True}
+        return {"supports_native_tools": False, "supports_tool_choice": False}
+
+    def _native_tool_transport_enabled(self, *, request: InvocationRequest) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return False
+        if not bool(getattr(ens_cfg, "enabled", False)):
+            return False
+        if not bool(getattr(ens_cfg, "native_tool_transport_enabled", False)):
+            return False
+        if bool(getattr(ens_cfg, "native_tool_transport_force_sentinel", False)):
+            return False
+        if request.invocation_kind != "chat":
+            return False
+        caps = self._provider_native_tool_capabilities(request.engine)
+        if not bool(caps.get("supports_native_tools")):
+            return False
+        llm_client = self.app_state.get("llm_client")
+        if str(request.engine or "").strip().lower() == "ollama" and bool(getattr(llm_client, "use_legacy_chat_api", False)):
+            return False
+        return True
+
+    def native_tool_transport_mode(self, *, engine: Optional[str], invocation_kind: str = "chat") -> str:
+        probe = InvocationRequest(
+            invocation_kind=invocation_kind,
+            idempotency_key="transport_mode_probe",
+            model_id="transport_mode_probe",
+            provider="local",
+            engine=str(engine or "unknown"),
+        )
+        return "native" if self._native_tool_transport_enabled(request=probe) else "sentinel"
+
+    def _sentinel_fallback_enabled(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return True
+        new_flag = bool(getattr(ens_cfg, "native_tool_transport_sentinel_fallback_enabled", True))
+        legacy_flag = bool(getattr(ens_cfg, "v3_sentinel_fallback_enabled", False))
+        return bool(new_flag and legacy_flag)
+
+    def _native_tool_transport_debug_mode(self) -> str:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return "off"
+        mode = str(getattr(ens_cfg, "native_tool_transport_debug_override_mode", "off") or "off").strip().lower()
+        if mode not in {"off", "chat_control_only", "loop_image_only", "both"}:
+            return "off"
+        return mode
+
+    @staticmethod
+    def _inject_debug_instruction(request: InvocationRequest, instruction: str) -> None:
+        if not instruction:
+            return
+
+        if isinstance(request.messages, list):
+            updated_messages: List[Dict[str, Any]] = []
+            injected = False
+            for item in request.messages:
+                if not isinstance(item, dict):
+                    updated_messages.append(item)
+                    continue
+                copied = dict(item)
+                role = str(copied.get("role") or "").strip().lower()
+                if not injected and role == "system":
+                    content = str(copied.get("content") or "")
+                    copied["content"] = f"{content}\n\n{instruction}" if content else instruction
+                    injected = True
+                updated_messages.append(copied)
+            if not injected:
+                updated_messages.insert(0, {"role": "system", "content": instruction})
+            request.messages = updated_messages
+            return
+
+        system_prompt = str(request.system_prompt or "")
+        request.system_prompt = f"{system_prompt}\n\n{instruction}" if system_prompt else instruction
+
+    def _apply_native_transport_debug_overrides(
+        self,
+        *,
+        request: InvocationRequest,
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Any],
+        native_plan: Dict[str, Any],
+    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[Any], Dict[str, Any]]:
+        mode = self._native_tool_transport_debug_mode()
+        if mode == "off":
+            return tools, tool_choice, native_plan
+
+        metadata = request.metadata or {}
+        loop_step = bool(metadata.get("loop_id"))
+        loop_kind = str(metadata.get("loop_kind") or "").strip().lower()
+
+        if mode in {"chat_control_only", "both"} and not loop_step:
+            forced_tools = native_tool_definitions(
+                allowed_media_tools=set(),
+                include_control=True,
+                include_cold_recall=False,
+            )
+            forced_choice = {"type": "function", "function": {"name": TOOL_CHORUS_CONTROL}}
+            self._inject_debug_instruction(
+                request,
+                "TEST OVERRIDE: Call `chorus.control` exactly once with {\"action\":\"CONTINUE\"}.",
+            )
+            debug_plan = dict(native_plan or {})
+            debug_plan.update(
+                {
+                    "debug_override_applied": True,
+                    "debug_override_mode": mode,
+                    "debug_override_policy": "chat_control_only",
+                    "loop_kind": loop_kind or None,
+                }
+            )
+            return forced_tools, forced_choice, debug_plan
+
+        if mode in {"loop_image_only", "both"} and loop_step:
+            forced_tools = native_tool_definitions(
+                allowed_media_tools={TOOL_IMAGE_GENERATE},
+                include_control=False,
+                include_cold_recall=False,
+            )
+            forced_choice = {"type": "function", "function": {"name": TOOL_IMAGE_GENERATE}}
+            self._inject_debug_instruction(
+                request,
+                "TEST OVERRIDE: Call `image.generate` exactly once with a simple, safe prompt.",
+            )
+            debug_plan = dict(native_plan or {})
+            debug_plan.update(
+                {
+                    "debug_override_applied": True,
+                    "debug_override_mode": mode,
+                    "debug_override_policy": "loop_image_only",
+                    "loop_kind": loop_kind or None,
+                }
+            )
+            return forced_tools, forced_choice, debug_plan
+
+        return tools, tool_choice, native_plan
+
+    def _prepare_native_transport(self, request: InvocationRequest) -> tuple[Optional[List[Dict[str, Any]]], Optional[Any], Dict[str, Any]]:
+        if not self._native_tool_transport_enabled(request=request):
+            return None, None, {"attempted": False, "enabled": False}
+        metadata = request.metadata or {}
+        media_gate = (metadata.get("media_gate_snapshot") or {})
+        allowed_tools = set(media_gate.get("allowed_tools_final") or [])
+        include_control = bool(metadata.get("loop_id") or metadata.get("loop_kind"))
+        loop_kind = str(metadata.get("loop_kind") or "").strip().lower()
+        loop_stage = str(metadata.get("loop_stage") or "").strip().lower()
+        is_narrative_v1_loop_step = bool(metadata.get("loop_id")) and loop_kind == "narrative.v1"
+
+        if is_narrative_v1_loop_step and loop_stage != "beat":
+            tools = native_tool_definitions(
+                allowed_media_tools=set(),
+                include_control=True,
+                include_cold_recall=False,
+            )
+            if not tools:
+                return None, None, {"attempted": False, "enabled": True, "reason": "no_tools_available"}
+            use_auto_choice = False
+            prepared = (
+                tools,
+                ("auto" if use_auto_choice else {"type": "function", "function": {"name": TOOL_CHORUS_CONTROL}}),
+                {
+                "attempted": True,
+                "enabled": True,
+                "include_control": True,
+                "tool_count": len(tools),
+                "loop_policy": ("narrative_v1_stage_b_control_only_auto_choice" if use_auto_choice else "narrative_v1_control_only_required"),
+                "loop_stage": loop_stage or "full",
+                },
+            )
+            return self._apply_native_transport_debug_overrides(
+                request=request,
+                tools=prepared[0],
+                tool_choice=prepared[1],
+                native_plan=prepared[2],
+            )
+
+        if is_narrative_v1_loop_step and loop_stage == "beat":
+            include_control = False
+
+        tools = native_tool_definitions(
+            allowed_media_tools=allowed_tools,
+            include_control=include_control,
+            include_cold_recall=(not (is_narrative_v1_loop_step and loop_stage == "beat")),
+        )
+        if not tools:
+            return None, None, {"attempted": False, "enabled": True, "reason": "no_tools_available"}
+        tool_choice: Optional[Any] = "auto"
+        return self._apply_native_transport_debug_overrides(
+            request=request,
+            tools=tools,
+            tool_choice=tool_choice,
+            native_plan={"attempted": True, "enabled": True, "include_control": include_control, "tool_count": len(tools)},
+        )
+
+    @staticmethod
+    def _safe_json_loads(raw_args: Any) -> Dict[str, Any]:
+        if isinstance(raw_args, dict):
+            return dict(raw_args)
+        if isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {}
+        return {}
+
+    def _map_native_tool_calls(
+        self,
+        *,
+        tool_calls: Any,
+    ) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
+        provider_control: Optional[Dict[str, Any]] = None
+        provider_tool_requests: List[Dict[str, Any]] = []
+        counters = {"native_tool_calls_total": 0, "native_control_calls": 0, "native_tool_requests": 0, "native_tool_parse_failures": 0}
+
+        if not isinstance(tool_calls, list):
+            return provider_control, provider_tool_requests, counters
+
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                counters["native_tool_parse_failures"] += 1
+                continue
+            counters["native_tool_calls_total"] += 1
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+            tool_name = function.get("name") or item.get("name")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                counters["native_tool_parse_failures"] += 1
+                continue
+            tool_name = tool_name.strip()
+            args_obj = self._safe_json_loads(function.get("arguments") if function else item.get("arguments"))
+            call_id = item.get("id")
+            if not isinstance(call_id, str) or not call_id.strip():
+                call_id = f"native_{uuid.uuid4().hex[:12]}"
+
+            if tool_name == TOOL_CHORUS_CONTROL:
+                action = str(args_obj.get("action") or "").strip().upper()
+                if action:
+                    provider_control = {"action": action, "args": {}}
+                    counters["native_control_calls"] += 1
+                else:
+                    counters["native_tool_parse_failures"] += 1
+                continue
+
+            requires_approval = requires_approval_default(tool_name)
+            if requires_approval is None:
+                requires_approval = bool(item.get("requires_approval", True))
+            provider_tool_requests.append(
+                {
+                    "id": call_id,
+                    "tool": tool_name,
+                    "requires_approval": bool(requires_approval),
+                    "args": args_obj if isinstance(args_obj, dict) else {},
+                }
+            )
+            counters["native_tool_requests"] += 1
+
+        return provider_control, provider_tool_requests, counters
 
     def request_fingerprint(self, request: InvocationRequest) -> str:
         fingerprint_payload = {
@@ -144,13 +422,38 @@ class LLMInvocationService:
         try:
             for attempt in range(1, max_retries + 2):
                 attempts = attempt
+                request_debug_token = None
                 try:
+                    req_tools, req_tool_choice, native_plan = self._prepare_native_transport(request)
+                    request.tools = req_tools
+                    request.tool_choice = req_tool_choice
+                    request_debug_token = set_request_debug_context(
+                        {
+                            "conversation_id": request.conversation_id,
+                            "thread_id": request.thread_id,
+                            "character_id": request.character_id,
+                            "invocation_kind": request.invocation_kind,
+                            "chat_type": (
+                                "loopstep"
+                                if bool((request.metadata or {}).get("loop_id"))
+                                else "normal"
+                            ),
+                            "loop_id": (request.metadata or {}).get("loop_id"),
+                            "loop_kind": (request.metadata or {}).get("loop_kind"),
+                            "model_id": request.model_id,
+                            "engine": request.engine,
+                        }
+                    )
                     response = await asyncio.wait_for(
                         self._call_provider(request),
                         timeout=timeout_s,
                     )
+                    if request_debug_token is not None:
+                        reset_request_debug_context(request_debug_token)
                     output_text = response.get("output_text", "")
                     finish_reason = response.get("finish_reason")
+                    provider_tool_calls = response.get("provider_tool_calls")
+                    provider_raw_message = response.get("provider_raw_message")
                     completion_flags = self._compute_completion_flags(output_text, finish_reason)
                     if completion_flags:
                         logger.warning(
@@ -165,9 +468,61 @@ class LLMInvocationService:
                             request_fingerprint[:12],
                         )
                     latency_ms = int((time.perf_counter() - started) * 1000)
+                    provider_control = None
+                    provider_tool_requests = None
+                    native_counts = {
+                        "native_tool_calls_total": 0,
+                        "native_control_calls": 0,
+                        "native_tool_requests": 0,
+                        "native_tool_parse_failures": 0,
+                    }
+                    native_attempted = bool(native_plan.get("attempted"))
+                    if native_attempted:
+                        provider_control, mapped_tool_requests, native_counts = self._map_native_tool_calls(
+                            tool_calls=provider_tool_calls,
+                        )
+                        has_native_content = bool(provider_control) or bool(mapped_tool_requests)
+                        if has_native_content:
+                            provider_tool_requests = mapped_tool_requests
+                        elif not self._sentinel_fallback_enabled():
+                            provider_tool_requests = []
+                        if has_native_content:
+                            logger.info(
+                                "[NATIVE_TOOL_TRANSPORT] success engine=%s model=%s control=%s tools=%s",
+                                request.engine,
+                                request.model_id,
+                                bool(provider_control),
+                                len(mapped_tool_requests),
+                            )
+                        else:
+                            logger.info(
+                                "[NATIVE_TOOL_TRANSPORT] fallback engine=%s model=%s fallback_enabled=%s",
+                                request.engine,
+                                request.model_id,
+                                self._sentinel_fallback_enabled(),
+                            )
                     normalized = normalize_assistant_result(
                         raw_content=output_text,
-                        provider_raw={"finish_reason": finish_reason},
+                        provider_control=provider_control,
+                        provider_tool_requests=provider_tool_requests,
+                        provider_raw={
+                            "finish_reason": finish_reason,
+                            "raw_message": provider_raw_message,
+                            "provider_tool_calls_raw": provider_tool_calls,
+                            "native_transport_attempted": native_attempted,
+                            "native_transport_plan": dict(native_plan or {}),
+                            "native_tool_calls_total": native_counts["native_tool_calls_total"],
+                            "native_control_calls": native_counts["native_control_calls"],
+                            "native_tool_requests": native_counts["native_tool_requests"],
+                            "native_tool_parse_failures": native_counts["native_tool_parse_failures"],
+                            "native_tools_requested": bool(req_tools),
+                            "requested_tool_choice": req_tool_choice,
+                            "requested_tool_names": [
+                                str(((tool.get("function") or {}).get("name")) or "")
+                                for tool in (req_tools or [])
+                                if isinstance(tool, dict)
+                            ],
+                        },
                     )
                     return {
                         "status": "success",
@@ -208,9 +563,22 @@ class LLMInvocationService:
                         "attempts": attempts,
                         "replayed": False,
                         "request_fingerprint": request_fingerprint,
+                        "native_transport": {
+                            "attempted": native_attempted,
+                            "plan": dict(native_plan or {}),
+                            "requested_tools": req_tools or [],
+                            "requested_tool_choice": req_tool_choice,
+                            "provider_tool_calls_raw": provider_tool_calls,
+                            "provider_raw_message": provider_raw_message,
+                        },
                         "error": None,
                     }
                 except asyncio.TimeoutError:
+                    if request_debug_token is not None:
+                        try:
+                            reset_request_debug_context(request_debug_token)
+                        except Exception:
+                            pass
                     last_error = {
                         "code": "timeout",
                         "type": "timeout",
@@ -218,6 +586,11 @@ class LLMInvocationService:
                         "retryable": True,
                     }
                 except Exception as exc:
+                    if request_debug_token is not None:
+                        try:
+                            reset_request_debug_context(request_debug_token)
+                        except Exception:
+                            pass
                     msg = str(exc)
                     retryable = any(token in msg.lower() for token in ["timeout", "temporar", "connection", "503", "502"])
                     last_error = {
@@ -273,6 +646,8 @@ class LLMInvocationService:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 model=request.model_id,
+                tools=request.tools,
+                tool_choice=request.tool_choice,
             )
         else:
             response = await llm_client.generate(
@@ -281,6 +656,8 @@ class LLMInvocationService:
                 model=request.model_id,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                tools=request.tools,
+                tool_choice=request.tool_choice,
             )
         content = response.content or ""
         return {
@@ -289,6 +666,8 @@ class LLMInvocationService:
             "token_usage": getattr(response, "usage", None),
             "finish_reason": getattr(response, "finish_reason", None),
             "cost": None,
+            "provider_tool_calls": getattr(response, "tool_calls", None),
+            "provider_raw_message": getattr(response, "raw_message", None),
         }
 
     @staticmethod

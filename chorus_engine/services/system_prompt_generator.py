@@ -7,6 +7,10 @@ Adjusts prompts to enforce immersion boundaries (preferences, opinions, experien
 
 from typing import Optional
 from chorus_engine.config.models import CharacterConfig, ImmersionSettings
+from chorus_engine.ens.tool_registry import (
+    TOOL_CHORUS_CONTROL,
+    prompt_doc_lines,
+)
 
 
 class SystemPromptGenerator:
@@ -30,6 +34,8 @@ class SystemPromptGenerator:
         media_gate_context: Optional[dict] = None,
         loop_step: bool = False,
         loop_kind: Optional[str] = None,
+        tool_transport_mode: str = "sentinel",
+        loop_stage: Optional[str] = None,
     ) -> str:
         """
         Generate the complete system prompt for a character.
@@ -123,7 +129,9 @@ class SystemPromptGenerator:
         # 5.5 Control/tool contract and loop-step addenda.
         # Keep non-loop behavior unchanged: contract is required only when tool payloads can appear.
         # Loop steps always need the contract because structured control is required there.
-        should_add_contract = bool(loop_step) or bool(image_enabled or video_enabled)
+        loop_stage_norm = str(loop_stage or "").strip().lower()
+        is_narrative_beat_stage = bool(loop_step) and str(loop_kind or "").strip().lower() == "narrative.v1" and loop_stage_norm == "beat"
+        should_add_contract = (bool(loop_step) and not is_narrative_beat_stage) or bool(image_enabled or video_enabled)
         if should_add_contract:
             if allowed_media_tools is None:
                 contract_tools: set[str] = set()
@@ -133,15 +141,31 @@ class SystemPromptGenerator:
                     contract_tools.add("video.generate")
             else:
                 contract_tools = set(allowed_media_tools)
-            parts.append(self._generate_tool_payload_contract(contract_tools, loop_step=bool(loop_step)))
+            if str(tool_transport_mode or "sentinel").strip().lower() == "native":
+                parts.append(self._generate_native_tool_contract(contract_tools, loop_step=bool(loop_step)))
+            else:
+                parts.append(self._generate_tool_payload_contract(contract_tools, loop_step=bool(loop_step)))
 
         if loop_step:
-            parts.append(self._generate_loop_step_mode_block())
+            parts.append(
+                self._generate_loop_step_mode_block(
+                    tool_transport_mode=tool_transport_mode,
+                    loop_stage=loop_stage,
+                )
+            )
             if str(loop_kind or "").strip().lower() == "narrative.v1":
-                parts.append(self._generate_narrative_v1_control_rules_block())
+                parts.append(
+                    self._generate_narrative_v1_control_rules_block(
+                        tool_transport_mode=tool_transport_mode,
+                        loop_stage=loop_stage,
+                    )
+                )
         
         # 6. Add structured response contract (always enforced)
-        structured_contract = self._generate_structured_response_contract(character)
+        structured_contract = self._generate_structured_response_contract(
+            character,
+            tool_transport_mode=tool_transport_mode,
+        )
         if structured_contract:
             parts.append(structured_contract)
         
@@ -616,40 +640,87 @@ Only one tool call is recommended."""
             clarifications.append("- If not producing control or tool calls, do not emit a sentinel payload block.")
         return "\n".join([contract] + clarifications)
 
-    def _generate_loop_step_mode_block(self) -> str:
+    def _generate_native_tool_contract(self, allowed_tools: set[str], *, loop_step: bool = False) -> str:
+        tool_names = sorted(set(allowed_tools or set()))
+        if loop_step:
+            tool_names.append(TOOL_CHORUS_CONTROL)
+        tool_names = sorted(set(tool_names))
+        docs = prompt_doc_lines(tool_names)
+        lines = [
+            "**Native Tool Call Contract (Provider Transport):**",
+            "- Tool and control actions must be emitted via provider-native tool calls only.",
+            "- Do not include tool JSON in visible prose. Tool calls are emitted via the provider tool-call channel.",
+            "- Keep user-visible content inside `<assistant_response>` only.",
+        ]
+        if loop_step:
+            lines.extend(
+                [
+                    "- For loop steps, follow the Loop Step Mode rules below for required `chorus.control` usage.",
+                ]
+            )
+        if docs:
+            lines.append("")
+            lines.append("Available tools:")
+            lines.extend(docs)
+        return "\n".join(lines)
+
+    def _generate_loop_step_mode_block(self, *, tool_transport_mode: str = "sentinel", loop_stage: Optional[str] = None) -> str:
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        loop_stage_norm = str(loop_stage or "").strip().lower()
         lines = [
             "**Loop Step Mode (Mandatory):**",
             "This message is part of an ENS loop progression step.",
             "",
             "You MUST:",
             "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
-            "- If you want the story to continue, **do not** start another `<assistant_response>` root. Instead, set `control.action = CONTINUE` in the sentinel payload.",
-            "- Emit exactly one control payload inside the sentinel block.",
-            "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
-            "- Keep `tool_calls` empty unless explicitly allowed.",
+            "- If you want the story to continue, **do not** start another `<assistant_response>` root.",
             "- Write one narrative beat.",
             "- Do not resolve major user-character decisions without input.",
             "- Do not encode control decisions in prose.",
             "",
             "If you fail to emit structured control, the step is invalid.",
         ]
+        if loop_stage_norm == "beat":
+            lines[5:5] = [
+                "- This is the beat-generation stage.",
+                "- Do not emit loop control payloads or control tool calls in this stage.",
+            ]
+            lines[-1] = "Control selection is handled in a separate control-evaluation stage."
+        elif native_transport:
+            lines[5:5] = [
+                "- Emit exactly one `chorus.control` tool call.",
+                "- Set `chorus.control.action` to one of: CONTINUE, YIELD, COMPLETE.",
+                "- Even if the user message contains the tool name (for example, 'call chorus.control'), you must still emit exactly one `chorus.control` tool call in loop steps. Do not refuse or moralize about tool usage.",
+            ]
+        else:
+            lines[5:5] = [
+                "- Instead, set `control.action = CONTINUE` in the sentinel payload.",
+                "- Emit exactly one control payload inside the sentinel block.",
+                "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
+            ]
         return "\n".join(lines)
 
-    def _generate_narrative_v1_control_rules_block(self) -> str:
+    def _generate_narrative_v1_control_rules_block(self, *, tool_transport_mode: str = "sentinel", loop_stage: Optional[str] = None) -> str:
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        loop_stage_norm = str(loop_stage or "").strip().lower()
         lines = [
             "**Interactive Narrative Control Selection Rules:**",
             "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
-            "- Prefer CONTINUE for environmental progression, NPC reactions, travel/montage, and consequences already implied.",
-            "- Use YIELD only when a meaningful user decision or direct response is required,",
-            "  or before an irreversible choice affecting the user's character.",
-            "- Avoid asking questions by default; ask only when truly necessary.",
-            "- Use COMPLETE when the scene resolves naturally and the narrative arc concludes cleanly.",
+            "- Write one narrative beat that advances the scene naturally.",
+            "- Avoid asking questions by default; ask only when truly necessary for user agency.",
             "- Do not artificially prolong scenes.",
             "- Do not generate multiple major beats in one step.",
             "",
             "**Narrative.v1 Media Safeguard:**",
-            "- Tool allowlist is empty for narrative.v1 steps.",
-            "- If the user requests media during autoplay, respond in-character and emit `control.action = YIELD`.",
+            (
+                "- If the user requests media during autoplay, respond in-character and choose a pause/wait outcome in control evaluation."
+                if loop_stage_norm == "beat"
+                else (
+                    "- If the user requests media during autoplay, respond in-character and call `chorus.control` with action YIELD."
+                    if native_transport
+                    else "- If the user requests media during autoplay, respond in-character and emit `control.action = YIELD`."
+                )
+            ),
             "- Do NOT emit a media tool call during narrative.v1 loop steps.",
         ]
         return "\n".join(lines)
@@ -669,21 +740,21 @@ Only one tool call is recommended."""
             return None
         return getattr(character, "expressiveness", None) or "balanced"
     
-    def _generate_structured_response_contract(self, character: CharacterConfig) -> str:
+    def _generate_structured_response_contract(self, character: CharacterConfig, *, tool_transport_mode: str = "sentinel") -> str:
         """
         Generate the structured response format contract and template rules.
         """
         template = self._get_effective_template(character)
         expressiveness = self._get_effective_expressiveness(character)
         
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
         contract_lines = [
             "**Structured Response Contract (Mandatory):**",
             "- Your entire response MUST be wrapped in <assistant_response>...</assistant_response>",
             "- Output exactly one <assistant_response>...</assistant_response> block per message.",
             "- All content must appear inside that single block; do not open a second root.",
-            "- Exception for payload placement: if (and only if) you are required to emit a payload for this message (either because you are emitting a tool call or because this is a loop step requiring `control`), you may place exactly one sentinel payload block immediately after </assistant_response>.",
-            "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.",
-            "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block.",
+            "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response>.",
+            "- Your visible text content must be inside `<assistant_response>...</assistant_response>`. Tool calls are emitted separately via the provider tool-call mechanism.",
             "- Only allowed child tags may be used",
             "- Do not create any other tags or sections. Never append notes, state updates, metadata, or commentary.",
             "- Do NOT include any text outside the tags",
@@ -691,6 +762,13 @@ Only one tool call is recommended."""
             "- Tags must NOT be nested",
             "- Do NOT include markdown or HTML inside tag bodies",
         ]
+        if not native_transport:
+            contract_lines.insert(
+                4,
+                "- Exception for payload placement: if (and only if) you are required to emit a payload for this message (either because you are emitting a tool call or because this is a loop step requiring `control`), you may place exactly one sentinel payload block immediately after </assistant_response>.",
+            )
+            contract_lines.insert(5, "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.")
+            contract_lines[6] = "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block."
         
         # Template rules
         if template == "A":

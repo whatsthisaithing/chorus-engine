@@ -211,7 +211,30 @@ class API {
     }
 
     static async getInteractiveNarrativeSession(conversationId) {
-        return this.request(`/conversations/${conversationId}/interactive-narrative/session`);
+        const endpoint = `/conversations/${conversationId}/interactive-narrative/session`;
+        const url = `${API_BASE_URL}${endpoint}`;
+        const response = await fetch(url, {
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        // Fresh conversations commonly have no loop session yet.
+        // Treat this as a normal "not created" state instead of an API error.
+        if (response.status === 404) {
+            return null;
+        }
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            const detailMessage = this._detailToMessage(
+                error.detail,
+                `HTTP ${response.status}: ${response.statusText}`
+            );
+            throw new Error(detailMessage);
+        }
+
+        return response.json();
     }
 
     static async createInteractiveNarrativeSession(conversationId, payload = {}) {

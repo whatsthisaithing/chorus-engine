@@ -4,6 +4,7 @@ import logging
 import sys
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import uvicorn
 
@@ -77,6 +78,7 @@ def main():
     """Run the FastAPI server."""
     # Load system config to get debug flag
     from chorus_engine.config import ConfigLoader
+    system_config = SimpleNamespace(api_host="localhost", api_port=8080, debug=False)
     try:
         loader = ConfigLoader()
         system_config = loader.load_system_config()

@@ -46,6 +46,8 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             temperature=config.temperature,
             max_tokens=config.max_response_tokens,
             context_window=config.context_window,
+            use_legacy_chat_api=bool(getattr(config, "ollama_legacy_chat_api_enabled", False)),
+            capture_raw_http_debug=bool(getattr(config, "ollama_capture_raw_http_debug", False)),
         )
     
     elif provider == "lmstudio":

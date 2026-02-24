@@ -25,6 +25,7 @@ llm:
   analysis_min_tokens_memories: 0  # Minimum tokens required for memory extraction analysis
   timeout_seconds: 120
   unload_during_image_generation: true
+  ollama_capture_raw_http_debug: false  # DEBUG-ONLY: dump exact request/response payloads for Ollama calls
 
 # Option 2: LM Studio (multi-model, JIT loading)
 # llm:
@@ -277,6 +278,12 @@ ens:
   loop_memory_compress_every_n_steps: 10  # Compression trigger cadence for loop working-memory folding
   loop_memory_keep_last_k_steps: 6  # Keep this many latest loop steps uncompressed
   v3_sentinel_fallback_enabled: true  # Keep sentinel payload fallback active for compatibility
+  
+  native_tool_transport_enabled: false  # Enable provider-native tool transport for supported engines
+  native_tool_transport_force_sentinel: false  # Force sentinel-only parsing even when native transport is available
+  native_tool_transport_sentinel_fallback_enabled: true  # Allow immediate sentinel fallback when native yields no control/tools
+  native_tool_transport_narrative_v11_split_enabled: false  # Enable narrative.v1 split loop-step flow (Stage A beat + Stage B control)
+  native_tool_transport_debug_override_mode: "off"  # DEBUG-ONLY: off|chat_control_only|loop_image_only|both
   
   # Permanent scheduler operation knobs (retained after migration)
   scheduler_sync_ticks_per_ingress: 1  # Bounded opportunistic ticks per ingress (0-10)

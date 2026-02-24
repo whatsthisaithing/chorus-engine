@@ -1672,9 +1672,11 @@ window.App = {
 
         try {
             const session = await API.getInteractiveNarrativeSession(this.state.selectedConversationId);
-            this.state.interactiveNarrative.loopId = session.loop_id || null;
-            this.state.interactiveNarrative.state = session.state || 'paused';
-            this.state.interactiveNarrative.autoplayActive = ['running'].includes(this.state.interactiveNarrative.state);
+            if (session) {
+                this.state.interactiveNarrative.loopId = session.loop_id || null;
+                this.state.interactiveNarrative.state = session.state || 'paused';
+                this.state.interactiveNarrative.autoplayActive = ['running'].includes(this.state.interactiveNarrative.state);
+            }
         } catch (_) {
             // No existing session is expected for new conversations.
         }

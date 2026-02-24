@@ -32,7 +32,7 @@ class _LoopControlLLMClient:
         )
         return SimpleNamespace(content=content, finish_reason="stop", usage={"total_tokens": 32})
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
         _ = (messages, temperature, max_tokens, model)
         return await self.generate("history")
 
@@ -268,3 +268,4 @@ def test_interactive_narrative_loop_step_debug_capture_writes_prompt_payload(cli
         assert capture.get("system_prompt")
         assert isinstance(capture.get("prompt"), str)
         assert capture.get("prompt")
+

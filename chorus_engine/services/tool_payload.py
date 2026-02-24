@@ -14,6 +14,10 @@ import json
 import re
 from typing import Any, Optional
 
+from chorus_engine.ens.tool_registry import (
+    TOOL_MOMENT_PIN_COLD_RECALL,
+    sentinel_media_tools,
+)
 from chorus_engine.services.json_extraction import extract_json_block
 
 
@@ -21,8 +25,8 @@ BEGIN_SENTINEL = "---CHORUS_TOOL_PAYLOAD_BEGIN---"
 END_SENTINEL = "---CHORUS_TOOL_PAYLOAD_END---"
 _RELAXED_BEGIN_SENTINEL_RE = re.compile(r"(?is)-{0,3}\s*CHORUS_TOOL_PAYLOAD_BEGIN---")
 _RELAXED_END_SENTINEL_RE = re.compile(r"(?is)-{0,3}\s*CHORUS_TOOL_PAYLOAD_END---")
-SUPPORTED_TOOLS_V1 = {"image.generate", "video.generate"}
-MOMENT_PIN_COLD_RECALL_TOOL = "moment_pin.cold_recall"
+SUPPORTED_TOOLS_V1 = sentinel_media_tools()
+MOMENT_PIN_COLD_RECALL_TOOL = TOOL_MOMENT_PIN_COLD_RECALL
 
 
 @dataclass

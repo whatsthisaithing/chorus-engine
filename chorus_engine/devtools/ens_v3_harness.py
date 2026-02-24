@@ -109,8 +109,10 @@ class _HarnessLLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
     ) -> _DummyResponse:
-        _ = (messages, temperature, max_tokens, model)
+        _ = (messages, temperature, max_tokens, model, tools, tool_choice)
         return _DummyResponse("Harness chat response.")
 
 

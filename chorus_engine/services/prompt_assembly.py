@@ -353,6 +353,8 @@ class PromptAssemblyService:
         segment_context: Optional[dict] = None,
         loop_step: bool = False,
         loop_kind: Optional[str] = None,
+        tool_transport_mode: str = "sentinel",
+        loop_stage: Optional[str] = None,
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -392,6 +394,8 @@ class PromptAssemblyService:
             media_gate_context=media_gate_context,
             loop_step=loop_step,
             loop_kind=loop_kind,
+            tool_transport_mode=tool_transport_mode,
+            loop_stage=loop_stage,
         )
         segment_recap_injected = False
         segment_recap_source_segment_id: Optional[str] = None
@@ -660,7 +664,10 @@ class PromptAssemblyService:
                     recent_pin_ids=recent_pin_ids,
                 )
                 if retrieved_pins:
-                    moment_pins_text = self.moment_pin_service.format_for_prompt(retrieved_pins)
+                    moment_pins_text = self.moment_pin_service.format_for_prompt(
+                        retrieved_pins,
+                        tool_transport_mode=tool_transport_mode,
+                    )
                     used_moment_pin_ids = [item.pin.id for item in retrieved_pins]
                     logger.info(f"Added {len(retrieved_pins)} moment pins to prompt")
             except Exception as e:
@@ -804,6 +811,8 @@ class PromptAssemblyService:
         media_gate_context: Optional[dict] = None,
         loop_step: bool = False,
         loop_kind: Optional[str] = None,
+        tool_transport_mode: str = "sentinel",
+        loop_stage: Optional[str] = None,
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -849,6 +858,8 @@ class PromptAssemblyService:
                 media_gate_context=media_gate_context,
                 loop_step=loop_step,
                 loop_kind=loop_kind,
+                tool_transport_mode=tool_transport_mode,
+                loop_stage=loop_stage,
             )
         
         # Check if summarization needed
@@ -875,6 +886,8 @@ class PromptAssemblyService:
                 media_gate_context=media_gate_context,
                 loop_step=loop_step,
                 loop_kind=loop_kind,
+                tool_transport_mode=tool_transport_mode,
+                loop_stage=loop_stage,
             )
         
         # Long conversation - apply selective preservation
@@ -898,6 +911,8 @@ class PromptAssemblyService:
             media_gate_context=media_gate_context,
             loop_step=loop_step,
             loop_kind=loop_kind,
+            tool_transport_mode=tool_transport_mode,
+            loop_stage=loop_stage,
         )
         
         # Inject identity/time headers before other system prompt additions
