@@ -14,7 +14,7 @@ def _enable_native_transport(helpers, *, fallback_enabled: bool = True):
     ens_cfg.v3_sentinel_fallback_enabled = fallback_enabled
 
 
-def test_narrative_v1_loop_step_forces_control_only_required_tool_choice(helpers):
+def test_narrative_v1_loop_step_forces_control_only_auto_tool_choice(helpers):
     _enable_native_transport(helpers, fallback_enabled=True)
     invoker = LLMInvocationService(helpers.app_module.app_state)
     llm = helpers.app_module.app_state["llm_client"]
@@ -59,10 +59,7 @@ def test_narrative_v1_loop_step_forces_control_only_required_tool_choice(helpers
     result = asyncio.run(invoker.invoke(req))
     assert result["status"] == "success"
     assert captured.get("tools")
-    assert captured.get("tool_choice") == {
-        "type": "function",
-        "function": {"name": "chorus.control"},
-    }
+    assert captured.get("tool_choice") == "auto"
     tool_names = [
         str(((tool.get("function") or {}).get("name")) or "")
         for tool in (captured.get("tools") or [])
@@ -303,3 +300,36 @@ def test_debug_override_loop_image_only_forces_image_tool_on_loop_step(helpers):
     system_message = next((m for m in captured["messages"] if isinstance(m, dict) and m.get("role") == "system"), None)
     assert system_message is not None
     assert "TEST OVERRIDE" in str(system_message.get("content") or "")
+
+
+def test_provider_capabilities_from_config_are_applied(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+    llm_cfg = helpers.app_module.app_state["system_config"].llm
+    llm_cfg.provider_capabilities["lmstudio"].supports_response_format_json_schema = False
+    llm_cfg.provider_capabilities["lmstudio"].supports_native_tools = True
+    llm_cfg.provider_capabilities["lmstudio"].supports_sentinel_retry = False
+
+    caps = invoker.resolve_provider_capabilities(engine="lmstudio")
+    assert caps["supports_native_tools"] is True
+    assert caps["supports_response_format_json_schema"] is False
+    assert caps["supports_sentinel_retry"] is False
+
+
+def test_koboldcpp_provider_capabilities_disable_native_tools(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+
+    req = InvocationRequest(
+        invocation_kind="chat",
+        idempotency_key="native-kobold-disabled-001",
+        model_id="test-model",
+        provider="local",
+        engine="koboldcpp",
+        messages=[{"role": "user", "content": "continue"}],
+        metadata={"loop_id": "loop-k", "loop_kind": "narrative.v1"},
+    )
+    tools, tool_choice, plan = invoker._prepare_native_transport(req)
+    assert tools is None
+    assert tool_choice is None
+    assert plan["attempted"] is False

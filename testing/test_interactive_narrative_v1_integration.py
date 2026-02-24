@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from chorus_engine.models.conversation import Conversation
+from chorus_engine.models.ens import ENSLoopStepEvent
 
 
 class _LoopControlLLMClient:
@@ -61,6 +62,10 @@ class _LoopControlLLMClient:
             model,
         )
         return SimpleNamespace(content="{}", finish_reason="stop", usage={"total_tokens": 8})
+
+
+class _KoboldLoopControlLLMClient(_LoopControlLLMClient):
+    pass
 
 
 def _enable_v3_loop_flags(helpers):
@@ -268,4 +273,42 @@ def test_interactive_narrative_loop_step_debug_capture_writes_prompt_payload(cli
         assert capture.get("system_prompt")
         assert isinstance(capture.get("prompt"), str)
         assert capture.get("prompt")
+
+
+def test_interactive_narrative_stage_b_uses_ladder_for_koboldcpp(client, db, helpers):
+    _enable_v3_loop_flags(helpers)
+    ens_cfg = helpers.app_module.app_state["system_config"].ens
+    ens_cfg.native_tool_transport_narrative_v11_split_enabled = True
+    ens_cfg.native_tool_transport_enabled = True
+    ens_cfg.native_tool_transport_force_sentinel = False
+    ens_cfg.native_tool_transport_sentinel_fallback_enabled = True
+    ens_cfg.v3_sentinel_fallback_enabled = True
+
+    helpers.app_module.app_state["llm_client"] = _KoboldLoopControlLLMClient(["CONTINUE", "CONTINUE"])
+    character = helpers.app_module.app_state["characters"]["test_char"]
+    character.features.interactive_narrative = True
+
+    conversation_id, _thread_id = helpers.create_conversation_thread()
+    _prepare_conversation_relationship(db, conversation_id, relationship_id="rel-intn-kobold-stageb")
+
+    created = client.post(f"/conversations/{conversation_id}/interactive-narrative/session", json={})
+    assert created.status_code == 200
+    loop_id = created.json()["loop_id"]
+
+    tick = client.post(f"/interactive-narrative/{loop_id}/tick")
+    assert tick.status_code == 200
+    body = tick.json()
+    assert body["last_step_control_action"] == "CONTINUE"
+    assert body["state"] == "running"
+
+    step_event = (
+        db.query(ENSLoopStepEvent)
+        .filter(ENSLoopStepEvent.loop_id == loop_id)
+        .order_by(ENSLoopStepEvent.created_at_us.desc())
+        .first()
+    )
+    assert step_event is not None
+    output_json = step_event.output_json or {}
+    assert output_json.get("stage_b_forced_wait") is False
+    assert output_json.get("stage_b_forced_wait_reason") is None
 

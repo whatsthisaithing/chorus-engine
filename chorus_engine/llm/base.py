@@ -78,6 +78,7 @@ class BaseLLMClient(ABC):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a non-streaming completion.
@@ -106,6 +107,7 @@ class BaseLLMClient(ABC):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a non-streaming completion with conversation history.

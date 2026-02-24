@@ -41,6 +41,7 @@ class LMStudioLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a completion using OpenAI-compatible chat completions endpoint.
@@ -76,6 +77,8 @@ class LMStudioLLMClient(BaseLLMClient):
                 payload["tools"] = tools
                 if tool_choice is not None:
                     payload["tool_choice"] = tool_choice
+            if isinstance(response_format, dict):
+                payload["response_format"] = response_format
             
             logger.debug(f"LM Studio request: model={payload['model']}, messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
@@ -192,6 +195,7 @@ class LMStudioLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a completion with full conversation history.
@@ -221,6 +225,8 @@ class LMStudioLLMClient(BaseLLMClient):
                 payload["tools"] = tools
                 if tool_choice is not None:
                     payload["tool_choice"] = tool_choice
+            if isinstance(response_format, dict):
+                payload["response_format"] = response_format
             
             # Debug logging to help diagnose verbosity issues
             logger.info(f"LM Studio generation request:")

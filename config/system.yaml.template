@@ -26,6 +26,19 @@ llm:
   timeout_seconds: 120
   unload_during_image_generation: true
   ollama_capture_raw_http_debug: false  # DEBUG-ONLY: dump exact request/response payloads for Ollama calls
+  provider_capabilities:
+    ollama:
+      supports_native_tools: true
+      supports_response_format_json_schema: true
+      supports_sentinel_retry: true
+    lmstudio:
+      supports_native_tools: true
+      supports_response_format_json_schema: true
+      supports_sentinel_retry: true
+    koboldcpp:
+      supports_native_tools: true
+      supports_response_format_json_schema: true
+      supports_sentinel_retry: true
 
 # Option 2: LM Studio (multi-model, JIT loading)
 # llm:

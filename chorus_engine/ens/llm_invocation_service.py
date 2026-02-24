@@ -78,6 +78,7 @@ class InvocationRequest:
     vision_image_mime_type: Optional[str] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Any] = None
+    response_format: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -119,8 +120,50 @@ class LLMInvocationService:
     def _provider_native_tool_capabilities(engine: Optional[str]) -> Dict[str, bool]:
         normalized = str(engine or "").strip().lower()
         if normalized in {"ollama", "lmstudio"}:
-            return {"supports_native_tools": True, "supports_tool_choice": True}
-        return {"supports_native_tools": False, "supports_tool_choice": False}
+            return {
+                "supports_native_tools": True,
+                "supports_response_format_json_schema": True,
+                "supports_sentinel_retry": True,
+                "supports_tool_choice": True,
+            }
+        if normalized == "koboldcpp":
+            return {
+                "supports_native_tools": False,
+                "supports_response_format_json_schema": False,
+                "supports_sentinel_retry": True,
+                "supports_tool_choice": False,
+            }
+        return {
+            "supports_native_tools": False,
+            "supports_response_format_json_schema": False,
+            "supports_sentinel_retry": True,
+            "supports_tool_choice": False,
+        }
+
+    def resolve_provider_capabilities(self, *, engine: Optional[str]) -> Dict[str, bool]:
+        fallback = self._provider_native_tool_capabilities(engine)
+        llm_cfg = getattr(self.app_state.get("system_config"), "llm", None)
+        cap_map = getattr(llm_cfg, "provider_capabilities", None) if llm_cfg else None
+        key = str(engine or "").strip().lower()
+        if isinstance(cap_map, dict) and key in cap_map:
+            entry = cap_map.get(key)
+            if entry is not None:
+                native = bool(getattr(entry, "supports_native_tools", fallback["supports_native_tools"]))
+                schema = bool(
+                    getattr(
+                        entry,
+                        "supports_response_format_json_schema",
+                        fallback["supports_response_format_json_schema"],
+                    )
+                )
+                sentinel = bool(getattr(entry, "supports_sentinel_retry", fallback["supports_sentinel_retry"]))
+                return {
+                    "supports_native_tools": native,
+                    "supports_response_format_json_schema": schema,
+                    "supports_sentinel_retry": sentinel,
+                    "supports_tool_choice": native,
+                }
+        return fallback
 
     def _native_tool_transport_enabled(self, *, request: InvocationRequest) -> bool:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
@@ -134,7 +177,7 @@ class LLMInvocationService:
             return False
         if request.invocation_kind != "chat":
             return False
-        caps = self._provider_native_tool_capabilities(request.engine)
+        caps = self.resolve_provider_capabilities(engine=request.engine)
         if not bool(caps.get("supports_native_tools")):
             return False
         llm_client = self.app_state.get("llm_client")
@@ -277,7 +320,7 @@ class LLMInvocationService:
             )
             if not tools:
                 return None, None, {"attempted": False, "enabled": True, "reason": "no_tools_available"}
-            use_auto_choice = False
+            use_auto_choice = True
             prepared = (
                 tools,
                 ("auto" if use_auto_choice else {"type": "function", "function": {"name": TOOL_CHORUS_CONTROL}}),
@@ -641,7 +684,7 @@ class LLMInvocationService:
                 max_tokens=request.max_tokens,
             )
         elif request.messages is not None:
-            response = await llm_client.generate_with_history(
+            kwargs = dict(
                 messages=request.messages,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
@@ -649,8 +692,19 @@ class LLMInvocationService:
                 tools=request.tools,
                 tool_choice=request.tool_choice,
             )
+            if isinstance(request.response_format, dict):
+                kwargs["response_format"] = request.response_format
+            try:
+                response = await llm_client.generate_with_history(**kwargs)
+            except TypeError as exc:
+                # Backward-compat for test doubles or clients that haven't adopted response_format.
+                if "response_format" in kwargs and "response_format" in str(exc):
+                    kwargs.pop("response_format", None)
+                    response = await llm_client.generate_with_history(**kwargs)
+                else:
+                    raise
         else:
-            response = await llm_client.generate(
+            kwargs = dict(
                 prompt=request.prompt or "",
                 system_prompt=request.system_prompt,
                 model=request.model_id,
@@ -659,6 +713,16 @@ class LLMInvocationService:
                 tools=request.tools,
                 tool_choice=request.tool_choice,
             )
+            if isinstance(request.response_format, dict):
+                kwargs["response_format"] = request.response_format
+            try:
+                response = await llm_client.generate(**kwargs)
+            except TypeError as exc:
+                if "response_format" in kwargs and "response_format" in str(exc):
+                    kwargs.pop("response_format", None)
+                    response = await llm_client.generate(**kwargs)
+                else:
+                    raise
         content = response.content or ""
         return {
             "output_text": content,

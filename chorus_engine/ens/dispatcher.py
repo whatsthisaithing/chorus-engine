@@ -7,6 +7,7 @@ import hashlib
 import logging
 import uuid
 import json
+import re
 import os
 import tempfile
 import shutil
@@ -78,6 +79,7 @@ from chorus_engine.services.structured_response import (
     serialize_structured_response,
     template_rules,
 )
+from chorus_engine.services.json_extraction import extract_json_block
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
@@ -2219,6 +2221,226 @@ class ENSDispatcher:
             {"role": "user", "content": user_text},
         ]
 
+    @staticmethod
+    def _normalize_stage_b_action(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        action = value.strip().upper()
+        return action if action in {"CONTINUE", "YIELD", "COMPLETE"} else None
+
+    def _collect_stage_b_actions_from_obj(self, obj: Any) -> List[str]:
+        actions: List[str] = []
+        if isinstance(obj, dict):
+            direct = self._normalize_stage_b_action(obj.get("action"))
+            if direct:
+                actions.append(direct)
+            parameters = obj.get("parameters")
+            if isinstance(parameters, dict):
+                nested = self._normalize_stage_b_action(parameters.get("action"))
+                if nested:
+                    actions.append(nested)
+            arguments = obj.get("arguments")
+            if isinstance(arguments, dict):
+                nested = self._normalize_stage_b_action(arguments.get("action"))
+                if nested:
+                    actions.append(nested)
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    actions.extend(self._collect_stage_b_actions_from_obj(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                actions.extend(self._collect_stage_b_actions_from_obj(item))
+        return actions
+
+    def _extract_stage_b_action_from_content(self, text: str) -> Dict[str, Any]:
+        content = str(text or "").strip()
+        if not content:
+            return {
+                "attempted": True,
+                "success": False,
+                "ambiguous": False,
+                "reason": "empty_content",
+                "action": None,
+            }
+
+        actions: List[str] = []
+        try:
+            parsed = json.loads(content)
+            actions.extend(self._collect_stage_b_actions_from_obj(parsed))
+        except Exception:
+            pass
+
+        parsed_obj, _ = extract_json_block(content, expected_root="object")
+        if parsed_obj is not None:
+            actions.extend(self._collect_stage_b_actions_from_obj(parsed_obj))
+
+        for match in re.finditer(r"```json\s*(.*?)\s*```", content, re.IGNORECASE | re.DOTALL):
+            try:
+                block = json.loads(match.group(1))
+            except Exception:
+                block = None
+            if block is not None:
+                actions.extend(self._collect_stage_b_actions_from_obj(block))
+
+        for match in re.finditer(r"\{[^{}]*\}", content, re.DOTALL):
+            try:
+                frag = json.loads(match.group(0))
+            except Exception:
+                frag = None
+            if frag is not None:
+                actions.extend(self._collect_stage_b_actions_from_obj(frag))
+
+        has_continue = bool(re.search(r"\bCONTINUE\b", content, re.IGNORECASE))
+        has_yield = bool(re.search(r"\bYIELD\b", content, re.IGNORECASE))
+        if has_continue and has_yield:
+            return {
+                "attempted": True,
+                "success": False,
+                "ambiguous": True,
+                "reason": "ambiguous_actions:CONTINUE|YIELD",
+                "action": None,
+            }
+
+        uniq = sorted(set(a for a in actions if a in {"CONTINUE", "YIELD", "COMPLETE"}))
+        if len(uniq) == 1:
+            return {
+                "attempted": True,
+                "success": True,
+                "ambiguous": False,
+                "reason": "content_parse_ok",
+                "action": uniq[0],
+            }
+        if len(uniq) > 1:
+            return {
+                "attempted": True,
+                "success": False,
+                "ambiguous": True,
+                "reason": f"ambiguous_actions:{'|'.join(uniq)}",
+                "action": None,
+            }
+        return {
+            "attempted": True,
+            "success": False,
+            "ambiguous": False,
+            "reason": "no_salvageable_action",
+            "action": None,
+        }
+
+    def _evaluate_stage_b_native_rung(self, assistant_result: Optional[AssistantResult]) -> Dict[str, Any]:
+        if assistant_result is None:
+            return {
+                "attempted": False,
+                "success": False,
+                "ambiguous": False,
+                "reason": "stage_b_not_invoked",
+                "action": None,
+            }
+        provider_raw = dict(assistant_result.provider_raw or {})
+        raw_calls = provider_raw.get("provider_tool_calls_raw")
+        control_actions: List[str] = []
+        if isinstance(raw_calls, list):
+            for item in raw_calls:
+                if not isinstance(item, dict):
+                    continue
+                fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+                name = (fn.get("name") if isinstance(fn, dict) else None) or item.get("name")
+                if str(name or "").strip() != "chorus.control":
+                    continue
+                raw_args = (fn.get("arguments") if isinstance(fn, dict) else None) or item.get("arguments")
+                args_obj = {}
+                if isinstance(raw_args, dict):
+                    args_obj = raw_args
+                elif isinstance(raw_args, str):
+                    try:
+                        parsed = json.loads(raw_args)
+                        if isinstance(parsed, dict):
+                            args_obj = parsed
+                    except Exception:
+                        args_obj = {}
+                action = self._normalize_stage_b_action(args_obj.get("action"))
+                if action:
+                    control_actions.append(action)
+        uniq_control_actions = sorted(set(control_actions))
+        if len(uniq_control_actions) > 1:
+            return {
+                "attempted": True,
+                "success": False,
+                "ambiguous": True,
+                "reason": f"ambiguous_native_control_actions:{'|'.join(uniq_control_actions)}",
+                "action": None,
+            }
+        if len(control_actions) > 1 and len(uniq_control_actions) == 1:
+            return {
+                "attempted": True,
+                "success": False,
+                "ambiguous": True,
+                "reason": "ambiguous_native_multiple_control_calls",
+                "action": None,
+            }
+        if assistant_result.control is not None:
+            action = self._normalize_stage_b_action(assistant_result.control.action)
+            if action:
+                return {
+                    "attempted": True,
+                    "success": True,
+                    "ambiguous": False,
+                    "reason": "native_control_ok",
+                    "action": action,
+                }
+        return {
+            "attempted": True,
+            "success": False,
+            "ambiguous": False,
+            "reason": "native_control_missing",
+            "action": None,
+        }
+
+    @staticmethod
+    def _loop_stage_b_json_schema_response_format() -> Dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "loop_control_action",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["CONTINUE", "YIELD", "COMPLETE"],
+                            "description": "Loop control action",
+                        }
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        }
+
+    @staticmethod
+    def _loop_stage_b_json_retry_messages(*, beat_text: str) -> List[Dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict JSON generator. Return only JSON that matches the provided schema. "
+                    "No prose and no code fences."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Beat text:\n"
+                    f"{beat_text or ''}\n\n"
+                    "Choose action:\n"
+                    "- CONTINUE if the story can progress without user input.\n"
+                    "- YIELD if the beat asks a direct question or requires user choice.\n"
+                    "- COMPLETE if the scene has clearly ended.\n\n"
+                    "Return JSON with a single field: action."
+                ),
+            },
+        ]
+
     def _consecutive_continue_count(self, db: Session, *, loop_id: str) -> int:
         rows = (
             db.query(ENSLoopStepEvent.control_action)
@@ -2569,9 +2791,17 @@ class ENSDispatcher:
 
         stage_b_invocation: Optional[Dict[str, Any]] = None
         stage_b_assistant_result: Optional[AssistantResult] = None
+        stage_b_retry_invocation: Optional[Dict[str, Any]] = None
         stage_b_native_transport: Dict[str, Any] = {}
         stage_b_defaulted_wait = False
         stage_b_error: Optional[str] = None
+        stage_b_forced_wait = False
+        stage_b_forced_wait_reason: Optional[str] = None
+        stage_b_ladder_rung_selected = "not_invoked"
+        stage_b_capabilities = self.llm_invoker.resolve_provider_capabilities(engine=effective.engine)
+        stage_b_rung1_native: Dict[str, Any] = {"attempted": False, "success": False, "ambiguous": False, "reason": "not_invoked", "action": None}
+        stage_b_rung2_parse: Dict[str, Any] = {"attempted": False, "success": False, "ambiguous": False, "reason": "not_invoked", "action": None}
+        stage_b_rung3_json_schema: Dict[str, Any] = {"attempted": False, "success": False, "reason": "not_invoked", "action": None}
 
         control_action = assistant_result.control.action if assistant_result.control else None
         control_source_result = assistant_result
@@ -2609,14 +2839,115 @@ class ENSDispatcher:
                 stage_b_raw_content = stage_b_invocation.get("output_text") or ""
                 stage_b_assistant_result = self._assistant_result_from_invocation(stage_b_raw_content, stage_b_invocation)
                 stage_b_native_transport = dict(stage_b_invocation.get("native_transport") or {})
-                control_action = stage_b_assistant_result.control.action if stage_b_assistant_result.control else None
-                control_source_result = stage_b_assistant_result
             else:
                 stage_b_error = (stage_b_invocation.get("error") or {}).get("message") or "stage_b_control_invocation_failed"
+
+            # Rung 1: native control extraction.
+            if bool(stage_b_capabilities.get("supports_native_tools")):
+                stage_b_rung1_native = self._evaluate_stage_b_native_rung(stage_b_assistant_result)
+                if bool(stage_b_rung1_native.get("success")):
+                    control_action = stage_b_rung1_native.get("action")
+                    control_source_result = stage_b_assistant_result or control_source_result
+                    stage_b_ladder_rung_selected = "native"
+            else:
+                stage_b_rung1_native = {
+                    "attempted": False,
+                    "success": False,
+                    "ambiguous": False,
+                    "reason": "skipped_unsupported_native_tools",
+                    "action": None,
+                }
+
+            # Rung 2: parse from content when rung 1 did not resolve.
+            if not control_action:
+                stage_b_content_source = ""
+                if stage_b_assistant_result is not None:
+                    stage_b_content_source = (
+                        stage_b_assistant_result.display_text
+                        or stage_b_assistant_result.raw_content
+                        or ""
+                    )
+                stage_b_rung2_parse = self._extract_stage_b_action_from_content(stage_b_content_source)
+                if bool(stage_b_rung2_parse.get("success")):
+                    control_action = stage_b_rung2_parse.get("action")
+                    control_source_result = stage_b_assistant_result or control_source_result
+                    stage_b_ladder_rung_selected = "content_parse"
+
+            should_try_rung3 = False
+            if not control_action:
+                if bool(stage_b_rung1_native.get("ambiguous")):
+                    should_try_rung3 = True
+                elif bool(stage_b_rung2_parse.get("ambiguous")):
+                    should_try_rung3 = True
+                elif bool(stage_b_rung2_parse.get("attempted")):
+                    should_try_rung3 = True
+                else:
+                    should_try_rung3 = not bool(stage_b_rung1_native.get("attempted"))
+
+            # Rung 3: structured JSON retry.
+            if (
+                should_try_rung3
+                and bool(stage_b_capabilities.get("supports_response_format_json_schema"))
+            ):
+                retry_request = InvocationRequest(
+                    invocation_kind="chat",
+                    idempotency_key=f"loop:step:control_retry:{loop_id}:{int(session.step_index or 0) + 1}",
+                    model_id=effective.model_id,
+                    provider=effective.provider,
+                    engine=effective.engine,
+                    conversation_id=session.conversation_id,
+                    surface_id=session.surface_id,
+                    character_id=character_id,
+                    messages=self._loop_stage_b_json_retry_messages(
+                        beat_text=assistant_result.display_text or raw_content
+                    ),
+                    temperature=0.1,
+                    max_tokens=64,
+                    response_format=self._loop_stage_b_json_schema_response_format(),
+                    metadata={
+                        "loop_id": loop_id,
+                        "loop_kind": session.loop_kind,
+                        "relationship_id": session.relationship_id,
+                        "tool_transport_mode": tool_transport_mode,
+                        "loop_stage": "control_retry_json_schema",
+                    },
+                )
+                stage_b_retry_invocation = await self.llm_invoker.invoke(retry_request)
+                stage_b_rung3_json_schema["attempted"] = True
+                if stage_b_retry_invocation.get("status") == "success":
+                    retry_raw = stage_b_retry_invocation.get("output_text") or ""
+                    retry_assistant_result = self._assistant_result_from_invocation(retry_raw, stage_b_retry_invocation)
+                    retry_parse = self._extract_stage_b_action_from_content(
+                        retry_assistant_result.display_text or retry_assistant_result.raw_content or ""
+                    )
+                    stage_b_rung3_json_schema["success"] = bool(retry_parse.get("success"))
+                    stage_b_rung3_json_schema["reason"] = str(retry_parse.get("reason") or "json_schema_retry_failed")
+                    stage_b_rung3_json_schema["action"] = retry_parse.get("action")
+                    if bool(retry_parse.get("success")):
+                        control_action = retry_parse.get("action")
+                        control_source_result = retry_assistant_result
+                        stage_b_assistant_result = retry_assistant_result
+                        stage_b_ladder_rung_selected = "json_schema_retry"
+                else:
+                    stage_b_rung3_json_schema["success"] = False
+                    stage_b_rung3_json_schema["reason"] = (
+                        (stage_b_retry_invocation.get("error") or {}).get("message")
+                        or "json_schema_retry_invocation_failed"
+                    )
+                    stage_b_rung3_json_schema["action"] = None
+            elif should_try_rung3:
+                stage_b_rung3_json_schema = {
+                    "attempted": False,
+                    "success": False,
+                    "reason": "skipped_unsupported_response_format_json_schema",
+                    "action": None,
+                }
 
             if not control_action:
                 control_action = "WAIT_FOR_USER"
                 stage_b_defaulted_wait = True
+                if stage_b_ladder_rung_selected == "not_invoked":
+                    stage_b_ladder_rung_selected = "default_wait"
 
         if self._is_narrative_v1(session.loop_kind) and not control_action:
             control_action = "WAIT_FOR_USER"
@@ -2687,6 +3018,15 @@ class ENSDispatcher:
                 "finish_reason": (stage_b_invocation.get("finish_reason") if isinstance(stage_b_invocation, dict) else None),
                 "defaulted_wait": bool(stage_b_defaulted_wait),
                 "error": stage_b_error,
+                "provider_engine": str(effective.engine or ""),
+                "capabilities": dict(stage_b_capabilities or {}),
+                "ladder_rung_selected": stage_b_ladder_rung_selected,
+                "forced_wait": bool(stage_b_forced_wait),
+                "forced_wait_reason": stage_b_forced_wait_reason,
+                "rung1_native": dict(stage_b_rung1_native or {}),
+                "rung2_parse": dict(stage_b_rung2_parse or {}),
+                "rung3_json_schema": dict(stage_b_rung3_json_schema or {}),
+                "retry_status": (stage_b_retry_invocation.get("status") if isinstance(stage_b_retry_invocation, dict) else None),
             },
             "native_transport": {
                 "attempted": bool((native_transport or {}).get("attempted")),
@@ -2896,6 +3236,30 @@ class ENSDispatcher:
                 ),
                 "stage_b_defaulted_wait": bool(stage_b_defaulted_wait),
                 "stage_b_error": stage_b_error,
+                "stage_b_provider_engine": str(effective.engine or ""),
+                "stage_b_capabilities": dict(stage_b_capabilities or {}),
+                "stage_b_ladder_rung_selected": stage_b_ladder_rung_selected,
+                "stage_b_forced_wait": bool(stage_b_forced_wait),
+                "stage_b_forced_wait_reason": stage_b_forced_wait_reason,
+                "stage_b_rung1_native_attempted": bool(stage_b_rung1_native.get("attempted")),
+                "stage_b_rung1_native_success": bool(stage_b_rung1_native.get("success")),
+                "stage_b_rung1_native_ambiguous": bool(stage_b_rung1_native.get("ambiguous")),
+                "stage_b_rung1_native_reason": stage_b_rung1_native.get("reason"),
+                "stage_b_rung2_parse_attempted": bool(stage_b_rung2_parse.get("attempted")),
+                "stage_b_rung2_parse_success": bool(stage_b_rung2_parse.get("success")),
+                "stage_b_rung2_parse_ambiguous": bool(stage_b_rung2_parse.get("ambiguous")),
+                "stage_b_rung2_parse_reason": stage_b_rung2_parse.get("reason"),
+                "stage_b_rung2_parse_action": stage_b_rung2_parse.get("action"),
+                "stage_b_rung3_json_schema_attempted": bool(stage_b_rung3_json_schema.get("attempted")),
+                "stage_b_rung3_json_schema_success": bool(stage_b_rung3_json_schema.get("success")),
+                "stage_b_rung3_json_schema_reason": stage_b_rung3_json_schema.get("reason"),
+                "stage_b_rung3_json_schema_action": stage_b_rung3_json_schema.get("action"),
+                "stage_b_retry_response_format_present": bool(stage_b_rung3_json_schema.get("attempted")),
+                "stage_b_retry_tools_requested_count": (
+                    len(((stage_b_retry_invocation or {}).get("native_transport") or {}).get("requested_tools") or [])
+                    if isinstance(stage_b_retry_invocation, dict)
+                    else 0
+                ),
                 "tool_requests_allowed": len(allowed_tool_requests),
                 "tool_requests_blocked": blocked_tool_requests,
                 "tool_requests_total": len(requested_tools),
@@ -2983,6 +3347,24 @@ class ENSDispatcher:
             ),
             "stage_b_defaulted_wait": bool(stage_b_defaulted_wait),
             "stage_b_error": stage_b_error,
+            "stage_b_provider_engine": str(effective.engine or ""),
+            "stage_b_capabilities": dict(stage_b_capabilities or {}),
+            "stage_b_ladder_rung_selected": stage_b_ladder_rung_selected,
+            "stage_b_forced_wait": bool(stage_b_forced_wait),
+            "stage_b_forced_wait_reason": stage_b_forced_wait_reason,
+            "stage_b_rung1_native_attempted": bool(stage_b_rung1_native.get("attempted")),
+            "stage_b_rung1_native_success": bool(stage_b_rung1_native.get("success")),
+            "stage_b_rung1_native_ambiguous": bool(stage_b_rung1_native.get("ambiguous")),
+            "stage_b_rung1_native_reason": stage_b_rung1_native.get("reason"),
+            "stage_b_rung2_parse_attempted": bool(stage_b_rung2_parse.get("attempted")),
+            "stage_b_rung2_parse_success": bool(stage_b_rung2_parse.get("success")),
+            "stage_b_rung2_parse_ambiguous": bool(stage_b_rung2_parse.get("ambiguous")),
+            "stage_b_rung2_parse_reason": stage_b_rung2_parse.get("reason"),
+            "stage_b_rung2_parse_action": stage_b_rung2_parse.get("action"),
+            "stage_b_rung3_json_schema_attempted": bool(stage_b_rung3_json_schema.get("attempted")),
+            "stage_b_rung3_json_schema_success": bool(stage_b_rung3_json_schema.get("success")),
+            "stage_b_rung3_json_schema_reason": stage_b_rung3_json_schema.get("reason"),
+            "stage_b_rung3_json_schema_action": stage_b_rung3_json_schema.get("action"),
             "assistant_result_control": (
                 {
                     "action": control_source_result.control.action,

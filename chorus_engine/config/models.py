@@ -6,6 +6,14 @@ from typing import Optional, Literal, Dict, List
 from pydantic import AliasChoices, BaseModel, Field, field_validator, ConfigDict
 
 
+class ProviderCapabilityConfig(BaseModel):
+    """Per-provider transport capability overrides."""
+
+    supports_native_tools: bool = True
+    supports_response_format_json_schema: bool = True
+    supports_sentinel_retry: bool = True
+
+
 class LLMConfig(BaseModel):
     """LLM backend configuration."""
     
@@ -55,6 +63,26 @@ class LLMConfig(BaseModel):
             "Debug-only: capture raw request/response payloads for Ollama calls "
             "to data/debug/requests/*.json"
         ),
+    )
+    provider_capabilities: Dict[str, ProviderCapabilityConfig] = Field(
+        default_factory=lambda: {
+            "ollama": ProviderCapabilityConfig(
+                supports_native_tools=True,
+                supports_response_format_json_schema=True,
+                supports_sentinel_retry=True,
+            ),
+            "lmstudio": ProviderCapabilityConfig(
+                supports_native_tools=True,
+                supports_response_format_json_schema=True,
+                supports_sentinel_retry=True,
+            ),
+            "koboldcpp": ProviderCapabilityConfig(
+                supports_native_tools=False,
+                supports_response_format_json_schema=False,
+                supports_sentinel_retry=True,
+            ),
+        },
+        description="Provider transport capability overrides keyed by engine name.",
     )
     
     # Integrated provider specific fields

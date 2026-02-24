@@ -48,6 +48,7 @@ class KoboldCppLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a completion using OpenAI-compatible chat completions endpoint.
@@ -72,7 +73,7 @@ class KoboldCppLLMClient(BaseLLMClient):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             
-            _ = (tools, tool_choice)  # KoboldCpp native tools unsupported in v1.
+            _ = (tools, tool_choice, response_format)  # KoboldCpp native tools/response_format unsupported in v1.
             payload = {
                 "model": self.model,  # KoboldCpp ignores this, but required by API spec
                 "messages": messages,
@@ -145,6 +146,7 @@ class KoboldCppLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate with conversation history using chat completions endpoint.
@@ -162,7 +164,7 @@ class KoboldCppLLMClient(BaseLLMClient):
             LLMError: If generation fails
         """
         try:
-            _ = (tools, tool_choice)  # KoboldCpp native tools unsupported in v1.
+            _ = (tools, tool_choice, response_format)  # KoboldCpp native tools/response_format unsupported in v1.
             payload = {
                 "model": self.model,  # Required by API spec, but KoboldCpp uses loaded model
                 "messages": messages,

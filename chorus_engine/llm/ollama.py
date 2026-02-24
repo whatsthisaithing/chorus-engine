@@ -141,6 +141,7 @@ class OllamaLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a completion from the LLM using chat endpoint.
@@ -199,6 +200,8 @@ class OllamaLLMClient(BaseLLMClient):
                     payload["tools"] = tools
                     if tool_choice is not None:
                         payload["tool_choice"] = tool_choice
+                if isinstance(response_format, dict):
+                    payload["response_format"] = response_format
                 response = await self._post_with_optional_raw_capture("/v1/chat/completions", payload)
                 response.raise_for_status()
                 if response.encoding is None or response.encoding.lower() != "utf-8":
@@ -352,6 +355,7 @@ class OllamaLLMClient(BaseLLMClient):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
+        response_format: Optional[dict] = None,
     ) -> LLMResponse:
         """
         Generate a completion with full conversation history.
@@ -400,6 +404,8 @@ class OllamaLLMClient(BaseLLMClient):
                     payload["tools"] = tools
                     if tool_choice is not None:
                         payload["tool_choice"] = tool_choice
+                if isinstance(response_format, dict):
+                    payload["response_format"] = response_format
                 logger.debug(
                     "Ollama(OpenAI) request: model=%s temp=%s max_tokens=%s messages=%s tools=%s",
                     payload["model"],
