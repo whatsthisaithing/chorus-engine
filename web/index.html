@@ -841,6 +841,35 @@
                                     </div>
                                 </div>
                                 <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Top P</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_top_p" min="0" max="1" step="0.01" placeholder="optional">
+                                        <div class="form-text text-secondary">Nucleus sampling cutoff (0.0-1.0).</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Top K</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_top_k" min="0" step="1" placeholder="optional">
+                                        <div class="form-text text-secondary" id="llm_top_k_help">Top-k cutoff (integer >= 0).</div>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label text-light">Repeat Penalty</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_repeat_penalty" min="0.01" step="0.01" placeholder="optional">
+                                        <div class="form-text text-secondary" id="llm_repeat_penalty_help">Repeat penalty (> 0).</div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Presence Penalty</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_presence_penalty" min="-2" max="2" step="0.01" placeholder="optional">
+                                        <div class="form-text text-secondary">Presence penalty (-2.0 to 2.0).</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Frequency Penalty</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="llm_frequency_penalty" min="-2" max="2" step="0.01" placeholder="optional">
+                                        <div class="form-text text-secondary">Frequency penalty (-2.0 to 2.0).</div>
+                                    </div>
+                                </div>
+                                <div class="row">
                                     <div class="col-md-12 mb-3">
                                         <div class="form-check form-switch">
                                             <input class="form-check-input" type="checkbox" id="llm_unload_during_image_generation">
@@ -2006,6 +2035,7 @@
                                                     <option value="companion">Companion - Conversational partner</option>
                                                     <option value="analyst">Analyst - Document/data analysis</option>
                                                     <option value="chatbot">Chatbot - Group chat participant</option>
+                                                    <option value="roleplayer">Roleplayer - In-scene roleplay focus</option>
                                                     <option value="other">Other - Custom/specialized</option>
                                                 </select>
                                             </div>
@@ -2158,6 +2188,28 @@
                                                             <label class="form-label">Context Window</label>
                                                             <input type="number" class="form-control form-control-sm" id="charLlmContextWindow" 
                                                                    placeholder="8192">
+                                                        </div>
+                                                        <div class="col-md-4 mb-2">
+                                                            <label class="form-label">Top P</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmTopP" min="0" max="1" step="0.01" placeholder="optional">
+                                                        </div>
+                                                        <div class="col-md-4 mb-2">
+                                                            <label class="form-label">Top K</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmTopK" min="0" step="1" placeholder="optional">
+                                                            <small class="text-theme-secondary" id="charLlmTopKHelp">Integer >= 0</small>
+                                                        </div>
+                                                        <div class="col-md-4 mb-2">
+                                                            <label class="form-label">Repeat Penalty</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmRepeatPenalty" min="0.01" step="0.01" placeholder="optional">
+                                                            <small class="text-theme-secondary" id="charLlmRepeatPenaltyHelp">Greater than 0</small>
+                                                        </div>
+                                                        <div class="col-md-4 mb-2">
+                                                            <label class="form-label">Presence Penalty</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmPresencePenalty" min="-2" max="2" step="0.01" placeholder="optional">
+                                                        </div>
+                                                        <div class="col-md-4 mb-2">
+                                                            <label class="form-label">Frequency Penalty</label>
+                                                            <input type="number" class="form-control form-control-sm" id="charLlmFrequencyPenalty" min="-2" max="2" step="0.01" placeholder="optional">
                                                         </div>
                                                     </div>
                                                 </div>

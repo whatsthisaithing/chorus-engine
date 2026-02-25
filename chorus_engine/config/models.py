@@ -51,6 +51,11 @@ class LLMConfig(BaseModel):
     context_window: int = Field(default=8192, gt=0, le=128000)
     max_response_tokens: int = Field(default=2048, gt=0, le=8192)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(default=None, description="Nucleus sampling cutoff (0.0-1.0)")
+    top_k: Optional[int] = Field(default=None, description="Top-k sampling cutoff (integer >= 0)")
+    repeat_penalty: Optional[float] = Field(default=None, description="Repeat penalty (> 0)")
+    presence_penalty: Optional[float] = Field(default=None, description="Presence penalty (-2.0 to 2.0)")
+    frequency_penalty: Optional[float] = Field(default=None, description="Frequency penalty (-2.0 to 2.0)")
     timeout_seconds: int = Field(default=120, gt=0)
     unload_during_image_generation: bool = Field(default=False, description="Unload model from VRAM during image generation to free memory")
     ollama_legacy_chat_api_enabled: bool = Field(
@@ -96,6 +101,38 @@ class LLMConfig(BaseModel):
         if not v.startswith(('http://', 'https://')):
             raise ValueError('base_url must start with http:// or https://')
         return v.rstrip('/')
+
+    @field_validator("top_p", mode="before")
+    @classmethod
+    def clamp_top_p(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return min(1.0, max(0.0, numeric))
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def clamp_top_k(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = int(float(value))
+        return max(0, numeric)
+
+    @field_validator("repeat_penalty", mode="before")
+    @classmethod
+    def clamp_repeat_penalty(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return numeric if numeric > 0.0 else 0.01
+
+    @field_validator("presence_penalty", "frequency_penalty", mode="before")
+    @classmethod
+    def clamp_penalties(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return min(2.0, max(-2.0, numeric))
 
 
 class MemoryConfig(BaseModel):
@@ -1105,6 +1142,43 @@ class PreferredLLMConfig(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
     context_window: Optional[int] = Field(default=None, gt=0, description="Override context window for different model capabilities")
+    top_p: Optional[float] = Field(default=None, description="Override top_p (0.0-1.0)")
+    top_k: Optional[int] = Field(default=None, description="Override top_k (integer >= 0)")
+    repeat_penalty: Optional[float] = Field(default=None, description="Override repeat_penalty (> 0)")
+    presence_penalty: Optional[float] = Field(default=None, description="Override presence_penalty (-2.0 to 2.0)")
+    frequency_penalty: Optional[float] = Field(default=None, description="Override frequency_penalty (-2.0 to 2.0)")
+
+    @field_validator("top_p", mode="before")
+    @classmethod
+    def clamp_top_p(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return min(1.0, max(0.0, numeric))
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def clamp_top_k(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = int(float(value))
+        return max(0, numeric)
+
+    @field_validator("repeat_penalty", mode="before")
+    @classmethod
+    def clamp_repeat_penalty(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return numeric if numeric > 0.0 else 0.01
+
+    @field_validator("presence_penalty", "frequency_penalty", mode="before")
+    @classmethod
+    def clamp_penalties(cls, value):
+        if value is None or value == "":
+            return None
+        numeric = float(value)
+        return min(2.0, max(-2.0, numeric))
 
 
 class CharacterConfig(BaseModel):

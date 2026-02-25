@@ -129,6 +129,11 @@ preferred_llm:
   temperature: null           # Override temperature (0.0-1.0) or null for system default
   max_tokens: null            # Override max response length or null for system default
   context_window: null        # Override context window size (e.g., 8192, 32768) if using different model than system default
+  top_p: null                 # Override nucleus sampling cutoff (0.0-1.0) or null for system default
+  top_k: null                 # Override top-k sampling cutoff (integer >= 0) or null for system default
+  repeat_penalty: null        # Override repeat penalty (> 0) or null for system default
+  presence_penalty: null      # Override presence penalty (-2.0 to 2.0) or null for system default
+  frequency_penalty: null     # Override frequency penalty (-2.0 to 2.0) or null for system default
 
 # IMMERSION SETTINGS
 # ------------------

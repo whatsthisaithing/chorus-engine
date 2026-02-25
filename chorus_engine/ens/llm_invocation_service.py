@@ -53,6 +53,11 @@ class EffectiveLLMConfig:
     temperature: Optional[float]
     max_tokens: Optional[int]
     context_window: Optional[int]
+    top_p: Optional[float]
+    top_k: Optional[int]
+    repeat_penalty: Optional[float]
+    presence_penalty: Optional[float]
+    frequency_penalty: Optional[float]
 
 
 @dataclass
@@ -73,6 +78,10 @@ class InvocationRequest:
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repeat_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
     stop: Optional[List[str]] = None
     vision_images: Optional[List[str]] = None
     vision_image_mime_type: Optional[str] = None
@@ -472,6 +481,10 @@ class LLMInvocationService:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "top_p": request.top_p,
+            "top_k": request.top_k,
+            "repeat_penalty": request.repeat_penalty,
+            "presence_penalty": request.presence_penalty,
+            "frequency_penalty": request.frequency_penalty,
             "stop": request.stop,
             "vision_images": request.vision_images,
             "vision_image_mime_type": request.vision_image_mime_type,
@@ -720,12 +733,22 @@ class LLMInvocationService:
                 model=request.model_id,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                top_k=request.top_k,
+                repeat_penalty=request.repeat_penalty,
+                presence_penalty=request.presence_penalty,
+                frequency_penalty=request.frequency_penalty,
             )
         elif request.messages is not None:
             kwargs = dict(
                 messages=request.messages,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                top_k=request.top_k,
+                repeat_penalty=request.repeat_penalty,
+                presence_penalty=request.presence_penalty,
+                frequency_penalty=request.frequency_penalty,
                 model=request.model_id,
                 tools=request.tools,
                 tool_choice=request.tool_choice,
@@ -735,9 +758,21 @@ class LLMInvocationService:
             try:
                 response = await llm_client.generate_with_history(**kwargs)
             except TypeError as exc:
-                # Backward-compat for test doubles or clients that haven't adopted response_format.
-                if "response_format" in kwargs and "response_format" in str(exc):
-                    kwargs.pop("response_format", None)
+                # Backward-compat for test doubles or clients that haven't adopted new kwargs yet.
+                fallback_keys = [
+                    "response_format",
+                    "top_p",
+                    "top_k",
+                    "repeat_penalty",
+                    "presence_penalty",
+                    "frequency_penalty",
+                ]
+                retried = False
+                for key in fallback_keys:
+                    if key in kwargs:
+                        kwargs.pop(key, None)
+                        retried = True
+                if retried:
                     response = await llm_client.generate_with_history(**kwargs)
                 else:
                     raise
@@ -748,6 +783,11 @@ class LLMInvocationService:
                 model=request.model_id,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                top_k=request.top_k,
+                repeat_penalty=request.repeat_penalty,
+                presence_penalty=request.presence_penalty,
+                frequency_penalty=request.frequency_penalty,
                 tools=request.tools,
                 tool_choice=request.tool_choice,
             )
@@ -756,8 +796,20 @@ class LLMInvocationService:
             try:
                 response = await llm_client.generate(**kwargs)
             except TypeError as exc:
-                if "response_format" in kwargs and "response_format" in str(exc):
-                    kwargs.pop("response_format", None)
+                fallback_keys = [
+                    "response_format",
+                    "top_p",
+                    "top_k",
+                    "repeat_penalty",
+                    "presence_penalty",
+                    "frequency_penalty",
+                ]
+                retried = False
+                for key in fallback_keys:
+                    if key in kwargs:
+                        kwargs.pop(key, None)
+                        retried = True
+                if retried:
                     response = await llm_client.generate(**kwargs)
                 else:
                     raise
@@ -797,6 +849,11 @@ class LLMInvocationService:
         temperature_override: Optional[float] = None,
         max_tokens_override: Optional[int] = None,
         context_window_override: Optional[int] = None,
+        top_p_override: Optional[float] = None,
+        top_k_override: Optional[int] = None,
+        repeat_penalty_override: Optional[float] = None,
+        presence_penalty_override: Optional[float] = None,
+        frequency_penalty_override: Optional[float] = None,
     ) -> EffectiveLLMConfig:
         llm_client = self.app_state.get("llm_client")
         if not llm_client:
@@ -826,6 +883,43 @@ class LLMInvocationService:
             if context_window_override is not None
             else (getattr(preferred, "context_window", None) if preferred and getattr(preferred, "context_window", None) is not None else system_cfg.context_window)
         )
+        top_p = (
+            top_p_override
+            if top_p_override is not None
+            else (getattr(preferred, "top_p", None) if preferred and getattr(preferred, "top_p", None) is not None else getattr(system_cfg, "top_p", None))
+        )
+        top_k = (
+            top_k_override
+            if top_k_override is not None
+            else (getattr(preferred, "top_k", None) if preferred and getattr(preferred, "top_k", None) is not None else getattr(system_cfg, "top_k", None))
+        )
+        repeat_penalty = (
+            repeat_penalty_override
+            if repeat_penalty_override is not None
+            else (
+                getattr(preferred, "repeat_penalty", None)
+                if preferred and getattr(preferred, "repeat_penalty", None) is not None
+                else getattr(system_cfg, "repeat_penalty", None)
+            )
+        )
+        presence_penalty = (
+            presence_penalty_override
+            if presence_penalty_override is not None
+            else (
+                getattr(preferred, "presence_penalty", None)
+                if preferred and getattr(preferred, "presence_penalty", None) is not None
+                else getattr(system_cfg, "presence_penalty", None)
+            )
+        )
+        frequency_penalty = (
+            frequency_penalty_override
+            if frequency_penalty_override is not None
+            else (
+                getattr(preferred, "frequency_penalty", None)
+                if preferred and getattr(preferred, "frequency_penalty", None) is not None
+                else getattr(system_cfg, "frequency_penalty", None)
+            )
+        )
         return EffectiveLLMConfig(
             provider="local",
             engine=self._engine_from_client(llm_client),
@@ -833,4 +927,9 @@ class LLMInvocationService:
             temperature=temperature,
             max_tokens=max_tokens,
             context_window=context_window,
+            top_p=top_p,
+            top_k=top_k,
+            repeat_penalty=repeat_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
         )

@@ -31,6 +31,27 @@ class LMStudioLLMClient(BaseLLMClient):
             print(f"LM Studio health check failed: {e}", flush=True)
             logger.warning(f"LM Studio health check failed: {e}")
             return False
+
+    @staticmethod
+    def _apply_sampling_fields(
+        payload: dict,
+        *,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+    ) -> None:
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if top_k is not None:
+            payload["top_k"] = top_k
+        if repeat_penalty is not None:
+            payload["repeat_penalty"] = repeat_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
     
     async def generate(
         self,
@@ -38,6 +59,11 @@ class LMStudioLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -73,6 +99,14 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             if tools:
                 payload["tools"] = tools
                 if tool_choice is not None:
@@ -147,6 +181,11 @@ class LMStudioLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> LLMResponse:
         try:
@@ -171,6 +210,14 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": self.temperature if temperature is None else temperature,
                 "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             response = await self.client.post(f"{self.base_url}/v1/chat/completions", json=payload)
             response.raise_for_status()
             data = response.json()
@@ -192,6 +239,11 @@ class LMStudioLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -221,6 +273,14 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             if tools:
                 payload["tools"] = tools
                 if tool_choice is not None:
@@ -281,6 +341,11 @@ class LMStudioLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a completion using OpenAI-compatible SSE format.
@@ -311,6 +376,14 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             async with self.client.stream(
                 "POST",
@@ -351,6 +424,11 @@ class LMStudioLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
@@ -376,6 +454,14 @@ class LMStudioLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             async with self.client.stream(
                 "POST",

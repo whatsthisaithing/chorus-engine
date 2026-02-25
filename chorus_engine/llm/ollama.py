@@ -113,6 +113,21 @@ class OllamaLLMClient(BaseLLMClient):
             logger.warning("Failed to capture raw Ollama HTTP exchange: %s", exc)
 
     @staticmethod
+    def _apply_openai_sampling_fields(
+        payload: dict,
+        *,
+        top_p: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+    ) -> None:
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+
+    @staticmethod
     def _parse_openai_choice(data: dict) -> tuple[dict, dict]:
         choice = (data.get("choices") or [{}])[0] or {}
         message = choice.get("message", {}) or {}
@@ -138,6 +153,11 @@ class OllamaLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -167,6 +187,8 @@ class OllamaLLMClient(BaseLLMClient):
             messages.append({"role": "user", "content": prompt})
             
             if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
                 payload = {
                     "model": model if model is not None else self.model,
                     "messages": messages,
@@ -196,6 +218,12 @@ class OllamaLLMClient(BaseLLMClient):
                     "temperature": self.temperature if temperature is None else temperature,
                     "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
                 if tools:
                     payload["tools"] = tools
                     if tool_choice is not None:
@@ -278,6 +306,11 @@ class OllamaLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> LLMResponse:
         try:
@@ -287,6 +320,8 @@ class OllamaLLMClient(BaseLLMClient):
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
                 messages.append({"role": "user", "content": prompt, "images": image_base64_list})
                 payload = {
                     "model": model if model is not None else self.model,
@@ -315,6 +350,12 @@ class OllamaLLMClient(BaseLLMClient):
                     "temperature": self.temperature if temperature is None else temperature,
                     "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
                 endpoint = f"{self.base_url}/v1/chat/completions"
             response = await self.client.post(endpoint, json=payload)
             response.raise_for_status()
@@ -352,6 +393,11 @@ class OllamaLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -375,6 +421,8 @@ class OllamaLLMClient(BaseLLMClient):
         """
         try:
             if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
                 payload = {
                     "model": model if model is not None else self.model,
                     "messages": messages,
@@ -400,6 +448,12 @@ class OllamaLLMClient(BaseLLMClient):
                     "temperature": self.temperature if temperature is None else temperature,
                     "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
                 if tools:
                     payload["tools"] = tools
                     if tool_choice is not None:
@@ -485,6 +539,11 @@ class OllamaLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a completion from the LLM using chat endpoint.
@@ -509,6 +568,8 @@ class OllamaLLMClient(BaseLLMClient):
             messages.append({"role": "user", "content": prompt})
             
             if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
                 payload = {
                     "model": self.model,
                     "messages": messages,
@@ -528,6 +589,12 @@ class OllamaLLMClient(BaseLLMClient):
                     "temperature": self.temperature if temperature is None else temperature,
                     "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
                 endpoint = f"{self.base_url}/v1/chat/completions"
 
             async with self.client.stream(
@@ -576,6 +643,11 @@ class OllamaLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
@@ -595,6 +667,8 @@ class OllamaLLMClient(BaseLLMClient):
         """
         try:
             if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
                 payload = {
                     "model": model if model is not None else self.model,
                     "messages": messages,
@@ -619,6 +693,12 @@ class OllamaLLMClient(BaseLLMClient):
                     "temperature": self.temperature if temperature is None else temperature,
                     "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
                 }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
                 endpoint = f"{self.base_url}/v1/chat/completions"
                 logger.debug(
                     "Ollama(OpenAI) stream: model=%s temp=%s messages=%s",

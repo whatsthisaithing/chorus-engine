@@ -38,6 +38,47 @@ class KoboldCppLLMClient(BaseLLMClient):
         except Exception as e:
             logger.warning(f"KoboldCpp health check failed: {e}")
             return False
+
+    @staticmethod
+    def _apply_sampling_fields(
+        payload: dict,
+        *,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+    ) -> None:
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if top_k is not None:
+            payload["top_k"] = top_k
+        if repeat_penalty is not None:
+            payload["repeat_penalty"] = repeat_penalty
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+
+    @staticmethod
+    def _contains_advanced_sampling(payload: dict) -> bool:
+        keys = {"top_p", "top_k", "repeat_penalty", "presence_penalty", "frequency_penalty"}
+        return any(key in payload for key in keys)
+
+    @staticmethod
+    def _invalid_parameter_error(error_body: str) -> bool:
+        body = str(error_body or "").lower()
+        return any(
+            token in body
+            for token in (
+                "unknown parameter",
+                "invalid parameter",
+                "unexpected field",
+                "additional properties",
+                "not allowed",
+                "unrecognized",
+            )
+        )
     
     async def generate(
         self,
@@ -45,6 +86,11 @@ class KoboldCppLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -81,6 +127,14 @@ class KoboldCppLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             logger.debug(f"KoboldCpp request: messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
@@ -88,7 +142,27 @@ class KoboldCppLLMClient(BaseLLMClient):
                 f"{self.base_url}/v1/chat/completions",
                 json=payload
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                error_body = response.text
+                if (
+                    response.status_code == 400
+                    and self._contains_advanced_sampling(payload)
+                    and self._invalid_parameter_error(error_body)
+                ):
+                    logger.warning(
+                        "[KOBOLDCPP] Advanced sampling fields rejected; retrying without optional fields."
+                    )
+                    retry_payload = dict(payload)
+                    for key in ("top_p", "top_k", "repeat_penalty", "presence_penalty", "frequency_penalty"):
+                        retry_payload.pop(key, None)
+                    retry_response = await self.client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json=retry_payload,
+                    )
+                    retry_response.raise_for_status()
+                    response = retry_response
+                else:
+                    response.raise_for_status()
 
             if response.encoding is None or response.encoding.lower() != "utf-8":
                 response.encoding = "utf-8"
@@ -143,6 +217,11 @@ class KoboldCppLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -172,6 +251,14 @@ class KoboldCppLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             logger.debug(f"KoboldCpp request: messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
@@ -179,7 +266,27 @@ class KoboldCppLLMClient(BaseLLMClient):
                 f"{self.base_url}/v1/chat/completions",
                 json=payload
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                error_body = response.text
+                if (
+                    response.status_code == 400
+                    and self._contains_advanced_sampling(payload)
+                    and self._invalid_parameter_error(error_body)
+                ):
+                    logger.warning(
+                        "[KOBOLDCPP] Advanced sampling fields rejected; retrying without optional fields."
+                    )
+                    retry_payload = dict(payload)
+                    for key in ("top_p", "top_k", "repeat_penalty", "presence_penalty", "frequency_penalty"):
+                        retry_payload.pop(key, None)
+                    retry_response = await self.client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json=retry_payload,
+                    )
+                    retry_response.raise_for_status()
+                    response = retry_response
+                else:
+                    response.raise_for_status()
 
             if response.encoding is None or response.encoding.lower() != "utf-8":
                 response.encoding = "utf-8"
@@ -226,6 +333,11 @@ class KoboldCppLLMClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
@@ -257,6 +369,14 @@ class KoboldCppLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             async with self.client.stream(
                 "POST",
@@ -304,6 +424,11 @@ class KoboldCppLLMClient(BaseLLMClient):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
@@ -329,6 +454,14 @@ class KoboldCppLLMClient(BaseLLMClient):
                 "temperature": temperature if temperature is not None else self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
             
             async with self.client.stream(
                 "POST",

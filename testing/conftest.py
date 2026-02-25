@@ -34,7 +34,22 @@ class DummyLLMClient:
     async def health_check(self):
         return True
 
-    async def generate_with_history(self, messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+    async def generate_with_history(
+        self,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        top_p=None,
+        top_k=None,
+        repeat_penalty=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        model=None,
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ):
+        _ = (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty, kwargs)
         _ = (tools, tool_choice)
         last_user = ""
         for m in reversed(messages):
@@ -55,8 +70,14 @@ class DummyLLMClient:
         system_prompt=None,
         temperature=None,
         max_tokens=None,
+        top_p=None,
+        top_k=None,
+        repeat_penalty=None,
+        presence_penalty=None,
+        frequency_penalty=None,
         model=None,
     ):
+        _ = (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)
         return LLMResponse(
             content='{"main_subject":"test subject","objects":["obj1"],"people":{"count":0,"descriptions":[]},"text_content":"","spatial_layout":"center","mood":"neutral","colors":["blue"],"notable_details":["detail"],"confidence":0.9}',
             model=model or "dummy-vision",
@@ -64,7 +85,19 @@ class DummyLLMClient:
             usage=None,
         )
 
-    async def stream_with_history(self, messages, temperature=None, max_tokens=None, model=None):
+    async def stream_with_history(
+        self,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        top_p=None,
+        top_k=None,
+        repeat_penalty=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        model=None,
+    ):
+        _ = (messages, temperature, max_tokens, top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty, model)
         yield "Echo streamed response"
 
     async def get_loaded_models(self):

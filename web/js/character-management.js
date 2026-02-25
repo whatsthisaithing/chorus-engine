@@ -163,6 +163,7 @@ window.CharacterManagement = {
             const configResponse = await fetch('/system/config');
             const config = await configResponse.json();
             this.llmProvider = config.llm.provider || 'ollama';
+            this.updateOllamaSamplingFieldState();
             
             // Only show dropdown for Ollama
             const selectContainer = document.getElementById('charLlmModelSelectContainer');
@@ -224,6 +225,32 @@ window.CharacterManagement = {
             }
         } catch (error) {
             console.error('Failed to load downloaded models:', error);
+        }
+    },
+
+    updateOllamaSamplingFieldState() {
+        const isOllama = String(this.llmProvider || '').toLowerCase() === 'ollama';
+        const topKInput = document.getElementById('charLlmTopK');
+        const repeatPenaltyInput = document.getElementById('charLlmRepeatPenalty');
+        const topKHelp = document.getElementById('charLlmTopKHelp');
+        const repeatPenaltyHelp = document.getElementById('charLlmRepeatPenaltyHelp');
+        if (topKInput) {
+            topKInput.disabled = isOllama;
+            topKInput.title = isOllama ? 'Ignored when using Ollama OpenAI-compatible mode.' : '';
+        }
+        if (repeatPenaltyInput) {
+            repeatPenaltyInput.disabled = isOllama;
+            repeatPenaltyInput.title = isOllama ? 'Ignored when using Ollama OpenAI-compatible mode.' : '';
+        }
+        if (topKHelp) {
+            topKHelp.textContent = isOllama
+                ? 'Ignored when using Ollama (OpenAI-compatible mode).'
+                : 'Integer >= 0';
+        }
+        if (repeatPenaltyHelp) {
+            repeatPenaltyHelp.textContent = isOllama
+                ? 'Ignored when using Ollama (OpenAI-compatible mode).'
+                : 'Greater than 0';
         }
     },
     
@@ -453,6 +480,12 @@ window.CharacterManagement = {
         document.getElementById('charLlmTemperature').value = character.preferred_llm?.temperature !== undefined ? character.preferred_llm.temperature : '';
         document.getElementById('charLlmMaxTokens').value = character.preferred_llm?.max_tokens || '';
         document.getElementById('charLlmContextWindow').value = character.preferred_llm?.context_window || '';
+        document.getElementById('charLlmTopP').value = character.preferred_llm?.top_p ?? '';
+        document.getElementById('charLlmTopK').value = character.preferred_llm?.top_k ?? '';
+        document.getElementById('charLlmRepeatPenalty').value = character.preferred_llm?.repeat_penalty ?? '';
+        document.getElementById('charLlmPresencePenalty').value = character.preferred_llm?.presence_penalty ?? '';
+        document.getElementById('charLlmFrequencyPenalty').value = character.preferred_llm?.frequency_penalty ?? '';
+        this.updateOllamaSamplingFieldState();
         
         // IMMERSION TAB
         document.getElementById('charImmersionLevel').value = character.immersion_level || 'balanced';
@@ -968,13 +1001,23 @@ window.CharacterManagement = {
         const llmTemp = document.getElementById('charLlmTemperature').value.trim();
         const llmMaxTokens = document.getElementById('charLlmMaxTokens').value.trim();
         const llmContextWindow = document.getElementById('charLlmContextWindow').value.trim();
+        const llmTopP = document.getElementById('charLlmTopP').value.trim();
+        const llmTopK = document.getElementById('charLlmTopK').value.trim();
+        const llmRepeatPenalty = document.getElementById('charLlmRepeatPenalty').value.trim();
+        const llmPresencePenalty = document.getElementById('charLlmPresencePenalty').value.trim();
+        const llmFrequencyPenalty = document.getElementById('charLlmFrequencyPenalty').value.trim();
         
-        if (llmModel || llmTemp || llmMaxTokens || llmContextWindow) {
+        if (llmModel || llmTemp || llmMaxTokens || llmContextWindow || llmTopP || llmTopK || llmRepeatPenalty || llmPresencePenalty || llmFrequencyPenalty) {
             characterData.preferred_llm = {};
             if (llmModel) characterData.preferred_llm.model = llmModel;
             if (llmTemp) characterData.preferred_llm.temperature = parseFloat(llmTemp);
             if (llmMaxTokens) characterData.preferred_llm.max_tokens = parseInt(llmMaxTokens);
             if (llmContextWindow) characterData.preferred_llm.context_window = parseInt(llmContextWindow);
+            if (llmTopP) characterData.preferred_llm.top_p = parseFloat(llmTopP);
+            if (llmTopK) characterData.preferred_llm.top_k = parseInt(llmTopK, 10);
+            if (llmRepeatPenalty) characterData.preferred_llm.repeat_penalty = parseFloat(llmRepeatPenalty);
+            if (llmPresencePenalty) characterData.preferred_llm.presence_penalty = parseFloat(llmPresencePenalty);
+            if (llmFrequencyPenalty) characterData.preferred_llm.frequency_penalty = parseFloat(llmFrequencyPenalty);
         }
         
         // UI preferences

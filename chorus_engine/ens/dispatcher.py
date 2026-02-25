@@ -1136,6 +1136,11 @@ class ENSDispatcher:
             messages=messages,
             temperature=effective.temperature,
             max_tokens=effective.max_tokens,
+            top_p=effective.top_p,
+            top_k=effective.top_k,
+            repeat_penalty=effective.repeat_penalty,
+            presence_penalty=effective.presence_penalty,
+            frequency_penalty=effective.frequency_penalty,
             metadata={
                 "conversation_source": source,
                 "media_gate_snapshot": media_gate_snapshot,
@@ -1217,6 +1222,11 @@ class ENSDispatcher:
                                 messages=rerun_messages,
                                 temperature=effective.temperature,
                                 max_tokens=effective.max_tokens,
+                                top_p=effective.top_p,
+                                top_k=effective.top_k,
+                                repeat_penalty=effective.repeat_penalty,
+                                presence_penalty=effective.presence_penalty,
+                                frequency_penalty=effective.frequency_penalty,
                                 metadata={
                                     "conversation_source": source,
                                     "media_gate_snapshot": media_gate_snapshot,
@@ -1306,6 +1316,11 @@ class ENSDispatcher:
                 messages=repair_messages,
                 temperature=effective.temperature,
                 max_tokens=effective.max_tokens,
+                top_p=effective.top_p,
+                top_k=effective.top_k,
+                repeat_penalty=effective.repeat_penalty,
+                presence_penalty=effective.presence_penalty,
+                frequency_penalty=effective.frequency_penalty,
                 metadata={
                     "conversation_source": source,
                     "media_gate_snapshot": media_gate_snapshot,
@@ -1770,6 +1785,11 @@ class ENSDispatcher:
                 system_prompt=character.system_prompt,
                 temperature=effective.temperature,
                 max_tokens=effective.max_tokens,
+                top_p=effective.top_p,
+                top_k=effective.top_k,
+                repeat_penalty=effective.repeat_penalty,
+                presence_penalty=effective.presence_penalty,
+                frequency_penalty=effective.frequency_penalty,
                 metadata={"endpoint": "chat.simple"},
             )
         )
@@ -2605,6 +2625,11 @@ class ENSDispatcher:
                     character_id=character_id,
                     temperature=(pass_plan.temperature if pass_plan.temperature is not None else effective.temperature),
                     max_tokens=(pass_plan.max_tokens if pass_plan.max_tokens is not None else effective.max_tokens),
+                    top_p=effective.top_p,
+                    top_k=effective.top_k,
+                    repeat_penalty=effective.repeat_penalty,
+                    presence_penalty=effective.presence_penalty,
+                    frequency_penalty=effective.frequency_penalty,
                     metadata={
                         "loop_id": loop_id,
                         "loop_kind": session.loop_kind,
@@ -2681,6 +2706,11 @@ class ENSDispatcher:
                     messages=outcome_messages,
                     temperature=(pass_plan.temperature if pass_plan.temperature is not None else float(loop_plan.outcome_policy.temperature) if loop_plan.outcome_policy else 0.1),
                     max_tokens=(pass_plan.max_tokens if pass_plan.max_tokens is not None else int(loop_plan.outcome_policy.max_tokens) if loop_plan.outcome_policy else 64),
+                    top_p=effective.top_p,
+                    top_k=effective.top_k,
+                    repeat_penalty=effective.repeat_penalty,
+                    presence_penalty=effective.presence_penalty,
+                    frequency_penalty=effective.frequency_penalty,
                     native_tool_policy=(dict(pass_plan.native_tool_policy or {}) or None),
                     metadata={
                         "loop_id": loop_id,
@@ -2760,6 +2790,11 @@ class ENSDispatcher:
                     ),
                     temperature=float(loop_plan.outcome_policy.temperature),
                     max_tokens=int(loop_plan.outcome_policy.max_tokens),
+                    top_p=effective.top_p,
+                    top_k=effective.top_k,
+                    repeat_penalty=effective.repeat_penalty,
+                    presence_penalty=effective.presence_penalty,
+                    frequency_penalty=effective.frequency_penalty,
                     response_format=self._loop_outcome_json_schema_response_format(str(session.loop_kind or "")),
                     metadata={
                         "loop_id": loop_id,
@@ -3612,6 +3647,11 @@ class ENSDispatcher:
                         system_prompt=system_prompt,
                         temperature=effective.temperature,
                         max_tokens=effective.max_tokens,
+                        top_p=effective.top_p,
+                        top_k=effective.top_k,
+                        repeat_penalty=effective.repeat_penalty,
+                        presence_penalty=effective.presence_penalty,
+                        frequency_penalty=effective.frequency_penalty,
                         metadata=metadata or {},
                     )
                 )
@@ -3848,6 +3888,11 @@ class ENSDispatcher:
                         system_prompt=system_prompt,
                         temperature=effective.temperature,
                         max_tokens=effective.max_tokens,
+                        top_p=effective.top_p,
+                        top_k=effective.top_k,
+                        repeat_penalty=effective.repeat_penalty,
+                        presence_penalty=effective.presence_penalty,
+                        frequency_penalty=effective.frequency_penalty,
                         metadata=metadata or {},
                     )
                 )
@@ -4305,7 +4350,20 @@ class ENSDispatcher:
             if operation == "update":
                 character = loader.load_character(character_id)
                 char_dict = character.model_dump()
-                updates = payload.get("updates") or {}
+                updates = dict(payload.get("updates") or {})
+                incoming_preferred_llm = updates.get("preferred_llm", ...)
+                if incoming_preferred_llm is None:
+                    updates["preferred_llm"] = {}
+                elif isinstance(incoming_preferred_llm, dict):
+                    # Merge partial preferred_llm updates so newly introduced knobs are additive.
+                    merged_preferred_llm = dict(char_dict.get("preferred_llm") or {})
+                    for key, value in incoming_preferred_llm.items():
+                        if value is None:
+                            merged_preferred_llm.pop(key, None)
+                        else:
+                            merged_preferred_llm[key] = value
+                    updates["preferred_llm"] = merged_preferred_llm
+
                 char_dict.update(updates)
                 updated = CharacterConfig(**char_dict)
                 if character.model_dump() == updated.model_dump():

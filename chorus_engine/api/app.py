@@ -283,6 +283,11 @@ async def _attempt_media_payload_repair(
     model: str,
     temperature,
     max_tokens,
+    top_p,
+    top_k,
+    repeat_penalty,
+    presence_penalty,
+    frequency_penalty,
     raw_response_content: str,
     allowed_tools: list[str],
     requested_media_type: str,
@@ -324,6 +329,11 @@ async def _attempt_media_payload_repair(
         messages=repair_messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        top_p=top_p,
+        top_k=top_k,
+        repeat_penalty=repeat_penalty,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
         model=model,
     )
     repaired_raw = repair_response.content or ""
@@ -2412,6 +2422,13 @@ async def list_characters():
                 "preferred_llm": {
                     "model": char.preferred_llm.model if char.preferred_llm else None,
                     "temperature": char.preferred_llm.temperature if char.preferred_llm else None,
+                    "max_tokens": char.preferred_llm.max_tokens if char.preferred_llm else None,
+                    "context_window": char.preferred_llm.context_window if char.preferred_llm else None,
+                    "top_p": char.preferred_llm.top_p if char.preferred_llm else None,
+                    "top_k": char.preferred_llm.top_k if char.preferred_llm else None,
+                    "repeat_penalty": char.preferred_llm.repeat_penalty if char.preferred_llm else None,
+                    "presence_penalty": char.preferred_llm.presence_penalty if char.preferred_llm else None,
+                    "frequency_penalty": char.preferred_llm.frequency_penalty if char.preferred_llm else None,
                 } if char.preferred_llm else None,
                 "memory": {
                     "scope": char.memory.scope if char.memory else None,
@@ -2717,10 +2734,24 @@ async def update_character(character_id: str, updates: dict, db: Session = Depen
     try:
         # Convert to dict, update, and recreate
         char_dict = character.model_dump()
-        char_dict.update(updates)
+        incoming_updates = dict(updates or {})
+        incoming_preferred_llm = incoming_updates.get("preferred_llm", ...)
+        if incoming_preferred_llm is None:
+            incoming_updates["preferred_llm"] = {}
+        elif isinstance(incoming_preferred_llm, dict):
+            # Merge partial preferred_llm updates so new keys can be added without replacing all existing ones.
+            merged_preferred_llm = dict(char_dict.get("preferred_llm") or {})
+            for key, value in incoming_preferred_llm.items():
+                if value is None:
+                    merged_preferred_llm.pop(key, None)
+                else:
+                    merged_preferred_llm[key] = value
+            incoming_updates["preferred_llm"] = merged_preferred_llm
+
+        char_dict.update(incoming_updates)
         
         # Don't allow ID changes
-        if "id" in updates and updates["id"] != character_id:
+        if "id" in incoming_updates and incoming_updates["id"] != character_id:
             raise HTTPException(status_code=400, detail="Cannot change character ID")
         
         # Recreate with updates
@@ -4166,6 +4197,11 @@ async def _invoke_llm_analysis_unified(
         system_prompt=system_prompt,
         temperature=effective.temperature,
         max_tokens=effective.max_tokens,
+        top_p=effective.top_p,
+        top_k=effective.top_k,
+        repeat_penalty=effective.repeat_penalty,
+        presence_penalty=effective.presence_penalty,
+        frequency_penalty=effective.frequency_penalty,
         metadata=meta,
     )
     invocation = await invoker.invoke(req)
@@ -4220,6 +4256,11 @@ async def _invoke_llm_unified(
         system_prompt=system_prompt,
         temperature=effective.temperature,
         max_tokens=effective.max_tokens,
+        top_p=effective.top_p,
+        top_k=effective.top_k,
+        repeat_penalty=effective.repeat_penalty,
+        presence_penalty=effective.presence_penalty,
+        frequency_penalty=effective.frequency_penalty,
         vision_images=vision_images,
         vision_image_mime_type=vision_image_mime_type,
         metadata=meta,
@@ -8154,6 +8195,11 @@ async def send_message(
         # Use character-specific LLM settings if available, otherwise use system defaults
         temperature = character.preferred_llm.temperature
         max_tokens = character.preferred_llm.max_tokens
+        top_p = character.preferred_llm.top_p
+        top_k = character.preferred_llm.top_k
+        repeat_penalty = character.preferred_llm.repeat_penalty
+        presence_penalty = character.preferred_llm.presence_penalty
+        frequency_penalty = character.preferred_llm.frequency_penalty
         model = character.preferred_llm.model or app_state['system_config'].llm.model
         
         # Ensure correct model is loaded for this character (handles character switches)
@@ -8169,6 +8215,11 @@ async def send_message(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            top_p=top_p,
+            top_k=top_k,
+            repeat_penalty=repeat_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
             model=model
         )
         
@@ -8240,6 +8291,11 @@ async def send_message(
                         messages=rerun_messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
+                        top_p=top_p,
+                        top_k=top_k,
+                        repeat_penalty=repeat_penalty,
+                        presence_penalty=presence_penalty,
+                        frequency_penalty=frequency_penalty,
                         model=model
                     )
                     logger.info(
@@ -8286,6 +8342,11 @@ async def send_message(
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
                 raw_response_content=raw_response_content,
                 allowed_tools=media_permissions.allowed_tools_final,
                 requested_media_type=media_permissions.requested_media_type,
@@ -9597,6 +9658,11 @@ async def send_message_stream(
     # Use character-specific LLM settings
     temperature = character.preferred_llm.temperature
     max_tokens = character.preferred_llm.max_tokens
+    top_p = character.preferred_llm.top_p
+    top_k = character.preferred_llm.top_k
+    repeat_penalty = character.preferred_llm.repeat_penalty
+    presence_penalty = character.preferred_llm.presence_penalty
+    frequency_penalty = character.preferred_llm.frequency_penalty
     model = character.preferred_llm.model or app_state['system_config'].llm.model
     
     # Log LLM settings BEFORE loading
@@ -9671,6 +9737,11 @@ async def send_message_stream(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
                 model=model
             ):
                 full_raw_content += chunk
@@ -9734,6 +9805,11 @@ async def send_message_stream(
                             messages=rerun_messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
+                            top_p=top_p,
+                            top_k=top_k,
+                            repeat_penalty=repeat_penalty,
+                            presence_penalty=presence_penalty,
+                            frequency_penalty=frequency_penalty,
                             model=model,
                         )
                         logger.info(
@@ -9782,6 +9858,11 @@ async def send_message_stream(
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repeat_penalty=repeat_penalty,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
                     raw_response_content=full_raw_content,
                     allowed_tools=media_permissions.allowed_tools_final,
                     requested_media_type=media_permissions.requested_media_type,
@@ -14812,9 +14893,16 @@ async def update_system_config(config: dict):
                 return {"success": True, "message": "Configuration saved, server restarting..."}
             return {"success": True, "message": "Configuration saved"}
 
+        # Validate and normalize config through Pydantic before persisting.
+        try:
+            normalized_config_model = SystemConfig(**config)
+        except Exception as config_error:
+            raise HTTPException(status_code=400, detail=f"Invalid system configuration: {config_error}")
+        normalized_config = normalized_config_model.model_dump(mode="json")
+
         # Validate model path for integrated provider (Phase 10)
-        if config.get('llm', {}).get('provider') == 'integrated':
-            model_path = config.get('llm', {}).get('model')
+        if normalized_config.get('llm', {}).get('provider') == 'integrated':
+            model_path = normalized_config.get('llm', {}).get('model')
             if model_path:
                 model_file = Path(model_path)
                 if not model_file.exists():
@@ -14849,7 +14937,7 @@ async def update_system_config(config: dict):
         
         # Write new configuration
         with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            yaml.dump(normalized_config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
         
         logger.info("System configuration updated, triggering restart...")
         

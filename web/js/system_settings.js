@@ -80,6 +80,32 @@ class SystemSettingsManager {
         }
     }
 
+    updateOllamaSamplingFieldState(provider) {
+        const isOllama = String(provider || '').toLowerCase() === 'ollama';
+        const topK = document.getElementById('llm_top_k');
+        const repeatPenalty = document.getElementById('llm_repeat_penalty');
+        const topKHelp = document.getElementById('llm_top_k_help');
+        const repeatHelp = document.getElementById('llm_repeat_penalty_help');
+        if (topK) {
+            topK.disabled = isOllama;
+            topK.title = isOllama ? 'Ignored when using Ollama OpenAI-compatible mode.' : '';
+        }
+        if (repeatPenalty) {
+            repeatPenalty.disabled = isOllama;
+            repeatPenalty.title = isOllama ? 'Ignored when using Ollama OpenAI-compatible mode.' : '';
+        }
+        if (topKHelp) {
+            topKHelp.textContent = isOllama
+                ? 'Ignored when using Ollama (OpenAI-compatible mode).'
+                : 'Top-k cutoff (integer >= 0).';
+        }
+        if (repeatHelp) {
+            repeatHelp.textContent = isOllama
+                ? 'Ignored when using Ollama (OpenAI-compatible mode).'
+                : 'Repeat penalty (> 0).';
+        }
+    }
+
     async show() {
         try {
             // Load current settings
@@ -114,6 +140,11 @@ class SystemSettingsManager {
         document.getElementById('llm_context_window').value = config.llm.context_window || 32768;
         document.getElementById('llm_max_response_tokens').value = config.llm.max_response_tokens || 4096;
         document.getElementById('llm_temperature').value = config.llm.temperature || 0.7;
+        document.getElementById('llm_top_p').value = config.llm.top_p ?? '';
+        document.getElementById('llm_top_k').value = config.llm.top_k ?? '';
+        document.getElementById('llm_repeat_penalty').value = config.llm.repeat_penalty ?? '';
+        document.getElementById('llm_presence_penalty').value = config.llm.presence_penalty ?? '';
+        document.getElementById('llm_frequency_penalty').value = config.llm.frequency_penalty ?? '';
         document.getElementById('llm_timeout_seconds').value = config.llm.timeout_seconds || 120;
         document.getElementById('llm_unload_during_image_generation').checked = config.llm.unload_during_image_generation || false;
 
@@ -123,12 +154,14 @@ class SystemSettingsManager {
             if (typeof modelManager !== 'undefined') {
                 modelManager.updateMenuVisibility(e.target.value);
             }
+            this.updateOllamaSamplingFieldState(e.target.value);
         });
 
         // Update model manager menu visibility on page load
         if (typeof modelManager !== 'undefined') {
             modelManager.updateMenuVisibility(config.llm.provider);
         }
+        this.updateOllamaSamplingFieldState(config.llm.provider);
 
         // Memory Configuration
         document.getElementById('memory_embedding_model').value = config.memory.embedding_model || 'all-MiniLM-L6-v2';
@@ -392,6 +425,17 @@ class SystemSettingsManager {
             // Preserve debug_ui as a dev-only flag managed outside the normal UI.
             debug_ui: !!(this.loadedConfig && this.loadedConfig.debug_ui)
         };
+
+        const llmTopP = document.getElementById('llm_top_p').value.trim();
+        const llmTopK = document.getElementById('llm_top_k').value.trim();
+        const llmRepeatPenalty = document.getElementById('llm_repeat_penalty').value.trim();
+        const llmPresencePenalty = document.getElementById('llm_presence_penalty').value.trim();
+        const llmFrequencyPenalty = document.getElementById('llm_frequency_penalty').value.trim();
+        if (llmTopP) data.llm.top_p = parseFloat(llmTopP);
+        if (llmTopK) data.llm.top_k = parseInt(llmTopK, 10);
+        if (llmRepeatPenalty) data.llm.repeat_penalty = parseFloat(llmRepeatPenalty);
+        if (llmPresencePenalty) data.llm.presence_penalty = parseFloat(llmPresencePenalty);
+        if (llmFrequencyPenalty) data.llm.frequency_penalty = parseFloat(llmFrequencyPenalty);
 
         // Preserve top-level config sections not managed by this modal.
         // /system/config currently performs full-replace writes.

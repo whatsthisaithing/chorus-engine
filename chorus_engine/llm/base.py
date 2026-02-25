@@ -75,6 +75,11 @@ class BaseLLMClient(ABC):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -104,6 +109,11 @@ class BaseLLMClient(ABC):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[object] = None,
@@ -133,6 +143,11 @@ class BaseLLMClient(ABC):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
     ) -> AsyncIterator[str]:
         """
         Stream completion tokens as they are generated.
@@ -157,6 +172,11 @@ class BaseLLMClient(ABC):
         messages: list,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
@@ -185,6 +205,11 @@ class BaseLLMClient(ABC):
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
     ) -> LLMResponse:
         """Generate a multimodal completion (text + image)."""
