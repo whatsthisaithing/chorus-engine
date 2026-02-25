@@ -720,6 +720,9 @@ class ModelManager:
                     filename = sibling.get("rfilename", "")
                     if not filename.endswith(".gguf"):
                         continue
+                    # Skip multimodal projector-only files; installer needs full model weights.
+                    if "mmproj" in filename.lower():
+                        continue
                     
                     # Extract quantization from filename
                     # Common patterns: "model-Q4_K_M.gguf", "model.Q4_K_M.gguf"

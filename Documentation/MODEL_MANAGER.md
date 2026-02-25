@@ -1,4 +1,4 @@
-# Model Manager & Ollama Integration
+﻿# Model Manager & Ollama Integration
 
 Complete guide to Chorus Engine's integrated model management system with Ollama support.
 
@@ -45,39 +45,35 @@ Ollama provides the infrastructure for model management:
 ### Components
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Model Manager UI                    │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐│
-│  │   Curated    │  │ HuggingFace  │  │ Downloaded ││
-│  │    Models    │  │    Import    │  │   Models   ││
-│  └──────────────┘  └──────────────┘  └────────────┘│
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-         ┌──────────────────────────────────┐
-         │      FastAPI Backend (Python)     │
-         │  ┌────────────┐  ┌──────────────┐│
-         │  │   Model    │  │   Database   ││
-         │  │  Library   │  │   Tracking   ││
-         │  └────────────┘  └──────────────┘│
-         └──────────────────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────┐
-              │   Ollama Server   │
-              │  (localhost:11434) │
-              │                    │
-              │  All models use    │
-              │  hf.co/ format     │
-              │  (unified storage) │
-              └──────────────────┘
-                         │
-                         ▼
-              ┌──────────────────┐
-              │  GGUF Model Files │
-              │  + Chat Templates │
-              │ (Ollama-managed)  │
-              └──────────────────┘
++-----------------------------------------------------+
+|                  Model Manager UI                   |
+|  +--------------+  +--------------+  +-----------+  |
+|  |   Curated    |  | HuggingFace  |  | Downloaded|  |
+|  |    Models    |  |    Import    |  |   Models  |  |
+|  +--------------+  +--------------+  +-----------+  |
++-----------------------------------------------------+
+                        |
+                        v
++------------------------------------------+
+|        FastAPI Backend (Python)          |
+|   +--------------+   +----------------+  |
+|   | ModelLibrary |   | DB Tracking    |  |
+|   +--------------+   +----------------+  |
++------------------------------------------+
+                        |
+                        v
++-------------------------------+
+|         Ollama Server         |
+|       (localhost:11434)       |
+|  All models use hf.co/ format |
++-------------------------------+
+                        |
+                        v
++-------------------------------+
+|        GGUF Model Files       |
+|       + Chat Templates        |
+|        (Ollama-managed)       |
++-------------------------------+
 ```
 
 ### Unified Model Management
@@ -138,34 +134,34 @@ Curated models are pre-vetted, tested models with known performance characterist
 
 ### Model Categories
 
-**🔹 Balanced**
+**ðŸ”¹ Balanced**
 - General-purpose conversation and task handling
 - Good balance of performance and resource usage
 - Recommended for most users
 
-**🎨 Creative**
+**ðŸŽ¨ Creative**
 - Enhanced creative writing and roleplay
 - More expressive language generation
 - May require more VRAM
 
-**🔧 Technical**
+**ðŸ”§ Technical**
 - Instruction following and structured tasks
 - Code generation and analysis
 - Precise, factual responses
 
-**🚀 Advanced**
+**ðŸš€ Advanced**
 - Larger models with superior capabilities
 - High VRAM requirements (16GB+)
 - Best performance for complex scenarios
 
 ### Using Curated Models
 
-1. **Open Model Manager**: Click the gear icon (⚙️) → **Model Management**
+1. **Open Model Manager**: Click the gear icon (âš™ï¸) â†’ **Model Management**
 2. **Browse Tab**: View curated models with performance ratings
 3. **Select Quantization**: Choose from dropdown based on your VRAM (badges indicate fit)
-   - ✓ = Perfect fit (plenty of headroom)
-   - ⚠ = Tight fit (will work but limited headroom)
-   - ✗ = Won't fit (exceeds available VRAM)
+   - âœ“ = Perfect fit (plenty of headroom)
+   - âš  = Tight fit (will work but limited headroom)
+   - âœ— = Won't fit (exceeds available VRAM)
 4. **Download**: Click **Download** button
 5. **Progress**: Modal shows download progress with percentage and ETA
 6. **Completion**: Click **Done** to switch to Downloaded tab
@@ -177,7 +173,7 @@ Each quantization shows estimated VRAM requirements:
 ```
 Q2_K   - 2-3GB   (lowest quality, smallest size)
 Q3_K_M - 3-4GB   (low quality, small size)
-Q4_K_M - 4-6GB   (good quality, standard quantization) ⭐ Recommended
+Q4_K_M - 4-6GB   (good quality, standard quantization) â­ Recommended
 Q5_K_M - 5-7GB   (high quality, larger size)
 Q6_K   - 6-8GB   (very high quality, large size)
 Q8_0   - 8-12GB  (near-original quality, very large)
@@ -210,11 +206,34 @@ The HuggingFace import feature allows you to import **any GGUF model** from Hugg
 1. Paste HuggingFace URL
 2. Select quantization
 3. Click Pull
-4. Done ✅ (chat template extracted automatically)
+4. Done âœ… (chat template extracted automatically)
+
+### LM Studio Clarification (URL-First)
+
+For the provider-based installer direction, LM Studio should use a **HuggingFace URL-first** install flow:
+
+1. Primary input: HuggingFace URL (same mental model as Ollama)
+2. Fallback input: LM Studio model ID (only when URL resolution fails)
+3. UI copy requirement: **"Paste HuggingFace URL; IDs are optional fallback."**
+
+This preserves the Chorus-native install workflow for users browsing models on HuggingFace.
+
+### Progress and Quantization Expectations (LM Studio)
+
+Compared with Ollama's structured pull stream, LM Studio progress and quantization detail can vary by available API/CLI signal. The expected behavior is:
+
+- Best-effort parity with Ollama
+- Graceful fallback messaging when only coarse status is available
+- No hard failure due only to missing granular byte-level progress
+
+Recommended status messaging:
+- "Installing in LM Studio..."
+- "Detailed progress unavailable from provider; install still running."
+- "If URL resolution fails, use model ID fallback."
 
 ### Using HuggingFace Import
 
-1. **Open Model Manager**: Click gear icon → **Model Management**
+1. **Open Model Manager**: Click gear icon â†’ **Model Management**
 2. **Import Tab**: Click **Import from HuggingFace**
 3. **Enter URL**: Paste the HuggingFace model repo URL
    - Example: `https://huggingface.co/mradermacher/Llama-3.3-70B-Instruct-GGUF`
@@ -256,7 +275,7 @@ Any HuggingFace repository containing GGUF files works, including:
 - Base models (require prompt engineering)
 - Specialized models (code, roleplay, etc.)
 
-⚠️ **Important**: Ensure the model has a chat template in its GGUF metadata. Most modern instruct models include this automatically.
+âš ï¸ **Important**: Ensure the model has a chat template in its GGUF metadata. Most modern instruct models include this automatically.
 
 ---
 
@@ -291,7 +310,7 @@ Each character can have their own preferred LLM model. The character editor prov
    - Example: `hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M`
 3. Save character
 
-⚠️ **Note**: Custom model names must be valid Ollama model identifiers. The system will attempt to use this model when the character is active.
+âš ï¸ **Note**: Custom model names must be valid Ollama model identifiers. The system will attempt to use this model when the character is active.
 
 ### Auto-Detection
 
@@ -329,7 +348,7 @@ On page load, the Model Manager:
 
 **GPU Info Display**:
 ```
-✅ GPU Detected
+âœ… GPU Detected
 NVIDIA GeForce RTX 4090 - 24GB VRAM
 Models are pre-filtered and recommended for your GPU
 ```
@@ -338,15 +357,15 @@ Models are pre-filtered and recommended for your GPU
 
 Each quantization dropdown shows fit status:
 
-- **✓ Perfect fit**: Model requires <90% of available VRAM (plenty of headroom)
-- **⚠ Tight fit**: Model requires 90-99% of available VRAM (will work but limited)
-- **✗ Won't fit**: Model requires >100% of available VRAM (will fail or be very slow)
+- **âœ“ Perfect fit**: Model requires <90% of available VRAM (plenty of headroom)
+- **âš  Tight fit**: Model requires 90-99% of available VRAM (will work but limited)
+- **âœ— Won't fit**: Model requires >100% of available VRAM (will fail or be very slow)
 
 **Example**:
 ```
-Q4_K_M - 7GB (6GB VRAM) ✓ Recommended
-Q5_K_M - 9GB (8GB VRAM) ⚠
-Q6_K   - 12GB (11GB VRAM) ✗
+Q4_K_M - 7GB (6GB VRAM) âœ“ Recommended
+Q5_K_M - 9GB (8GB VRAM) âš 
+Q6_K   - 12GB (11GB VRAM) âœ—
 ```
 
 ### VRAM Tiers
@@ -393,7 +412,7 @@ When a download completes, the system automatically:
 ### Model Lifecycle
 
 ```
-Download → Database Entry → Available in Dropdowns → Used in Chat → last_used Updated
+Download â†’ Database Entry â†’ Available in Dropdowns â†’ Used in Chat â†’ last_used Updated
 ```
 
 When you delete a model:
@@ -407,7 +426,7 @@ When you delete a model:
 ### Accessing the Model Manager
 
 **From Web Interface**:
-1. Click the gear icon (⚙️) in the top-right navigation
+1. Click the gear icon (âš™ï¸) in the top-right navigation
 2. Select **Model Management** from dropdown
 
 **Modal Structure**:
@@ -436,7 +455,7 @@ When you delete a model:
 ### Workflow: Importing from HuggingFace
 
 ```
-1. Open Model Manager → Import tab
+1. Open Model Manager â†’ Import tab
 2. Paste HuggingFace repo URL
 3. Click "Load Available Quantizations"
 4. Review list of GGUF files with sizes
@@ -449,10 +468,16 @@ When you delete a model:
    - Character editor dropdowns (custom HF group)
 ```
 
+### Acceptance Scenarios (Installer Clarification)
+
+1. User pastes HuggingFace URL in LM Studio mode and install starts successfully.
+2. If URL resolution fails, UI offers model ID fallback and install can continue.
+3. Progress is shown from available LM Studio API/CLI signals, with clear fallback messaging when granular progress is unavailable.
+
 ### Workflow: Switching Models
 
 **Method 1: From Downloaded Models Tab**
-1. Open Model Manager → Downloaded tab
+1. Open Model Manager â†’ Downloaded tab
 2. Find the model you want to use
 3. Click **"Switch To"** button
 4. System updates config and restarts
@@ -468,7 +493,7 @@ When you delete a model:
 ### Workflow: Deleting Models
 
 **Both Curated and Custom HF Models** (unified behavior):
-1. Open Model Manager → Downloaded tab
+1. Open Model Manager â†’ Downloaded tab
 2. Find model in either section
 3. Click **"Delete"** or **"Remove"** button (red trash icon)
 4. Confirm deletion
@@ -528,8 +553,8 @@ When you delete a model:
 
 **Causes & Solutions**:
 
-1. **Using Custom HF Import**: ✅ Chat template extracted automatically
-2. **Using Manual Modelfile**: ❌ You may have wrong template
+1. **Using Custom HF Import**: âœ… Chat template extracted automatically
+2. **Using Manual Modelfile**: âŒ You may have wrong template
    - **Solution**: Delete and re-import using HF import feature
    - The `hf.co/` format ensures correct template extraction
 
@@ -572,8 +597,8 @@ When you delete a model:
 
 3. **Test with Small Context**:
    - Start new conversation (small context)
-   - If fast → context overflow issue
-   - If slow → model too large for GPU
+   - If fast â†’ context overflow issue
+   - If slow â†’ model too large for GPU
 
 4. **Try Different Quantization**:
    - Higher quant (Q6_K, Q8_0) = better quality, more VRAM
@@ -662,7 +687,7 @@ Then use `my-alias` as the custom model name in character editor.
 1. **Start Small**: Begin with 7-14B models at Q4_K_M
 2. **Test Performance**: Evaluate conversation quality before committing to large downloads
 3. **Match VRAM**: Use estimator to avoid out-of-memory errors
-4. **Keep 1-2 Active**: Don't download every model—disk space adds up quickly
+4. **Keep 1-2 Active**: Don't download every modelâ€”disk space adds up quickly
 
 ### Quantization Choice
 

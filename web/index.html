@@ -811,8 +811,12 @@
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Model</label>
-                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_model" required placeholder="qwen2.5:14b-instruct">
-                                        <div class="form-text text-secondary">Model name or identifier (use Model Manager to download and import to Ollama).</div>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_model" required placeholder="qwen2.5:14b-instruct" readonly>
+                                            <button type="button" class="btn btn-outline-secondary" id="openSystemModelPickerBtn">Select</button>
+                                            <button type="button" class="btn btn-outline-info" id="openSystemModelInstallerBtn">Install</button>
+                                        </div>
+                                        <div class="form-text text-secondary">Read-only model field. Use Select for installed models or Install for HuggingFace URL-first installs.</div>
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Context Window</label>
@@ -888,7 +892,11 @@
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-light">Archivist Model</label>
-                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_archivist_model" placeholder="qwen3:4b">
+                                        <div class="input-group">
+                                            <input type="text" class="form-control bg-dark text-light border-secondary" id="llm_archivist_model" placeholder="qwen3:4b" readonly>
+                                            <button type="button" class="btn btn-outline-secondary" id="openArchivistModelPickerBtn">Select</button>
+                                            <button type="button" class="btn btn-outline-info" id="openArchivistModelInstallerBtn">Install</button>
+                                        </div>
                                         <div class="form-text text-secondary">
                                             Ollama: model name. LM Studio: use LM Studio model name. KoboldCpp: leave blank (single-model runtime).
                                         </div>
@@ -1158,17 +1166,21 @@
                                     <!-- Model Configuration -->
                                     <h6 class="text-light mt-3 mb-2"><i class="bi bi-cpu me-2"></i>Model Settings</h6>
                                     <div class="row">
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-6 mb-3">
                                             <label class="form-label text-light">Model Name</label>
-                                            <input type="text" class="form-control bg-dark text-light border-secondary" id="vision_model_name" placeholder="qwen3-vl:4b">
+                                            <div class="input-group">
+                                                <input type="text" class="form-control bg-dark text-light border-secondary" id="vision_model_name" placeholder="qwen3-vl:4b" readonly>
+                                                <button type="button" class="btn btn-outline-secondary" id="openVisionModelPickerBtn">Select</button>
+                                                <button type="button" class="btn btn-outline-info" id="openVisionModelInstallerBtn">Install</button>
+                                            </div>
                                             <div class="form-text text-secondary">Vision model identifier. Backend automatically matches LLM provider setting.</div>
                                         </div>
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-3 mb-3">
                                             <label class="form-label text-light">Max Response Tokens</label>
                                             <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_max_response_tokens" min="128" max="8192" step="64" placeholder="2048">
                                             <div class="form-text text-secondary">Token cap for vision model output.</div>
                                         </div>
-                                        <div class="col-md-4 mb-3">
+                                        <div class="col-md-3 mb-3">
                                             <label class="form-label text-light">Load Timeout (s)</label>
                                             <input type="number" class="form-control bg-dark text-light border-secondary" id="vision_model_load_timeout_seconds" min="10" max="300" placeholder="60">
                                             <div class="form-text text-secondary">Time to wait for model to load.</div>
@@ -2141,37 +2153,12 @@
                                                     <div class="row">
                                                         <div class="col-12 mb-3">
                                                             <label class="form-label">Model</label>
-                                                            
-                                                            <!-- Model Selection Toggle -->
-                                                            <div class="btn-group btn-group-sm mb-2 w-100" role="group">
-                                                                <input type="radio" class="btn-check" name="charLlmModelMode" id="charLlmModelModeSelect" value="select" checked>
-                                                                <label class="btn btn-outline-secondary" for="charLlmModelModeSelect">
-                                                                    <i class="bi bi-list-ul me-1"></i>Select from Downloaded
-                                                                </label>
-                                                                
-                                                                <input type="radio" class="btn-check" name="charLlmModelMode" id="charLlmModelModeCustom" value="custom">
-                                                                <label class="btn btn-outline-secondary" for="charLlmModelModeCustom">
-                                                                    <i class="bi bi-pencil me-1"></i>Custom Model Name
-                                                                </label>
+                                                            <div class="input-group input-group-sm">
+                                                                <input type="text" class="form-control form-control-sm" id="charLlmModel" placeholder="System Default" readonly>
+                                                                <button type="button" class="btn btn-outline-secondary" id="openCharacterModelPickerBtn">Select</button>
+                                                                <button type="button" class="btn btn-outline-info" id="openCharacterModelInstallerBtn">Install</button>
                                                             </div>
-                                                            
-                                                            <!-- Select from Downloaded Models -->
-                                                            <div id="charLlmModelSelectContainer">
-                                                                <select class="form-select form-select-sm" id="charLlmModelSelect">
-                                                                    <option value="">System Default</option>
-                                                                </select>
-                                                                <small class="text-theme-secondary">Choose from models downloaded via Model Manager</small>
-                                                            </div>
-                                                            
-                                                            <!-- Custom Model Input -->
-                                                            <div id="charLlmModelCustomContainer" style="display: none;">
-                                                                <input type="text" class="form-control form-control-sm" id="charLlmModel" 
-                                                                       placeholder="e.g., qwen2.5:14b">
-                                                                <small class="text-warning">
-                                                                    <i class="bi bi-exclamation-triangle me-1"></i>
-                                                                    Make sure this model is already pulled in Ollama
-                                                                </small>
-                                                            </div>
+                                                            <small class="text-theme-secondary">Provider-installed models only. Paste HuggingFace URL in installer; IDs are optional fallback.</small>
                                                         </div>
                                                         
                                                         <div class="col-md-4 mb-2">
@@ -3833,6 +3820,82 @@
         </div>
     </div>
 
+    <!-- Provider Model Picker Modal -->
+    <div class="modal fade" id="providerModelPickerModal" tabindex="-1" aria-labelledby="providerModelPickerLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="providerModelPickerLabel">
+                        <i class="bi bi-list-check me-2"></i>Select Installed Model
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <small class="text-secondary" id="providerModelPickerMeta">Provider: -</small>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshProviderModelsBtn">Refresh</button>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="providerModelSearchInput" placeholder="Search installed models...">
+                    </div>
+                    <div id="providerModelList" class="list-group"></div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Provider Installer Modal -->
+    <div class="modal fade" id="providerInstallerModal" tabindex="-1" aria-labelledby="providerInstallerLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="providerInstallerLabel">
+                        <i class="bi bi-cloud-download me-2"></i>Install Model
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info border-info">
+                        <strong>Paste HuggingFace URL; IDs are optional fallback.</strong>
+                        <div class="small mt-1">LM Studio uses URL-first install with provider-specific progress availability.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label text-light">Provider</label>
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="providerInstallerProvider" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label text-light">HuggingFace URL (Primary)</label>
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="providerInstallerHfUrl" placeholder="https://huggingface.co/username/repo">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label text-light">Quantization</label>
+                        <select class="form-select bg-dark text-light border-secondary" id="providerInstallerQuantSelect" disabled>
+                            <option value="">Enter HuggingFace URL first...</option>
+                        </select>
+                        <div class="form-text text-muted">Quantizations auto-load from the HuggingFace repository.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label text-light">Model ID (Fallback only)</label>
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="providerInstallerModelId" placeholder="qwen/qwen2.5-coder-14b@q4_k_m">
+                    </div>
+                    <div class="mt-3">
+                        <small class="text-secondary d-block mb-2" id="providerInstallerStatus">Idle</small>
+                        <div class="progress" style="height: 20px;">
+                            <div id="providerInstallerProgress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="startProviderInstallBtn">Install</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Model Selection Modal (Phase 10) -->
     <div class="modal fade" id="modelSelectionModal" tabindex="-1" aria-labelledby="modelSelectionLabel" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -4039,7 +4102,7 @@
     <script src="js/memory-panel.js?v=2"></script>
     <script src="js/pending-memories-panel.js?v=1"></script>
     <script src="js/system_settings.js?v=1"></script>
-    <script src="js/model-management.js?v=1"></script>
+    <script src="js/model-picker.js?v=1"></script>
     <script src="js/app.js?v=9"></script>
     <script src="js/document-library.js?v=1"></script>
     <script src="js/document-autocomplete.js?v=1"></script>

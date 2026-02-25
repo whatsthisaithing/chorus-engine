@@ -20,7 +20,7 @@ window.CharacterManagement = {
         }
         this.initialized = true;
         this.setupEventListeners();
-        this.loadDownloadedModels();
+        this.loadProviderState();
     },
     
     /**
@@ -129,22 +129,6 @@ window.CharacterManagement = {
             if (settings) settings.style.display = e.target.checked ? 'block' : 'none';
         });
         
-        // LLM Model mode toggle
-        document.querySelectorAll('input[name="charLlmModelMode"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                const selectContainer = document.getElementById('charLlmModelSelectContainer');
-                const customContainer = document.getElementById('charLlmModelCustomContainer');
-                
-                if (e.target.value === 'select') {
-                    selectContainer.style.display = 'block';
-                    customContainer.style.display = 'none';
-                } else {
-                    selectContainer.style.display = 'none';
-                    customContainer.style.display = 'block';
-                }
-            });
-        });
-        
         // User identity mode toggle
         document.getElementById('charUserIdentityMode')?.addEventListener('change', (e) => {
             const roleFields = document.getElementById('charUserIdentityRoleFields');
@@ -155,76 +139,16 @@ window.CharacterManagement = {
     },
     
     /**
-     * Load downloaded models from Model Manager (Ollama only)
+     * Load current provider and sampling field state.
      */
-    async loadDownloadedModels() {
+    async loadProviderState() {
         try {
-            // Check LLM provider first
             const configResponse = await fetch('/system/config');
             const config = await configResponse.json();
             this.llmProvider = config.llm.provider || 'ollama';
             this.updateOllamaSamplingFieldState();
-            
-            // Only show dropdown for Ollama
-            const selectContainer = document.getElementById('charLlmModelSelectContainer');
-            if (selectContainer) {
-                selectContainer.style.display = this.llmProvider === 'ollama' ? '' : 'none';
-            }
-            
-            // Exit early if not Ollama
-            if (this.llmProvider !== 'ollama') {
-                return;
-            }
-            
-            // Load both curated and custom models
-            const [downloadedResponse, customResponse] = await Promise.all([
-                fetch('/api/models/downloaded'),
-                fetch('/api/models/custom')
-            ]);
-            
-            const downloadedModels = downloadedResponse.ok ? await downloadedResponse.json() : [];
-            const customModels = customResponse.ok ? await customResponse.json() : [];
-            
-            // Combine and populate dropdown
-            const select = document.getElementById('charLlmModelSelect');
-            const currentValue = select.value; // Preserve selection
-            
-            // Clear existing options except default
-            select.innerHTML = '<option value="">System Default</option>';
-            
-            // Add curated models
-            if (downloadedModels.length > 0) {
-                const curatedGroup = document.createElement('optgroup');
-                curatedGroup.label = 'Curated Models';
-                downloadedModels.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.ollama_model_name || model.model_id;
-                    option.textContent = `${model.display_name} (${model.quantization})`;
-                    curatedGroup.appendChild(option);
-                });
-                select.appendChild(curatedGroup);
-            }
-            
-            // Add custom HF models
-            if (customModels.length > 0) {
-                const customGroup = document.createElement('optgroup');
-                customGroup.label = 'Custom HuggingFace Models';
-                customModels.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.model_id;
-                    const repoName = model.repo_id.split('/')[1] || model.repo_id;
-                    option.textContent = `${repoName} (${model.quantization})`;
-                    customGroup.appendChild(option);
-                });
-                select.appendChild(customGroup);
-            }
-            
-            // Restore selection if it still exists
-            if (currentValue) {
-                select.value = currentValue;
-            }
         } catch (error) {
-            console.error('Failed to load downloaded models:', error);
+            console.error('Failed to load provider state:', error);
         }
     },
 
@@ -439,43 +363,8 @@ window.CharacterManagement = {
         
         // Preferred LLM
         const preferredModel = character.preferred_llm?.model || '';
-        const modelSelect = document.getElementById('charLlmModelSelect');
         const modelInput = document.getElementById('charLlmModel');
-        
-        // Check if the model exists in the dropdown
-        let modelFoundInDropdown = false;
-        if (preferredModel) {
-            for (let option of modelSelect.options) {
-                if (option.value === preferredModel) {
-                    modelFoundInDropdown = true;
-                    break;
-                }
-            }
-        }
-        
-        // Set the appropriate mode and value
-        if (preferredModel && modelFoundInDropdown) {
-            // Model is in dropdown - use select mode
-            document.getElementById('charLlmModelModeSelect').checked = true;
-            document.getElementById('charLlmModelSelectContainer').style.display = 'block';
-            document.getElementById('charLlmModelCustomContainer').style.display = 'none';
-            modelSelect.value = preferredModel;
-            modelInput.value = '';
-        } else if (preferredModel) {
-            // Model not in dropdown - use custom mode
-            document.getElementById('charLlmModelModeCustom').checked = true;
-            document.getElementById('charLlmModelSelectContainer').style.display = 'none';
-            document.getElementById('charLlmModelCustomContainer').style.display = 'block';
-            modelSelect.value = '';
-            modelInput.value = preferredModel;
-        } else {
-            // No model - default to select mode with system default
-            document.getElementById('charLlmModelModeSelect').checked = true;
-            document.getElementById('charLlmModelSelectContainer').style.display = 'block';
-            document.getElementById('charLlmModelCustomContainer').style.display = 'none';
-            modelSelect.value = '';
-            modelInput.value = '';
-        }
+        modelInput.value = preferredModel;
         
         document.getElementById('charLlmTemperature').value = character.preferred_llm?.temperature !== undefined ? character.preferred_llm.temperature : '';
         document.getElementById('charLlmMaxTokens').value = character.preferred_llm?.max_tokens || '';
@@ -987,16 +876,7 @@ window.CharacterManagement = {
         }
         
         // Preferred LLM
-        const llmModelMode = document.querySelector('input[name="charLlmModelMode"]:checked').value;
-        let llmModel = '';
-        
-        if (llmModelMode === 'select') {
-            // Get from dropdown
-            llmModel = document.getElementById('charLlmModelSelect').value.trim();
-        } else {
-            // Get from custom input
-            llmModel = document.getElementById('charLlmModel').value.trim();
-        }
+        const llmModel = document.getElementById('charLlmModel').value.trim();
         
         const llmTemp = document.getElementById('charLlmTemperature').value.trim();
         const llmMaxTokens = document.getElementById('charLlmMaxTokens').value.trim();

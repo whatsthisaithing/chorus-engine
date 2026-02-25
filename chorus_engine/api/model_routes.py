@@ -2,6 +2,9 @@
 
 import logging
 import asyncio
+import json
+import subprocess
+import re
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 from uuid import uuid4
@@ -121,6 +124,48 @@ class SwitchModelRequest(BaseModel):
     model_path: str = Field(..., description="Absolute path to GGUF file")
 
 
+class InstalledModelResponse(BaseModel):
+    """Provider-installed model metadata used for picker UI."""
+    id: str
+    name: str
+    provider: str
+    model_type: str = "llm"
+    size_bytes: Optional[int] = None
+    quantization: Optional[str] = None
+    family: Optional[str] = None
+    publisher: Optional[str] = None
+
+
+class LMStudioInstallRequest(BaseModel):
+    """LM Studio install request (URL-first, ID fallback)."""
+    hf_url: Optional[str] = Field(None, description="HuggingFace URL (primary input)")
+    model_id: Optional[str] = Field(None, description="LM Studio model ID fallback")
+    quantization: Optional[str] = Field(None, description="Optional quantization suffix")
+
+
+def _normalize_provider_base_url(provider: str, raw_base_url: str) -> str:
+    """
+    Normalize provider base URLs so discovery endpoints resolve consistently.
+    Handles common user-config variants like http://localhost:1234/v1.
+    """
+    url = str(raw_base_url or "").strip().rstrip("/")
+    if not url:
+        return url
+
+    p = str(provider or "").strip().lower()
+    if p == "lmstudio":
+        # LM Studio API roots are served at host root; users often configure /v1 for OpenAI calls.
+        for suffix in ("/v1", "/api/v1", "/api/v0"):
+            if url.lower().endswith(suffix):
+                url = url[: -len(suffix)]
+                break
+    elif p == "ollama":
+        # Ollama tags endpoint is at root /api/tags; avoid double /v1 when users append /v1.
+        if url.lower().endswith("/v1"):
+            url = url[:-3].rstrip("/")
+    return url
+
+
 # Routes
 
 @router.get("/models/curated", response_model=List[CuratedModelResponse])
@@ -215,6 +260,177 @@ async def list_downloaded_models(db: Session = Depends(get_db)):
         
     except Exception as e:
         logger.error(f"Failed to list downloaded models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _list_installed_models_ollama(base_url: str) -> List[Dict[str, Any]]:
+    """List installed Ollama models using API-first discovery."""
+    import httpx
+
+    models: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(f"{base_url.rstrip('/')}/api/tags")
+            response.raise_for_status()
+            payload = response.json()
+            for row in (payload.get("models") or []):
+                details = row.get("details") or {}
+                model_name = str(row.get("name") or row.get("model") or "").strip()
+                if not model_name:
+                    continue
+                models.append(
+                    {
+                        "id": model_name,
+                        "name": model_name,
+                        "provider": "ollama",
+                        "model_type": "llm",
+                        "size_bytes": row.get("size"),
+                        "quantization": details.get("quantization_level"),
+                        "family": details.get("family"),
+                        "publisher": None,
+                    }
+                )
+            return models
+        except Exception:
+            pass
+
+        response = await client.get(f"{base_url.rstrip('/')}/v1/models")
+        response.raise_for_status()
+        payload = response.json()
+        for row in (payload.get("data") or []):
+            model_name = str(row.get("id") or "").strip()
+            if not model_name:
+                continue
+            models.append(
+                {
+                    "id": model_name,
+                    "name": model_name,
+                    "provider": "ollama",
+                    "model_type": "llm",
+                    "size_bytes": None,
+                    "quantization": None,
+                    "family": None,
+                    "publisher": row.get("owned_by"),
+                }
+            )
+    return models
+
+
+async def _list_installed_models_lmstudio(base_url: str, include_embedding: bool = False) -> List[Dict[str, Any]]:
+    """List installed LM Studio models using API-first and CLI fallback."""
+    import httpx
+
+    normalized: List[Dict[str, Any]] = []
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(f"{base_url.rstrip('/')}/api/v1/models")
+            response.raise_for_status()
+            payload = response.json()
+            for row in (payload.get("models") or []):
+                raw_type = str(row.get("type") or "llm").lower()
+                model_type = "embedding" if raw_type == "embedding" else "llm"
+                if model_type == "embedding" and not include_embedding:
+                    continue
+                model_id = str(row.get("key") or row.get("id") or "").strip()
+                if not model_id:
+                    continue
+                quant = row.get("quantization") or {}
+                normalized.append(
+                    {
+                        "id": model_id,
+                        "name": str(row.get("display_name") or model_id),
+                        "provider": "lmstudio",
+                        "model_type": model_type,
+                        "size_bytes": row.get("size_bytes"),
+                        "quantization": quant.get("name"),
+                        "family": row.get("architecture"),
+                        "publisher": row.get("publisher"),
+                    }
+                )
+            if normalized:
+                return normalized
+        except Exception:
+            pass
+
+        try:
+            response = await client.get(f"{base_url.rstrip('/')}/api/v0/models")
+            response.raise_for_status()
+            payload = response.json()
+            for row in (payload.get("data") or []):
+                raw_type = str(row.get("type") or "llm").lower()
+                model_type = "embedding" if raw_type in ("embedding", "embeddings") else "llm"
+                if model_type == "embedding" and not include_embedding:
+                    continue
+                model_id = str(row.get("id") or "").strip()
+                if not model_id:
+                    continue
+                normalized.append(
+                    {
+                        "id": model_id,
+                        "name": model_id,
+                        "provider": "lmstudio",
+                        "model_type": model_type,
+                        "size_bytes": None,
+                        "quantization": row.get("quantization"),
+                        "family": row.get("arch"),
+                        "publisher": row.get("publisher") or row.get("owned_by"),
+                    }
+                )
+            if normalized:
+                return normalized
+        except Exception:
+            pass
+
+    return normalized
+
+
+@router.get("/models/installed", response_model=List[InstalledModelResponse])
+async def list_provider_installed_models(
+    provider: Optional[str] = None,
+    include_embedding: bool = False,
+    base_url: Optional[str] = None,
+):
+    """Return installed models from currently selected provider (fresh runtime state)."""
+    try:
+        from chorus_engine.config.loader import ConfigLoader
+
+        cfg = ConfigLoader().load_system_config()
+        selected_provider = str(provider or cfg.llm.provider or "").strip().lower()
+        configured_provider = str(getattr(cfg.llm, "provider", "") or "").strip().lower()
+        configured_base_url = str(getattr(cfg.llm, "base_url", "") or "").strip()
+        requested_base_url = str(base_url or "").strip()
+
+        if requested_base_url:
+            effective_base_url = requested_base_url
+        elif selected_provider == configured_provider and configured_base_url:
+            effective_base_url = configured_base_url
+        elif selected_provider == "ollama":
+            effective_base_url = "http://localhost:11434"
+        elif selected_provider == "lmstudio":
+            effective_base_url = "http://localhost:1234"
+        else:
+            effective_base_url = configured_base_url
+
+        effective_base_url = _normalize_provider_base_url(selected_provider, effective_base_url)
+
+        if selected_provider == "ollama":
+            models = await _list_installed_models_ollama(base_url=effective_base_url or "http://localhost:11434")
+        elif selected_provider == "lmstudio":
+            models = await _list_installed_models_lmstudio(
+                base_url=effective_base_url or "http://localhost:1234",
+                include_embedding=include_embedding,
+            )
+        elif selected_provider == "koboldcpp":
+            models = []
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider for installed list: {selected_provider}")
+
+        return [InstalledModelResponse(**m) for m in models]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list provider installed models: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -820,6 +1036,7 @@ class HFQuantizationsResponse(BaseModel):
     """Response with available quantizations."""
     repo_id: str
     quantizations: List[Dict[str, str]]
+    warning: Optional[str] = None
 
 
 @router.get("/models/hf-quantizations")
@@ -842,15 +1059,10 @@ async def get_hf_quantizations(hf_url: str):
         # Get available quantizations
         quantizations = await model_manager.get_hf_quantizations(repo_id)
         
-        if not quantizations:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No GGUF files found in repository: {repo_id}"
-            )
-        
         return HFQuantizationsResponse(
             repo_id=repo_id,
-            quantizations=quantizations
+            quantizations=quantizations,
+            warning=(f"No GGUF quantizations found in repository: {repo_id}" if not quantizations else None),
         )
         
     except HTTPException:
@@ -969,6 +1181,92 @@ async def _pull_hf_model_background(job_id: str, model_name: str):
         
     except Exception as e:
         logger.error(f"HF model pull failed: {e}", exc_info=True)
+        download_jobs[job_id]["status"] = "failed"
+        download_jobs[job_id]["error"] = str(e)
+
+
+@router.post("/models/lmstudio/install")
+async def install_lmstudio_model(request: LMStudioInstallRequest):
+    """
+    LM Studio installs are currently disabled in Chorus Engine.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "LM Studio installation is currently unavailable in Chorus Engine. "
+            "Install models in the LM Studio application, then select them in Chorus."
+        ),
+    )
+
+
+@router.get("/models/lmstudio/install/{job_id}")
+async def get_lmstudio_install_status(job_id: str):
+    """Get LM Studio installer job status."""
+    job = download_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Install job '{job_id}' not found")
+    if job.get("provider") != "lmstudio":
+        raise HTTPException(status_code=400, detail="Requested job is not an LM Studio install job")
+
+    return {
+        "job_id": job_id,
+        "status": job.get("status"),
+        "progress": job.get("progress"),
+        "status_text": job.get("status_text"),
+        "model_spec": job.get("model_spec"),
+        "error": job.get("error"),
+    }
+
+
+async def _lmstudio_install_background(job_id: str, model_spec: str):
+    """Background runner for `lms get` install jobs with best-effort progress parsing."""
+    try:
+        download_jobs[job_id]["status"] = "installing"
+        download_jobs[job_id]["status_text"] = f"Starting install: {model_spec}"
+
+        proc = await asyncio.create_subprocess_exec(
+            "lms",
+            "get",
+            model_spec,
+            "--yes",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        percent_re = re.compile(r"(\d{1,3})\s*%")
+
+        while True:
+            line = await proc.stdout.readline() if proc.stdout else b""
+            if not line:
+                break
+            text = line.decode("utf-8", errors="ignore").strip()
+            if not text:
+                continue
+            download_jobs[job_id]["status_text"] = text
+            m = percent_re.search(text)
+            if m:
+                try:
+                    pct = float(m.group(1))
+                    download_jobs[job_id]["progress"] = max(0.0, min(100.0, pct))
+                except Exception:
+                    pass
+
+        rc = await proc.wait()
+        if rc == 0:
+            download_jobs[job_id]["status"] = "completed"
+            download_jobs[job_id]["progress"] = 100.0
+            if not download_jobs[job_id].get("status_text"):
+                download_jobs[job_id]["status_text"] = "Install completed."
+        else:
+            download_jobs[job_id]["status"] = "failed"
+            download_jobs[job_id]["error"] = f"lms get exited with code {rc}"
+            if not download_jobs[job_id].get("status_text"):
+                download_jobs[job_id]["status_text"] = "Install failed."
+    except FileNotFoundError:
+        download_jobs[job_id]["status"] = "failed"
+        download_jobs[job_id]["error"] = "LM Studio CLI (`lms`) not found in PATH."
+    except Exception as e:
+        logger.error("LM Studio install failed: %s", e, exc_info=True)
         download_jobs[job_id]["status"] = "failed"
         download_jobs[job_id]["error"] = str(e)
 
