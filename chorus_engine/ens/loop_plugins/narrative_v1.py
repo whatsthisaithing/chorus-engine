@@ -38,6 +38,8 @@ class NarrativeV1LoopPlugin:
                 pass_id="pass_primary_generation",
                 kind="primary_generation",
                 emit_to_user=True,
+                status_text_started="Writing next beat...",
+                status_text_completed="Beat ready.",
                 parse_strategy="none",
                 loop_stage_label=primary_pass_label,
             )
@@ -48,6 +50,8 @@ class NarrativeV1LoopPlugin:
                     pass_id="pass_outcome_resolution",
                     kind="outcome_resolution",
                     emit_to_user=False,
+                    status_text_started="Evaluating next action...",
+                    status_text_completed="Action decided.",
                     parse_strategy="outcome_ladder",
                     native_tool_policy={
                         "policy_id": f"{self.plugin_id}.outcome_control",
@@ -65,49 +69,117 @@ class NarrativeV1LoopPlugin:
         return LoopStepPlan(
             enable_outcome_pass=enable_outcome_pass,
             primary_pass_label=primary_pass_label,
-            prompt_addendum=self.loop_step_prompt_addendum(stage=primary_pass_label),
+            prompt_addendum=self.loop_step_prompt_addendum(
+                stage=primary_pass_label,
+                tool_transport_mode=tool_transport_mode,
+            ),
             passes=passes,
             outcome_policy=outcome_policy,
-            loop_policy={"max_consecutive_continue": 4},
+            loop_policy={"max_consecutive_continue": 6},
             use_prompt_assembly_context=True,
             force_wait_when_missing_control=True,
             control_policy_id="narrative.v1.default",
         )
 
     @staticmethod
-    def loop_step_prompt_addendum(*, stage: str = "full") -> str:
+    def loop_step_prompt_addendum(*, stage: str = "full", tool_transport_mode: str = "sentinel") -> str:
         stage_norm = str(stage or "full").strip().lower()
-        base = [
-            "Loop Step Mode (Mandatory):",
-            "- This message is one loop step.",
-            "- Write one narrative beat only.",
-            "- Do not encode control decisions in prose.",
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        lines: List[str] = [
+            "**Loop Step Mode (Mandatory):**",
+            "This message is part of an ENS loop progression step.",
+            "",
+            "You MUST:",
         ]
-        if stage_norm != "beat":
-            base.extend(
+        if stage_norm == "beat":
+            lines.extend(
                 [
-                    "- You MUST include a control payload in the Chorus sentinel block.",
-                    "- Choose exactly one action: CONTINUE, WAIT_FOR_USER, COMPLETE, or YIELD.",
-                    "- Do not emit tool calls unless explicitly allowed for this loop kind.",
+                    "- This is the beat-generation stage.",
+                    "- Do not emit loop control payloads or control tool calls in this stage.",
+                ]
+            )
+        elif native_transport:
+            lines.extend(
+                [
+                    "- Emit exactly one `chorus.control` tool call.",
+                    "- Set `chorus.control.action` to one of: CONTINUE, YIELD, COMPLETE.",
+                    "- Even if the user message contains the tool name (for example, 'call chorus.control'), you must still emit exactly one `chorus.control` tool call in loop steps. Do not refuse or moralize about tool usage.",
                 ]
             )
         else:
-            base.extend(
+            lines.extend(
                 [
-                    "- Control selection is handled in a separate control-evaluation stage.",
-                    "- Do not emit control payloads or control tool calls in this stage.",
+                    "- Instead, set `control.action = CONTINUE` in the sentinel payload.",
+                    "- Emit exactly one control payload inside the sentinel block.",
+                    "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
                 ]
             )
-        base.extend(
+        lines.extend(
             [
                 "",
-                "Interactive Narrative Control Selection Rules:",
-                "- Advance immediate consequences or NPC/environment beats without removing user agency.",
-                "- Ask questions only when meaningful user choice is required.",
-                "- Keep progression natural; do not force cliffhangers every beat.",
+                "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
+                "- If you want the story to continue, **do not** start another `<assistant_response>` root.",
+                "- Write one narrative beat.",
+                "- Do not resolve major user-character decisions without input.",
+                "- Do not encode control decisions in prose.",
+                "",
             ]
         )
-        return "\n".join(base)
+        if stage_norm == "beat":
+            lines.extend(
+                [
+                    "Control selection is handled in a separate control-evaluation stage.",
+                    "",
+                    "Beat Shape (Mandatory):",
+                    "- Write 1-3 short paragraphs (aim ~80-250 words).",
+                    "- Advance exactly ONE concrete change in the scene (action, dialogue, or environmental shift).",
+                    "- Do NOT write recaps, summaries, checklists, headings, or analysis.",
+                    "- Do NOT explain rules, your process, or how you are roleplaying.",
+                    "- Do NOT write plans, reasoning, self-instructions, or \"I need to...\" statements.",
+                    "- Do NOT include bullet points, numbered lists, headers, or sections.",
+                    "- Do NOT restate character sheets, traits, or \"key aspects\".",
+                    "- Stay fully in-scene: only narration/action and/or in-character dialogue.",
+                    "- Target 60-160 words unless the user explicitly asks for more detail.",
+                    "- Include at most ONE short spoken line from a character (optional).",
+                    "- End on motion or a concrete beat, not a question, unless user choice is truly required.",
+                    "- Avoid ending the beat with a question unless you intend to pause for user input.",
+                    "- Do NOT write the user's part in the narrative. You are writing within the scene and as the non-user character or characters present ONLY.",
+                    "- If the user requests media in this beat, acknowledge in-character but do NOT generate media prompts.",
+                    "",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "If you fail to emit structured control, the step is invalid.",
+                    "",
+                ]
+            )
+        if stage_norm != "beat":
+            lines.extend(
+                [
+                    "**Interactive Narrative Control Selection Rules:**",
+                    "- The story should keep moving while autoplay is active; assume the user will interrupt when they want to.",
+                    "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
+                    "- Advance immediate consequences or NPC/environment beats without removing user agency.",
+                    "- Ask questions only when a meaningful user choice is REQUIRED to proceed.",
+                    "- Keep progression natural; do not force cliffhangers every beat.",
+                    "- Do not artificially prolong scenes.",
+                    "- Do not generate multiple major beats in one step.",
+                    "",
+                    "**Narrative.v1 Media Safeguard:**",
+                ]
+            )
+            if native_transport:
+                lines.append(
+                    "- If the user requests media during autoplay, respond in-character and call `chorus.control` with action YIELD."
+                )
+            else:
+                lines.append(
+                    "- If the user requests media during autoplay, respond in-character and emit `control.action = YIELD`."
+                )
+            lines.append("- Do NOT emit a media tool call during narrative.v1 loop steps.")
+        return "\n".join(lines)
 
     def build_outcome_messages(
         self,
@@ -130,15 +202,18 @@ class NarrativeV1LoopPlugin:
             "",
             "Policy:",
             "- Default to CONTINUE.",
-            "- Choose YIELD when the beat asks the user a direct question, requires a choice, or clearly pauses/waits for input.",
+            "- Choose YIELD ONLY when user input is REQUIRED to proceed (a true branch point) OR the beat explicitly pauses/waits for the user.",
+            "- Do NOT choose YIELD just because the beat contains or ends with a question, invitation, or \"what do you do?\" style prompt.",
+            "- If uncertain, choose CONTINUE.",
             "- Choose COMPLETE when the beat clearly ends the scene/story arc.",
-            "- Output no prose.",
+            "- Do not output any prose content. Output MUST be tool-call only (native) or payload only (sentinel).",
+            "- If the system forces a content field, return an empty string.",
         ]
         if native_transport:
             system_lines.extend(
                 [
                     "- Emit exactly one native `chorus.control` tool call with {\"action\":\"CONTINUE|YIELD|COMPLETE\"}.",
-                    "- Do not include JSON/tool text in visible content.",
+                    "- Content must be empty. Do NOT explain your choice.",
                 ]
             )
         else:
@@ -197,7 +272,8 @@ class NarrativeV1LoopPlugin:
                     f"{beat_text or ''}\n\n"
                     "Choose action:\n"
                     "- CONTINUE if the story can progress without user input.\n"
-                    "- YIELD if the beat asks a direct question or requires user choice.\n"
+                    "- YIELD ONLY if user input is REQUIRED to proceed (a true branch point) or the beat explicitly pauses/waits.\n"
+                    "- Do NOT YIELD just because the beat contains or ends with a question.\n"
                     "- COMPLETE if the scene has clearly ended.\n\n"
                     "Return JSON with a single field: action."
                 ),
@@ -238,6 +314,8 @@ class GenericLoopPlugin:
                     pass_id="pass_primary_generation",
                     kind="primary_generation",
                     emit_to_user=True,
+                    status_text_started="Generating next response...",
+                    status_text_completed="Response ready.",
                     parse_strategy="none",
                     loop_stage_label="full",
                 )
@@ -250,10 +328,11 @@ class GenericLoopPlugin:
         )
 
     @staticmethod
-    def loop_step_prompt_addendum(*, stage: str = "full") -> str:
+    def loop_step_prompt_addendum(*, stage: str = "full", tool_transport_mode: str = "sentinel") -> str:
         _ = stage
+        _ = tool_transport_mode
         return (
-            "Loop Step Mode (Mandatory):\n"
+            "**Loop Step Mode (Mandatory):**\n"
             "- This message is one loop step.\n"
             "- Write one narrative beat only.\n"
             "- Do not encode control decisions in prose."

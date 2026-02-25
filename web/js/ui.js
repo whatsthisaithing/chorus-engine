@@ -216,12 +216,15 @@ const UI = {
      */
     renderMessages(messages, segments = []) {
         const container = document.getElementById('messagesContainer');
+        const existingTypingIndicator = document.getElementById('typing-indicator');
+        const existingTypingStatus = document.getElementById('typing-status-text');
+        const preservedTypingText = existingTypingStatus ? (existingTypingStatus.textContent || '') : '';
         
         // Clear only message rows, not the empty state
         const messageRows = container.querySelectorAll('.message-row');
         messageRows.forEach(el => el.remove());
         // Remove any standalone message elements (e.g., typing indicators)
-        const messageElements = container.querySelectorAll('.message');
+        const messageElements = container.querySelectorAll('.message:not(#typing-indicator)');
         messageElements.forEach(el => el.remove());
         
         // Show/hide empty state based on message count
@@ -257,6 +260,11 @@ const UI = {
             }
             this.appendMessage(msg);
         });
+
+        if (existingTypingIndicator) {
+            container.appendChild(existingTypingIndicator);
+            this.updateTypingIndicatorStatus(preservedTypingText);
+        }
         
         this.scrollToBottom();
     },
@@ -614,22 +622,40 @@ const UI = {
     /**
      * Show typing indicator
      */
-    showTypingIndicator() {
+    showTypingIndicator(statusText = null) {
         const container = document.getElementById('messagesContainer');
-        
-        const indicator = document.createElement('div');
-        indicator.className = 'message assistant-message';
-        indicator.id = 'typing-indicator';
-        indicator.innerHTML = `
-            <div class="typing-indicator">
-                <span></span>
-                <span></span>
-                <span></span>
-            </div>
-        `;
-        
-        container.appendChild(indicator);
+        let indicator = document.getElementById('typing-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.className = 'message assistant-message';
+            indicator.id = 'typing-indicator';
+            indicator.innerHTML = `
+                <div class="typing-indicator-wrap">
+                    <div class="typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <div class="typing-status-text" id="typing-status-text"></div>
+                </div>
+            `;
+            container.appendChild(indicator);
+        }
+        this.updateTypingIndicatorStatus(statusText);
         this.scrollToBottom();
+    },
+
+    updateTypingIndicatorStatus(statusText = null) {
+        const textEl = document.getElementById('typing-status-text');
+        if (!textEl) return;
+        const text = (statusText || '').trim();
+        if (!text) {
+            textEl.textContent = '';
+            textEl.style.display = 'none';
+            return;
+        }
+        textEl.textContent = text;
+        textEl.style.display = '';
     },
     
     /**

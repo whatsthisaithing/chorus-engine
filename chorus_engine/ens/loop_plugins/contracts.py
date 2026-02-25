@@ -24,6 +24,8 @@ class StepPassPlan:
     pass_id: str
     kind: StepPassKind
     emit_to_user: bool = False
+    status_text_started: Optional[str] = None
+    status_text_completed: Optional[str] = None
     parse_strategy: str = "none"
     native_tool_policy: Optional[Dict[str, Any]] = None
     response_format: Optional[Dict[str, Any]] = None

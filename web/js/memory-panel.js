@@ -3,7 +3,7 @@
  * Handles memory display, filtering, and CRUD operations
  */
 
-const IMMUTABLE_CHARACTERS_MEMORY = ['nova', 'alex'];
+const IMMUTABLE_CHARACTERS_MEMORY = ['nova', 'alex', 'aria', 'marcus'];
 
 window.MemoryPanel = {
     currentCharacter: null,
@@ -310,7 +310,11 @@ window.MemoryPanel = {
         
         try {
             this.showStatus('Updating memory...', 'info');
-            const updated = await API.updateMemory(memoryId, { content: newContent });
+            const memory = this.allMemories.find(m => m.id === memoryId)
+                || this.searchResults.find(m => m.id === memoryId);
+            const updated = (memory && memory.memory_type === 'core')
+                ? await API.updateCoreMemory(this.currentCharacter, memoryId, { content: newContent })
+                : await API.updateMemory(memoryId, { content: newContent });
             
             const applyUpdate = (list) => {
                 const idx = list.findIndex(m => m.id === memoryId);
@@ -459,7 +463,11 @@ window.MemoryPanel = {
         
         try {
             this.showStatus('Deleting memory...', 'info');
-            await API.deleteMemory(memoryId);
+            if (memoryType === 'core') {
+                await API.deleteCoreMemory(this.currentCharacter, memoryId);
+            } else {
+                await API.deleteMemory(memoryId);
+            }
             this.showStatus('Memory deleted', 'success');
             await this.loadMemories();
             setTimeout(() => this.hideStatus(), 2000);

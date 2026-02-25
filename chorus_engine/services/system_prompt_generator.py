@@ -11,6 +11,7 @@ from chorus_engine.ens.tool_registry import (
     TOOL_CHORUS_CONTROL,
     prompt_doc_lines,
 )
+from chorus_engine.ens.loop_plugins.registry import get_loop_plugin
 
 
 class SystemPromptGenerator:
@@ -82,6 +83,13 @@ class SystemPromptGenerator:
             if companion_guidance:
                 parts.append("")
                 parts.append(companion_guidance)
+
+        # 3.56. Add roleplayer-specific guidance if role_type is roleplayer
+        if hasattr(character, 'role_type') and character.role_type == 'roleplayer':
+            roleplayer_guidance = self._generate_roleplayer_guidance()
+            if roleplayer_guidance:
+                parts.append("")
+                parts.append(roleplayer_guidance)
         
         # 3.6. Add natural conversation pacing guidance for chatbot or companion
         if hasattr(character, 'role_type') and character.role_type in ['chatbot', 'companion']:
@@ -147,15 +155,18 @@ class SystemPromptGenerator:
                 parts.append(self._generate_tool_payload_contract(contract_tools, loop_step=bool(loop_step)))
 
         if loop_step:
-            parts.append(
-                self._generate_loop_step_mode_block(
-                    tool_transport_mode=tool_transport_mode,
-                    loop_stage=loop_stage,
-                )
-            )
-            if str(loop_kind or "").strip().lower() == "narrative.v1":
+            loop_kind_key = str(loop_kind or "").strip()
+            if loop_kind_key:
+                plugin = get_loop_plugin(loop_kind_key)
                 parts.append(
-                    self._generate_narrative_v1_control_rules_block(
+                    plugin.loop_step_prompt_addendum(
+                        stage=str(loop_stage or "full"),
+                        tool_transport_mode=str(tool_transport_mode or "sentinel"),
+                    )
+                )
+            else:
+                parts.append(
+                    self._generate_loop_step_mode_block(
                         tool_transport_mode=tool_transport_mode,
                         loop_stage=loop_stage,
                     )
@@ -235,6 +246,18 @@ class SystemPromptGenerator:
         parts.append("- Think of yourself as an equal party having a casual conversation")
         parts.append("- Brief reactions and acknowledgments without elaboration are perfectly fine")
         parts.append("- You can skip responding if you don't have anything particular to add")
+        return "\n".join(parts)
+
+    def _generate_roleplayer_guidance(self) -> str:
+        parts = ["**Roleplayer Role:**"]
+        parts.append("- You are the character. Respond immediately in-character; do not act as a roleplay facilitator.")
+        parts.append("- You may include brief scene/action narration, but only as part of the character’s lived moment (not as a system overview).")
+        parts.append("- If the user does not provide a scenario, assume a simple default starting situation consistent with your character and begin.")
+        parts.append("- Never ask the user for \"context\", \"scene details\", \"relationship status\", or similar setup questions before responding.")
+        parts.append("- Do not narrate your process, planning, or what you \"need\" in order to roleplay.")
+        parts.append("- Do not produce headings like \"Understanding\" or \"Key Aspects\".")
+        parts.append("- Preserve user agency: do not decide major choices for the user.")
+        parts.append("- Questions are allowed only when a real user decision is required to proceed; otherwise keep the scene moving.")
         return "\n".join(parts)
 
     def _generate_conversation_pacing_guidance(self) -> str:
@@ -684,6 +707,13 @@ Only one tool call is recommended."""
             lines[5:5] = [
                 "- This is the beat-generation stage.",
                 "- Do not emit loop control payloads or control tool calls in this stage.",
+                "",
+                "Beat Shape (Mandatory):",
+                "- Write 1-3 short paragraphs (aim ~80-250 words).",
+                "- Advance exactly ONE concrete change in the scene (action, dialogue, or environmental shift).",
+                "- Do NOT write recaps, summaries, checklists, headings, or analysis.",
+                "- Do NOT explain rules, your process, or how you are roleplaying.",
+                "- Avoid ending the beat with a question unless you intend to pause for user input.",
             ]
             lines[-1] = "Control selection is handled in a separate control-evaluation stage."
         elif native_transport:
@@ -705,9 +735,10 @@ Only one tool call is recommended."""
         loop_stage_norm = str(loop_stage or "").strip().lower()
         lines = [
             "**Interactive Narrative Control Selection Rules:**",
+            "- The story should keep moving while autoplay is active; assume the user will interrupt when they want to.",
             "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
             "- Write one narrative beat that advances the scene naturally.",
-            "- Avoid asking questions by default; ask only when truly necessary for user agency.",
+            "- Ask questions only when a meaningful user choice is REQUIRED to proceed.",
             "- Do not artificially prolong scenes.",
             "- Do not generate multiple major beats in one step.",
             "",

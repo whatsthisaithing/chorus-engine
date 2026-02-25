@@ -113,6 +113,12 @@ Guardrails:
 - `ens.loop_step_allow_single_tool_loopback` (default `true`)
 - single loopback max per pass
 
+Progress callbacks:
+
+- pass executor emits pass lifecycle phases: `started`, `completed`, `failed`
+- dispatcher consumes these callbacks and updates in-memory loop progress state
+- pass status text is plugin-defined via `StepPassPlan.status_text_started` / `status_text_completed`
+
 ## Narrative v1 Current Pass Plan
 
 Narrative plugin currently emits two passes:
@@ -125,6 +131,11 @@ Narrative plugin currently emits two passes:
 - evaluates the generated beat and selects next control action
 - uses outcome ladder
 - `emit_to_user=false`
+
+Current narrative status text mapping:
+
+- primary generation: `Writing next beat...`
+- outcome resolution: `Evaluating next action...`
 
 Visible output source is explicit:
 
@@ -206,6 +217,43 @@ Recommended first checks when something is wrong:
 3. `ens_signal_queue` for duplicate or racing `loop_progression` rows
 4. `pass_trace` + `outcome_*` rung selection to identify control-resolution source
 
+## Live Progress Status (UI Feedback)
+
+Purpose:
+
+- expose in-flight pass progress so users can see what loop execution is currently doing
+- avoids silent autoplay/tick behavior during multi-pass steps
+
+Current implementation:
+
+- dispatcher stores latest per-loop progress in `app_state["loop_progress_status"]`
+- updated on pass phase transitions (`started`, `completed`, `failed`)
+- cleared on step completion
+
+API:
+
+- `GET /interactive-narrative/{loop_id}/progress`
+- response shape:
+  - `active`
+  - `step_index_before`
+  - `pass_id`, `pass_kind`
+  - `phase`
+  - `status_text`
+  - `emit_to_user`
+  - `error`
+  - `updated_at`
+
+Web behavior:
+
+- autoplay path polls progress while loop step is in-flight
+- typing indicator renders current `status_text`
+- status source is plugin pass config (not hardcoded in frontend)
+
+Cross-surface note:
+
+- this pass implements UI feedback for web only
+- same progress events can be mapped later for Discord/Telegram/SMS/background surfaces
+
 ## Adding a New Loop Kind
 
 Minimum path:
@@ -264,10 +312,10 @@ Visible output mismatch:
 - `pass_trace` is embedded in JSON diagnostics, not normalized in a dedicated table.
 - Manual tick progression is deduped but not fully deterministic-idempotent keyed.
 - Only narrative loop kind uses multi-pass wiring today.
+- live progress status store is in-memory (process-local), not persisted.
 
 ## Near-Term Follow-Up
 
 1. adopt pass executor for additional loop kinds
 2. add optional epoch-based deterministic keying for manual progression
 3. add optional per-pass persistence model if analytics/reporting requires relational querying
-

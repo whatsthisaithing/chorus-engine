@@ -2168,6 +2168,35 @@ class ENSDispatcher:
             return False
         return bool(getattr(ens_cfg, "native_tool_transport_narrative_v11_split_enabled", False))
 
+    def _set_loop_progress_status(
+        self,
+        *,
+        loop_id: str,
+        step_index_before: int,
+        pass_id: str,
+        pass_kind: str,
+        phase: str,
+        status_text: Optional[str],
+        emit_to_user: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        store = self.app_state.setdefault("loop_progress_status", {})
+        store[str(loop_id)] = {
+            "loop_id": str(loop_id),
+            "step_index_before": int(step_index_before),
+            "pass_id": str(pass_id),
+            "pass_kind": str(pass_kind),
+            "phase": str(phase),
+            "status_text": (str(status_text) if status_text else None),
+            "emit_to_user": bool(emit_to_user),
+            "error": (str(error) if error else None),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+    def _clear_loop_progress_status(self, *, loop_id: str) -> None:
+        store = self.app_state.setdefault("loop_progress_status", {})
+        store.pop(str(loop_id), None)
+
     def _loop_step_max_passes_per_step(self) -> int:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         if not ens_cfg:
@@ -2768,11 +2797,36 @@ class ENSDispatcher:
                 invoke_json_retry=_invoke_outcome_json_retry,
             )
 
+        async def _on_pass_progress(
+            pass_plan: StepPassPlan,
+            phase: str,
+            pass_result: Optional[PassExecutionResult],
+        ) -> None:
+            status_text = (
+                pass_plan.status_text_started
+                if phase == "started"
+                else pass_plan.status_text_completed
+            )
+            if phase == "failed" and not status_text:
+                status_text = "Loop step failed."
+            error = pass_result.error if isinstance(pass_result, PassExecutionResult) else None
+            self._set_loop_progress_status(
+                loop_id=loop_id,
+                step_index_before=step_index_before,
+                pass_id=pass_plan.pass_id,
+                pass_kind=str(pass_plan.kind),
+                phase=phase,
+                status_text=status_text,
+                emit_to_user=bool(pass_plan.emit_to_user),
+                error=error,
+            )
+
         execution = await execute_step_passes(
             pass_plans=pass_plans,
             run_pass=_run_pass,
             resolve_outcome=_resolve_outcome_for_pass,
             execute_loopback=None,
+            on_progress=_on_pass_progress,
             max_passes_per_step=self._loop_step_max_passes_per_step(),
             allow_single_tool_loopback=self._loop_step_allow_single_tool_loopback(),
         )
@@ -3241,6 +3295,7 @@ class ENSDispatcher:
                 "next_progression_enqueued": bool(next_progression),
             }
         )
+        self._clear_loop_progress_status(loop_id=loop_id)
 
         return {
             "loop_id": loop_id,
@@ -4262,6 +4317,10 @@ class ENSDispatcher:
             if operation == "delete":
                 if character_id in IMMUTABLE_CHARACTERS:
                     raise RuntimeError(f"Cannot delete immutable character '{character_id}'")
+                CoreMemoryLoader(
+                    db,
+                    vector_store=self.app_state.get("vector_store"),
+                ).delete_core_memories(character_id)
                 loader.delete_character(character_id)
                 self._refresh_config_drift_baseline()
                 return {"message": f"Character '{character_id}' deleted successfully"}
@@ -4306,15 +4365,6 @@ class ENSDispatcher:
                     custom_name=custom_name,
                 )
                 self.app_state.setdefault("card_previews", {}).pop(preview_id, None)
-                if preview_data["character_data"].get("core_memories"):
-                    core_loader = CoreMemoryLoader(
-                        db,
-                        vector_store=self.app_state.get("vector_store"),
-                    )
-                    try:
-                        core_loader.load_character_core_memories(character_filename)
-                    except Exception:
-                        pass
                 self._refresh_config_drift_baseline()
                 return {
                     "success": True,
@@ -4413,13 +4463,47 @@ class ENSDispatcher:
         raise RuntimeError(f"Unsupported profile asset operation: {operation}")
 
     def _reload_character_runtime(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
-        _ = (db, params)
         from chorus_engine.config.loader import ConfigLoader
+        from chorus_engine.services.core_memory_loader import CoreMemoryLoader
 
         loader = ConfigLoader()
         self.app_state["characters"] = loader.load_all_characters()
+        operation = str(params.get("operation") or "")
+        requested_character_id = params.get("character_id")
+        if requested_character_id in (None, "", "global"):
+            requested_character_id = (params.get("payload") or {}).get("character_id")
+
+        if requested_character_id == "all" or (operation == "reload_runtime_only" and not requested_character_id):
+            target_character_ids = list((self.app_state.get("characters") or {}).keys())
+        elif requested_character_id and requested_character_id in (self.app_state.get("characters") or {}):
+            target_character_ids = [requested_character_id]
+        else:
+            target_character_ids = []
+
+        sync_stats = {"reconciled": 0, "errors": 0, "characters": []}
+        if target_character_ids:
+            core_loader = CoreMemoryLoader(
+                db,
+                vector_store=self.app_state.get("vector_store"),
+            )
+            for character_id in target_character_ids:
+                try:
+                    core_loader.reconcile_character_core_memories(character_id)
+                    sync_stats["reconciled"] += 1
+                    sync_stats["characters"].append(character_id)
+                except Exception as e:
+                    logger.warning(
+                        "Core memory reconcile failed during runtime reload for %s: %s",
+                        character_id,
+                        e,
+                    )
+                    sync_stats["errors"] += 1
         self._refresh_config_drift_baseline()
-        return {"reloaded": True, "character_count": len(self.app_state.get("characters") or {})}
+        return {
+            "reloaded": True,
+            "character_count": len(self.app_state.get("characters") or {}),
+            "core_memory_sync": sync_stats,
+        }
 
     def _validate_conversation_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         operation = params.get("operation")
@@ -5076,30 +5160,25 @@ class ENSDispatcher:
 
     def _diff_core_memories_from_yaml(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         from chorus_engine.config.loader import ConfigLoader
-        from chorus_engine.models.conversation import Memory, MemoryType
+        from chorus_engine.services.core_memory_loader import CoreMemoryLoader
 
         character_id = params.get("character_id")
-        loader = ConfigLoader()
-        character = loader.load_character(character_id)
-        yaml_items = character.core_memories or []
-        yaml_contents = {(item.content or "").strip() for item in yaml_items if (item.content or "").strip()}
-
-        existing_rows = (
-            db.query(Memory)
-            .filter(Memory.character_id == character_id, Memory.memory_type == MemoryType.CORE)
-            .all()
+        config_loader = ConfigLoader()
+        character = config_loader.load_character(character_id)
+        core_loader = CoreMemoryLoader(
+            db,
+            vector_store=self.app_state.get("vector_store"),
         )
-        existing_contents = {(row.content or "").strip() for row in existing_rows if (row.content or "").strip()}
-        to_add = sorted(list(yaml_contents - existing_contents))
-        to_remove = sorted(list(existing_contents - yaml_contents))
-        no_change = len(to_add) == 0 and len(to_remove) == 0
+        yaml_payload = core_loader._normalize_yaml_payload(character.core_memories or [])
+        db_payload = core_loader._normalize_db_payload(core_loader.get_core_memories(character_id))
+        no_change = yaml_payload == db_payload
 
         return {
             "character_id": character_id,
             "no_change": no_change,
-            "to_add_count": len(to_add),
-            "to_remove_count": len(to_remove),
-            "fingerprint": self._stable_hash({"add": to_add, "remove": to_remove}),
+            "yaml_count": len(yaml_payload),
+            "db_count": len(db_payload),
+            "fingerprint": self._stable_hash({"yaml": yaml_payload, "db": db_payload}),
         }
 
     def _apply_core_memory_sync_db(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -5113,9 +5192,13 @@ class ENSDispatcher:
             db,
             vector_store=self.app_state.get("vector_store"),
         )
-        deleted = loader.delete_core_memories(character_id)
-        loaded = loader.load_character_core_memories(character_id)
-        return {"character_id": character_id, "deleted": deleted, "loaded": loaded}
+        reconcile = loader.reconcile_character_core_memories(character_id)
+        return {
+            "character_id": character_id,
+            "deleted": int(reconcile.get("deleted", 0)),
+            "loaded": int(reconcile.get("loaded", 0)),
+            "in_sync": bool(reconcile.get("in_sync", False)),
+        }
 
     def _apply_core_memory_sync_vectors(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
         _ = db
@@ -5125,8 +5208,8 @@ class ENSDispatcher:
         return {
             "vector_deletions_explicit": True,
             "idempotent": True,
-            "removed_count": int(diff.get("to_remove_count") or 0),
-            "upsert_count": int(diff.get("to_add_count") or 0),
+            "removed_count": int(diff.get("db_count") or 0),
+            "upsert_count": int(diff.get("yaml_count") or 0),
         }
 
     async def _maybe_update_conversation_title(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:

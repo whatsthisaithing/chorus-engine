@@ -827,6 +827,19 @@ html, body {
     border-bottom-left-radius: 0.25rem;
 }
 
+.typing-indicator-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+}
+
+.typing-status-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding-left: 0.1rem;
+}
+
 .typing-indicator span {
     width: 8px;
     height: 8px;

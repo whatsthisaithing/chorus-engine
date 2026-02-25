@@ -16,6 +16,7 @@ from chorus_engine.ens.loop_plugins.contracts import (
 RunPassFn = Callable[[StepPassPlan, Optional[Dict[str, Any]]], Awaitable[PassExecutionResult]]
 ResolvePassOutcomeFn = Callable[[StepPassPlan, PassExecutionResult, List[PassExecutionResult]], Awaitable[Optional[StepOutcomeResolution]]]
 LoopbackFn = Callable[[StepPassPlan, PassExecutionResult], Awaitable[Optional[Dict[str, Any]]]]
+ProgressEventFn = Callable[[StepPassPlan, str, Optional[PassExecutionResult]], Awaitable[None]]
 
 
 async def execute_step_passes(
@@ -24,6 +25,7 @@ async def execute_step_passes(
     run_pass: RunPassFn,
     resolve_outcome: Optional[ResolvePassOutcomeFn] = None,
     execute_loopback: Optional[LoopbackFn] = None,
+    on_progress: Optional[ProgressEventFn] = None,
     max_passes_per_step: int = 4,
     allow_single_tool_loopback: bool = True,
 ) -> StepExecutionAggregate:
@@ -47,23 +49,27 @@ async def execute_step_passes(
 
     for index, pass_plan in enumerate(pass_plans):
         if index >= effective_max:
-            pass_results.append(
-                PassExecutionResult(
-                    pass_id=pass_plan.pass_id,
-                    status="failed",
-                    output_text="",
-                    assistant_result_tier=None,
-                    finish_reason=None,
-                    tool_calls_count=0,
-                    error="max_passes_per_step_exceeded",
-                    timing_ms=0,
-                    metadata={"guardrail": "max_passes_per_step"},
-                )
+            guardrail_result = PassExecutionResult(
+                pass_id=pass_plan.pass_id,
+                status="failed",
+                output_text="",
+                assistant_result_tier=None,
+                finish_reason=None,
+                tool_calls_count=0,
+                error="max_passes_per_step_exceeded",
+                timing_ms=0,
+                metadata={"guardrail": "max_passes_per_step"},
             )
+            pass_results.append(guardrail_result)
+            if on_progress is not None:
+                await on_progress(pass_plan, "failed", guardrail_result)
             final_outcome_action = "WAIT_FOR_USER"
             final_control_source = "default_wait"
             defaulted_wait = True
             break
+
+        if on_progress is not None:
+            await on_progress(pass_plan, "started", None)
 
         started = time.perf_counter()
         result = await run_pass(pass_plan, None)
@@ -86,6 +92,8 @@ async def execute_step_passes(
                 result = rerun_result
 
         pass_results.append(result)
+        if on_progress is not None:
+            await on_progress(pass_plan, ("completed" if result.status == "success" else "failed"), result)
 
         if pass_plan.emit_to_user and result.status == "success":
             final_visible_text = str(result.output_text or "")

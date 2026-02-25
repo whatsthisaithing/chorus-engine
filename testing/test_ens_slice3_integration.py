@@ -546,13 +546,16 @@ def test_slice3_heartbeat_analyze_idempotency_derives_message_ranges_when_missin
     assert key_2 != key_1
 
 
-def test_slice3_core_memory_db_first_endpoint_is_dev_gated(client, helpers):
+def test_slice3_core_memory_endpoint_writes_yaml_first(client, db, helpers):
     helpers.app_module.app_state["system_config"].debug_ui = False
     resp = client.post(
         "/characters/test_char/core-memories",
-        json={"content": "core fact", "tags": ["t1"], "priority": 2},
+        json={"content": "this is a yaml first core fact", "tags": ["t1"], "priority": 2},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["memory_type"] == "core"
+    assert body["character_id"] == "test_char"
 
 
 def test_slice3_ens_chat_processes_vision_attachments_and_exposes_visual_context_metric(client, db, helpers, tmp_path):

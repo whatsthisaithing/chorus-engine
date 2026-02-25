@@ -364,6 +364,7 @@ app_state = {
     "vector_health_deep_check_task": None,  # Deferred deep query health checks
     "vector_health_repair_performed_this_boot": False,  # Skip deep rechecks after startup repair
     "startup_monotonic": None,  # Monotonic startup timestamp for warm-window logic
+    "loop_progress_status": {},  # Loop step in-flight pass progress by loop_id
 }
 
 
@@ -2020,6 +2021,21 @@ class InteractiveNarrativeSessionResponse(BaseModel):
     last_step_control_action: Optional[str] = None
     assistant_message_id: Optional[str] = None
     display_text: Optional[str] = None
+    in_flight: Optional[bool] = None
+    queue_status: Optional[str] = None
+
+
+class InteractiveNarrativeProgressResponse(BaseModel):
+    loop_id: str
+    active: bool
+    step_index_before: Optional[int] = None
+    pass_id: Optional[str] = None
+    pass_kind: Optional[str] = None
+    phase: Optional[str] = None
+    status_text: Optional[str] = None
+    emit_to_user: Optional[bool] = None
+    error: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class ConversationMediaOffersUpdateRequest(BaseModel):
@@ -2614,7 +2630,7 @@ async def get_character_immersion_notice(character_id: str):
 
 
 @app.post("/characters")
-async def create_character(character_data: dict):
+async def create_character(character_data: dict, db: Session = Depends(get_db)):
     """
     Create a new user character.
     
@@ -2658,6 +2674,7 @@ async def create_character(character_data: dict):
         
         # Reload characters in app state
         app_state["characters"] = loader.load_all_characters()
+        CoreMemoryLoader(db, vector_store=app_state.get("vector_store")).reconcile_character_core_memories(character.id)
         
         return {
             "id": character.id,
@@ -2669,7 +2686,7 @@ async def create_character(character_data: dict):
 
 
 @app.patch("/characters/{character_id}")
-async def update_character(character_id: str, updates: dict):
+async def update_character(character_id: str, updates: dict, db: Session = Depends(get_db)):
     """
     Update an existing user character.
     
@@ -2714,6 +2731,7 @@ async def update_character(character_id: str, updates: dict):
         
         # Reload characters in app state
         app_state["characters"] = loader.load_all_characters()
+        CoreMemoryLoader(db, vector_store=app_state.get("vector_store")).reconcile_character_core_memories(character_id)
         
         return {
             "id": character_id,
@@ -2724,7 +2742,7 @@ async def update_character(character_id: str, updates: dict):
 
 
 @app.delete("/characters/{character_id}")
-async def delete_character(character_id: str):
+async def delete_character(character_id: str, db: Session = Depends(get_db)):
     """
     Delete a user character.
     
@@ -2746,6 +2764,7 @@ async def delete_character(character_id: str):
     loader = ConfigLoader()
     
     try:
+        CoreMemoryLoader(db, vector_store=app_state.get("vector_store")).delete_core_memories(character_id)
         loader.delete_character(character_id)
         
         # Reload characters in app state
@@ -3160,7 +3179,7 @@ async def export_character(character_id: str):
 
 
 @app.post("/characters/import")
-async def import_character(file: UploadFile = File(...)):
+async def import_character(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Import a character configuration from YAML file.
     
@@ -3211,6 +3230,7 @@ async def import_character(file: UploadFile = File(...)):
         
         # Reload characters in app state
         app_state["characters"] = loader.load_all_characters()
+        CoreMemoryLoader(db, vector_store=app_state.get("vector_store")).reconcile_character_core_memories(character.id)
         
         return {
             "id": character.id,
@@ -6047,6 +6067,13 @@ async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
     conversation = ConversationRepository(db).get_by_id(str(session.conversation_id or "")) if session.conversation_id else None
     if str(session.state or "") not in ("running",):
+        latest_step = (
+            db.query(ENSLoopStepEvent)
+            .filter(ENSLoopStepEvent.loop_id == loop_id)
+            .order_by(ENSLoopStepEvent.created_at_us.desc())
+            .first()
+        )
+        latest_output = dict(getattr(latest_step, "output_json", {}) or {}) if latest_step is not None else {}
         return InteractiveNarrativeSessionResponse(
             loop_id=session.loop_id,
             state=str(session.state or "paused"),
@@ -6054,6 +6081,34 @@ async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)
             created=False,
             loop_kind=str(session.loop_kind),
             loop_mode=str(session.loop_mode),
+            last_step_control_action=(
+                latest_output.get("last_step_control_action")
+                or latest_output.get("control_action")
+                or str(getattr(session, "last_step_control_action", "") or "")
+                or None
+            ),
+            assistant_message_id=latest_output.get("assistant_message_id"),
+            display_text=latest_output.get("display_text"),
+            in_flight=False,
+            queue_status="idle",
+        )
+
+    progress_store = app_state.get("loop_progress_status") or {}
+    progress_row = progress_store.get(loop_id)
+    if isinstance(progress_row, dict):
+        # If a loop step is already running, avoid ingesting duplicate tick signals.
+        return InteractiveNarrativeSessionResponse(
+            loop_id=session.loop_id,
+            state=str(session.state or "running"),
+            progression_enqueued=True,
+            created=False,
+            loop_kind=str(session.loop_kind),
+            loop_mode=str(session.loop_mode),
+            last_step_control_action=None,
+            assistant_message_id=None,
+            display_text=None,
+            in_flight=True,
+            queue_status="running",
         )
 
     signal = Signal(
@@ -6077,16 +6132,238 @@ async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)
         ENSContext(app_state=app_state, surface=session.surface_id or "web", source=session.surface_id or "web"),
     )
     payload = dict(outcome.response_payload or {})
+    queue_status = str(payload.get("status") or "").strip().lower() or None
+    in_flight = bool(payload.get("queued")) or (queue_status in ("pending", "running"))
+    effective_state = str(payload.get("state") or session.state or ("running" if in_flight else "paused"))
+    progression_enqueued = bool(payload.get("next_progression_enqueued"))
+    if in_flight:
+        progression_enqueued = True
     return InteractiveNarrativeSessionResponse(
         loop_id=str(payload.get("loop_id") or loop_id),
-        state=str(payload.get("state") or "paused"),
-        progression_enqueued=bool(payload.get("next_progression_enqueued")),
+        state=effective_state,
+        progression_enqueued=progression_enqueued,
         created=False,
         loop_kind=str(payload.get("loop_kind") or session.loop_kind),
         loop_mode=str(payload.get("loop_mode") or session.loop_mode),
         last_step_control_action=payload.get("last_step_control_action") or payload.get("control_action"),
         assistant_message_id=payload.get("assistant_message_id"),
         display_text=payload.get("display_text"),
+        in_flight=in_flight,
+        queue_status=queue_status,
+    )
+
+
+@app.post(
+    "/interactive-narrative/{loop_id}/advance",
+    response_model=InteractiveNarrativeSessionResponse,
+)
+async def advance_interactive_narrative(
+    loop_id: str,
+    timeout_ms: int = Query(default=90000, ge=1000, le=180000),
+    poll_interval_ms: int = Query(default=100, ge=50, le=1000),
+    db: Session = Depends(get_db),
+):
+    """
+    Blocking narrative step advance:
+    - Executes at most one new loop progression step.
+    - Waits for step completion (or timeout).
+    - Returns completed step payload when available.
+    """
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    session = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(session.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+
+    conversation = ConversationRepository(db).get_by_id(str(session.conversation_id or "")) if session.conversation_id else None
+
+    def _latest_step_event() -> Optional[ENSLoopStepEvent]:
+        return (
+            db.query(ENSLoopStepEvent)
+            .filter(ENSLoopStepEvent.loop_id == loop_id)
+            .order_by(ENSLoopStepEvent.created_at_us.desc())
+            .first()
+        )
+
+    def _latest_step_output() -> Dict[str, Any]:
+        latest = _latest_step_event()
+        return dict(getattr(latest, "output_json", {}) or {}) if latest is not None else {}
+
+    def _response_from_latest(current_session: ENSLoopSession) -> InteractiveNarrativeSessionResponse:
+        latest_output = _latest_step_output()
+        return InteractiveNarrativeSessionResponse(
+            loop_id=str(current_session.loop_id),
+            state=str(current_session.state or "paused"),
+            progression_enqueued=False,
+            created=False,
+            loop_kind=str(current_session.loop_kind),
+            loop_mode=str(current_session.loop_mode),
+            last_step_control_action=(
+                latest_output.get("last_step_control_action")
+                or latest_output.get("control_action")
+                or str(getattr(current_session, "last_step_control_action", "") or "")
+                or None
+            ),
+            assistant_message_id=latest_output.get("assistant_message_id"),
+            display_text=latest_output.get("display_text"),
+            in_flight=False,
+            queue_status="idle",
+        )
+
+    if str(session.state or "") not in ("running",):
+        return _response_from_latest(session)
+
+    baseline_step_index = int(session.step_index or 0)
+    baseline_event = _latest_step_event()
+    baseline_event_created_us = int(getattr(baseline_event, "created_at_us", 0) or 0)
+    baseline_output = dict(getattr(baseline_event, "output_json", {}) or {}) if baseline_event is not None else {}
+    baseline_message_id = str(
+        baseline_output.get("assistant_message_id")
+        or getattr(session, "last_message_id", "")
+        or ""
+    )
+
+    progress_store = app_state.get("loop_progress_status") or {}
+    step_already_running = isinstance(progress_store.get(loop_id), dict)
+    queue_status: Optional[str] = "running" if step_already_running else None
+
+    if not step_already_running:
+        signal = Signal(
+            type="loop_progression",
+            scope="SESSION",
+            source="external",
+            assistant_id=(str(conversation.character_id) if conversation and conversation.character_id else None),
+            payload={
+                "loop_id": session.loop_id,
+                "loop_kind": session.loop_kind,
+                "relationship_id": session.relationship_id,
+                "conversation_id": session.conversation_id,
+                "surface_id": session.surface_id,
+                "character_id": (str(conversation.character_id) if conversation and conversation.character_id else None),
+            },
+            relationship_hint=session.relationship_id,
+            surface_id=session.surface_id,
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(app_state=app_state, surface=session.surface_id or "web", source=session.surface_id or "web"),
+        )
+        payload = dict(outcome.response_payload or {})
+        queue_status = str(payload.get("status") or "").strip().lower() or queue_status
+        if payload.get("display_text") or payload.get("assistant_message_id") or payload.get("last_step_control_action") or payload.get("control_action"):
+            return InteractiveNarrativeSessionResponse(
+                loop_id=str(payload.get("loop_id") or loop_id),
+                state=str(payload.get("state") or session.state or "running"),
+                progression_enqueued=bool(payload.get("next_progression_enqueued")),
+                created=False,
+                loop_kind=str(payload.get("loop_kind") or session.loop_kind),
+                loop_mode=str(payload.get("loop_mode") or session.loop_mode),
+                last_step_control_action=payload.get("last_step_control_action") or payload.get("control_action"),
+                assistant_message_id=payload.get("assistant_message_id"),
+                display_text=payload.get("display_text"),
+                in_flight=False,
+                queue_status=queue_status,
+            )
+
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000.0)
+    sleep_s = poll_interval_ms / 1000.0
+    while True:
+        db.expire_all()
+        current_session = (
+            db.query(ENSLoopSession)
+            .filter(ENSLoopSession.loop_id == loop_id)
+            .first()
+        )
+        if current_session is None:
+            raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+
+        latest_event = _latest_step_event()
+        latest_output = dict(getattr(latest_event, "output_json", {}) or {}) if latest_event is not None else {}
+        latest_event_created_us = int(getattr(latest_event, "created_at_us", 0) or 0)
+        latest_message_id = str(latest_output.get("assistant_message_id") or "")
+        latest_control = str(
+            latest_output.get("last_step_control_action")
+            or latest_output.get("control_action")
+            or getattr(current_session, "last_step_control_action", "")
+            or ""
+        ).strip()
+
+        step_completed = (
+            (latest_event_created_us > baseline_event_created_us)
+            or (baseline_event_created_us <= 0 and latest_event_created_us > 0)
+            or (latest_message_id and latest_message_id != baseline_message_id)
+        )
+        if step_completed:
+            return InteractiveNarrativeSessionResponse(
+                loop_id=str(current_session.loop_id),
+                state=str(current_session.state or "paused"),
+                progression_enqueued=bool(latest_output.get("next_progression_enqueued")),
+                created=False,
+                loop_kind=str(current_session.loop_kind),
+                loop_mode=str(current_session.loop_mode),
+                last_step_control_action=(latest_control or None),
+                assistant_message_id=(latest_message_id or None),
+                display_text=latest_output.get("display_text"),
+                in_flight=False,
+                queue_status="done",
+            )
+
+        if asyncio.get_running_loop().time() >= deadline:
+            return InteractiveNarrativeSessionResponse(
+                loop_id=str(current_session.loop_id),
+                state=str(current_session.state or "running"),
+                progression_enqueued=True,
+                created=False,
+                loop_kind=str(current_session.loop_kind),
+                loop_mode=str(current_session.loop_mode),
+                last_step_control_action=None,
+                assistant_message_id=None,
+                display_text=None,
+                in_flight=True,
+                queue_status=(queue_status or "timeout"),
+            )
+        await asyncio.sleep(sleep_s)
+
+
+@app.get(
+    "/interactive-narrative/{loop_id}/progress",
+    response_model=InteractiveNarrativeProgressResponse,
+)
+async def get_interactive_narrative_progress(loop_id: str, db: Session = Depends(get_db)):
+    session = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(session.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+
+    progress_store = app_state.get("loop_progress_status") or {}
+    row = progress_store.get(loop_id)
+    if not isinstance(row, dict):
+        return InteractiveNarrativeProgressResponse(loop_id=loop_id, active=False)
+
+    return InteractiveNarrativeProgressResponse(
+        loop_id=loop_id,
+        active=True,
+        step_index_before=row.get("step_index_before"),
+        pass_id=row.get("pass_id"),
+        pass_kind=row.get("pass_kind"),
+        phase=row.get("phase"),
+        status_text=row.get("status_text"),
+        emit_to_user=row.get("emit_to_user"),
+        error=row.get("error"),
+        updated_at=row.get("updated_at"),
     )
 
 
@@ -10539,6 +10816,12 @@ async def delete_memory(
     memory = repo.get_by_id(memory_id)
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
+
+    if memory.memory_type == MemoryType.CORE:
+        raise HTTPException(
+            status_code=403,
+            detail="Core memories are YAML-managed. Use /characters/{character_id}/core-memories endpoints.",
+        )
     
     # Delete from database
     deleted = repo.delete(memory_id)
@@ -10575,11 +10858,11 @@ async def update_memory(
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
     
-    # Block edits for core memories on immutable characters
-    if memory.memory_type == MemoryType.CORE and memory.character_id in IMMUTABLE_CHARACTERS:
+    # Core memories are YAML-first and cannot be edited through generic memory endpoint.
+    if memory.memory_type == MemoryType.CORE:
         raise HTTPException(
             status_code=403,
-            detail=f"Cannot edit core memories for immutable character '{memory.character_id}'"
+            detail="Core memories are YAML-managed. Use /characters/{character_id}/core-memories endpoints."
         )
     
     content = request.content.strip()
@@ -10708,68 +10991,180 @@ class CoreMemoryCreate(BaseModel):
     priority: Optional[int] = 2
 
 
+class CoreMemoryUpdate(BaseModel):
+    """Update core memory request (YAML-first)."""
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    priority: Optional[int] = None
+
+
+def _core_priority_to_embedding_label(priority: Optional[int], fallback: str = "medium") -> str:
+    if priority is None:
+        return fallback
+    if priority <= 1:
+        return "low"
+    if priority >= 3:
+        return "high"
+    return "medium"
+
+
+def _resolve_core_yaml_index(memory: Memory, yaml_items: list[dict]) -> int:
+    meta = memory.meta_data if isinstance(memory.meta_data, dict) else {}
+    yaml_index = meta.get("yaml_index")
+    if isinstance(yaml_index, int) and 0 <= yaml_index < len(yaml_items):
+        return yaml_index
+
+    content = (memory.content or "").strip()
+    for idx, item in enumerate(yaml_items):
+        if (item.get("content") or "").strip() == content:
+            return idx
+    raise HTTPException(status_code=409, detail="Could not map core memory to YAML entry")
+
+
 @app.post("/characters/{character_id}/core-memories", response_model=MemoryResponse)
 async def create_core_memory(
     character_id: str,
     request: CoreMemoryCreate,
     db: Session = Depends(get_db)
 ):
-    """Create a core memory for a character. Only allowed for user-created characters."""
+    """Create a core memory for a character by updating YAML first."""
     if character_id not in app_state["characters"]:
         raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
-
-    if not bool(getattr(app_state["system_config"], "debug_ui", False)):
-        logger.warning(
-            "[CORE MEMORY] DB-first core memory create blocked; YAML-first is authoritative",
-            extra={"character_id": character_id},
-        )
-        raise HTTPException(
-            status_code=403,
-            detail="Core memory DB-first create is dev-only. Edit character YAML core_memories instead.",
-        )
-    logger.warning(
-        "[CORE MEMORY] Using dev-gated DB-first core memory create endpoint",
-        extra={"character_id": character_id},
-    )
-    
-    # Check if character is immutable
     if character_id in IMMUTABLE_CHARACTERS:
         raise HTTPException(
             status_code=403,
             detail=f"Cannot create core memories for immutable character '{character_id}'"
         )
-    
-    # Create core memory
-    repo = MemoryRepository(db)
-    embedding_service = app_state["embedding_service"]
-    vector_store = app_state["vector_store"]
-    
-    # Generate embedding
-    embedding = embedding_service.embed_text(request.content)
-    
-    # Store in vector database
-    vector_id = vector_store.add_memory(
-        character_id=character_id,
-        content=request.content,
-        memory_type=MemoryType.CORE,
-        metadata={
-            "tags": request.tags or [],
-            "priority": request.priority or 2,
+
+    content = (request.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Core memory content cannot be empty")
+
+    tags = [str(tag).strip() for tag in (request.tags or []) if str(tag).strip()]
+    loader = ConfigLoader()
+    character = loader.load_character(character_id)
+    char_data = character.model_dump(mode="json")
+    core_memories = list(char_data.get("core_memories") or [])
+    core_memories.append(
+        {
+            "content": content,
+            "tags": tags,
+            "embedding_priority": _core_priority_to_embedding_label(request.priority, fallback="medium"),
         }
     )
-    
-    # Store in SQL database
-    memory = repo.create(
-        content=request.content,
-        memory_type=MemoryType.CORE,
-        character_id=character_id,
-        vector_id=vector_id,
-        embedding_model=embedding_service.model_name,
-        tags=request.tags or [],
-        priority=request.priority or 2,
+    char_data["core_memories"] = core_memories
+    loader.save_character(CharacterConfig(**char_data))
+    app_state["characters"] = loader.load_all_characters()
+
+    core_loader = CoreMemoryLoader(db, vector_store=app_state.get("vector_store"))
+    core_loader.reconcile_character_core_memories(character_id)
+
+    repo = MemoryRepository(db)
+    memories = repo.list_by_character(character_id, memory_type=MemoryType.CORE)
+    created = next((m for m in memories if (m.content or "").strip() == content), None)
+    if not created and memories:
+        created = memories[0]
+    if not created:
+        raise HTTPException(status_code=500, detail="Core memory created in YAML but not found in database")
+    return created
+
+
+@app.patch("/characters/{character_id}/core-memories/{memory_id}", response_model=MemoryResponse)
+async def update_core_memory(
+    character_id: str,
+    memory_id: str,
+    request: CoreMemoryUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update a core memory by mutating character YAML, then reconciling."""
+    if character_id not in app_state["characters"]:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+    if character_id in IMMUTABLE_CHARACTERS:
+        raise HTTPException(status_code=403, detail=f"Cannot edit core memories for immutable character '{character_id}'")
+
+    repo = MemoryRepository(db)
+    memory = repo.get_by_id(memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    if memory.memory_type != MemoryType.CORE or memory.character_id != character_id:
+        raise HTTPException(status_code=400, detail="Memory is not a core memory for this character")
+
+    if request.content is None and request.tags is None and request.priority is None:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
+    loader = ConfigLoader()
+    character = loader.load_character(character_id)
+    char_data = character.model_dump(mode="json")
+    core_memories = list(char_data.get("core_memories") or [])
+    index = _resolve_core_yaml_index(memory, core_memories)
+    existing = dict(core_memories[index])
+
+    if request.content is not None:
+        content = request.content.strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="Core memory content cannot be empty")
+        existing["content"] = content
+    if request.tags is not None:
+        existing["tags"] = [str(tag).strip() for tag in (request.tags or []) if str(tag).strip()]
+    if request.priority is not None:
+        current_priority = str(existing.get("embedding_priority") or "medium")
+        existing["embedding_priority"] = _core_priority_to_embedding_label(request.priority, fallback=current_priority)
+
+    core_memories[index] = existing
+    char_data["core_memories"] = core_memories
+    loader.save_character(CharacterConfig(**char_data))
+    app_state["characters"] = loader.load_all_characters()
+
+    core_loader = CoreMemoryLoader(db, vector_store=app_state.get("vector_store"))
+    core_loader.reconcile_character_core_memories(character_id)
+
+    refreshed = repo.list_by_character(character_id, memory_type=MemoryType.CORE)
+    updated = next(
+        (
+            m for m in refreshed
+            if isinstance(m.meta_data, dict) and m.meta_data.get("yaml_index") == index
+        ),
+        None,
     )
-    
-    return memory
+    if not updated and refreshed:
+        updated = refreshed[0]
+    if not updated:
+        raise HTTPException(status_code=500, detail="Core memory updated in YAML but not found in database")
+    return updated
+
+
+@app.delete("/characters/{character_id}/core-memories/{memory_id}")
+async def delete_core_memory(
+    character_id: str,
+    memory_id: str,
+    db: Session = Depends(get_db)
+):
+    """Delete a core memory by removing it from YAML, then reconciling."""
+    if character_id not in app_state["characters"]:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+    if character_id in IMMUTABLE_CHARACTERS:
+        raise HTTPException(status_code=403, detail=f"Cannot delete core memories for immutable character '{character_id}'")
+
+    repo = MemoryRepository(db)
+    memory = repo.get_by_id(memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    if memory.memory_type != MemoryType.CORE or memory.character_id != character_id:
+        raise HTTPException(status_code=400, detail="Memory is not a core memory for this character")
+
+    loader = ConfigLoader()
+    character = loader.load_character(character_id)
+    char_data = character.model_dump(mode="json")
+    core_memories = list(char_data.get("core_memories") or [])
+    index = _resolve_core_yaml_index(memory, core_memories)
+    core_memories.pop(index)
+    char_data["core_memories"] = core_memories
+    loader.save_character(CharacterConfig(**char_data))
+    app_state["characters"] = loader.load_all_characters()
+
+    core_loader = CoreMemoryLoader(db, vector_store=app_state.get("vector_store"))
+    core_loader.reconcile_character_core_memories(character_id)
+    return {"status": "deleted", "id": memory_id}
 
 
 class SemanticSearchRequest(BaseModel):
@@ -10878,11 +11273,8 @@ async def reload_character_core_memories(
     )
     
     try:
-        # Delete existing core memories
-        core_loader.delete_core_memories(character_id)
-        
-        # Reload from YAML
-        loaded_count = core_loader.load_character_core_memories(character_id)
+        reconcile = core_loader.reconcile_character_core_memories(character_id)
+        loaded_count = int(reconcile.get("loaded", 0))
         
         logger.info(f"Reloaded {loaded_count} core memories for {character_id}")
         
@@ -14361,7 +14753,7 @@ async def reload_system_config_from_disk():
 
 
 @app.post("/characters/reload")
-async def reload_characters_from_disk():
+async def reload_characters_from_disk(db: Session = Depends(get_db)):
     """Reload all character YAML files into runtime state."""
     try:
         if _ens_slice4_enabled():
@@ -14381,6 +14773,12 @@ async def reload_characters_from_disk():
 
         loader = ConfigLoader()
         app_state["characters"] = loader.load_all_characters()
+        core_loader = CoreMemoryLoader(db=db, vector_store=app_state.get("vector_store"))
+        for character_id in app_state["characters"].keys():
+            try:
+                core_loader.reconcile_character_core_memories(character_id)
+            except Exception as sync_err:
+                logger.warning(f"Failed core memory reconcile during character reload for {character_id}: {sync_err}")
         _refresh_config_drift_baseline()
         app_state["config_drift_last_warning"] = None
         drift_after = _compute_config_drift()

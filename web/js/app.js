@@ -46,6 +46,9 @@ window.App = {
             autoplayActive: false,
             autoplayDelayMs: 500,
             pendingTickTimerId: null,
+            tickInFlight: false,
+            progressPollTimerId: null,
+            progressStatusText: '',
         },
     },
     
@@ -676,6 +679,9 @@ window.App = {
             autoplayActive: false,
             autoplayDelayMs: 500,
             pendingTickTimerId: null,
+            tickInFlight: false,
+            progressPollTimerId: null,
+            progressStatusText: '',
         };
         
         // Clear all conversation UI components
@@ -1645,6 +1651,43 @@ window.App = {
         }
     },
 
+    clearInteractiveNarrativeProgressPoll() {
+        const timerId = this.state.interactiveNarrative.progressPollTimerId;
+        if (timerId) {
+            clearTimeout(timerId);
+            this.state.interactiveNarrative.progressPollTimerId = null;
+        }
+    },
+
+    setInteractiveNarrativeProgressStatus(statusText = '') {
+        this.state.interactiveNarrative.progressStatusText = (statusText || '').trim();
+        UI.updateTypingIndicatorStatus(this.state.interactiveNarrative.progressStatusText);
+    },
+
+    async pollInteractiveNarrativeProgress() {
+        this.clearInteractiveNarrativeProgressPoll();
+        if (!this.state.interactiveNarrative.autoplayActive) return;
+        const loopId = this.state.interactiveNarrative.loopId;
+        if (!loopId) return;
+        try {
+            const progress = await API.getInteractiveNarrativeProgress(loopId);
+            if (progress && progress.active) {
+                this.setInteractiveNarrativeProgressStatus(progress.status_text || '');
+                UI.showTypingIndicator(this.state.interactiveNarrative.progressStatusText || null);
+            } else {
+                this.setInteractiveNarrativeProgressStatus('');
+            }
+        } catch (_) {
+            // Best-effort status polling; do not interrupt autoplay.
+        } finally {
+            if (this.state.interactiveNarrative.autoplayActive) {
+                this.state.interactiveNarrative.progressPollTimerId = setTimeout(() => {
+                    this.pollInteractiveNarrativeProgress();
+                }, 300);
+            }
+        }
+    },
+
     updateInteractiveNarrativeButton() {
         const btn = document.getElementById('interactiveNarrativeBtn');
         if (!btn) return;
@@ -1661,9 +1704,13 @@ window.App = {
 
     async refreshInteractiveNarrativeState() {
         this.clearInteractiveNarrativeTimer();
+        this.clearInteractiveNarrativeProgressPoll();
         this.state.interactiveNarrative.loopId = null;
         this.state.interactiveNarrative.state = 'paused';
         this.state.interactiveNarrative.autoplayActive = false;
+        this.state.interactiveNarrative.tickInFlight = false;
+        this.setInteractiveNarrativeProgressStatus('');
+        UI.hideTypingIndicator();
 
         if (!this.state.selectedConversationId || !this.isInteractiveNarrativeEnabledForCharacter()) {
             this.updateInteractiveNarrativeButton();
@@ -1687,9 +1734,13 @@ window.App = {
     async pauseInteractiveNarrativeAutoplay(reason = 'manual') {
         if (!this.state.interactiveNarrative.autoplayActive) return;
         this.clearInteractiveNarrativeTimer();
+        this.clearInteractiveNarrativeProgressPoll();
         const loopId = this.state.interactiveNarrative.loopId;
         this.state.interactiveNarrative.autoplayActive = false;
         this.state.interactiveNarrative.state = 'paused';
+        this.state.interactiveNarrative.tickInFlight = false;
+        this.setInteractiveNarrativeProgressStatus('');
+        UI.hideTypingIndicator();
         this.updateInteractiveNarrativeButton();
         if (!loopId) return;
         try {
@@ -1714,6 +1765,7 @@ window.App = {
     appendInteractiveNarrativeMessage(content, messageId = null, controlAction = null) {
         const text = (content || '').trim();
         if (!text) return;
+        if (messageId && this.state.messages.some((msg) => msg && msg.id === messageId)) return;
         const assistantMsg = {
             role: 'assistant',
             content: text,
@@ -1742,25 +1794,47 @@ window.App = {
         const delayMs = this.state.interactiveNarrative.autoplayDelayMs || 500;
         this.state.interactiveNarrative.pendingTickTimerId = setTimeout(async () => {
             this.state.interactiveNarrative.pendingTickTimerId = null;
+            if (!this.state.interactiveNarrative.autoplayActive) return;
+            if (this.state.interactiveNarrative.tickInFlight) {
+                // Single-flight guard: if a tick is still in progress, retry shortly.
+                this.scheduleInteractiveNarrativeTick();
+                return;
+            }
+            this.state.interactiveNarrative.tickInFlight = true;
             try {
-                const result = await API.tickInteractiveNarrative(loopId);
+                UI.showTypingIndicator(this.state.interactiveNarrative.progressStatusText || 'Processing loop step...');
+                const result = await API.advanceInteractiveNarrative(loopId);
                 this.state.interactiveNarrative.state = result.state || this.state.interactiveNarrative.state;
                 const control = (result.last_step_control_action || '').toUpperCase();
+                const inFlight = !!result.in_flight;
                 if (result.display_text) {
                     this.appendInteractiveNarrativeMessage(result.display_text, result.assistant_message_id || null, control || null);
                 }
-                if (this.state.interactiveNarrative.autoplayActive && control === 'CONTINUE') {
-                    this.scheduleInteractiveNarrativeTick();
+                if (control === 'WAIT_FOR_USER' || control === 'YIELD' || control === 'COMPLETE') {
+                    this.state.interactiveNarrative.autoplayActive = false;
                 } else if (result.state && result.state !== 'running') {
                     this.state.interactiveNarrative.autoplayActive = false;
-                } else if (control === 'WAIT_FOR_USER' || control === 'YIELD' || control === 'COMPLETE') {
-                    this.state.interactiveNarrative.autoplayActive = false;
+                } else if (this.state.interactiveNarrative.autoplayActive) {
+                    // Keep progressing while server reports running; don't require control every response.
+                    this.scheduleInteractiveNarrativeTick();
+                }
+                if (!inFlight) {
+                    UI.hideTypingIndicator();
+                    this.setInteractiveNarrativeProgressStatus('');
                 }
             } catch (error) {
                 console.error('Interactive narrative tick failed:', error);
                 this.state.interactiveNarrative.autoplayActive = false;
+                this.setInteractiveNarrativeProgressStatus('');
+                UI.hideTypingIndicator();
                 UI.showToast('Interactive narrative stopped due to an error.', 'warning');
             } finally {
+                this.state.interactiveNarrative.tickInFlight = false;
+                if (!this.state.interactiveNarrative.autoplayActive) {
+                    this.clearInteractiveNarrativeProgressPoll();
+                    this.setInteractiveNarrativeProgressStatus('');
+                    UI.hideTypingIndicator();
+                }
                 this.updateInteractiveNarrativeButton();
             }
         }, delayMs);
@@ -1769,6 +1843,7 @@ window.App = {
     async startInteractiveNarrativeAutoplay() {
         this.clearInteractiveNarrativeTimer();
         if (!this.state.selectedConversationId || !this.isInteractiveNarrativeEnabledForCharacter()) return;
+        this.state.interactiveNarrative.tickInFlight = false;
         let loopId = this.state.interactiveNarrative.loopId;
         try {
             if (!loopId) {
@@ -1783,11 +1858,15 @@ window.App = {
             this.state.interactiveNarrative.autoplayActive = (this.state.interactiveNarrative.state === 'running');
             this.updateInteractiveNarrativeButton();
             if (this.state.interactiveNarrative.autoplayActive) {
+                this.pollInteractiveNarrativeProgress();
                 this.scheduleInteractiveNarrativeTick();
             }
         } catch (error) {
             console.error('Failed to start interactive narrative autoplay:', error);
             this.state.interactiveNarrative.autoplayActive = false;
+            this.clearInteractiveNarrativeProgressPoll();
+            this.setInteractiveNarrativeProgressStatus('');
+            UI.hideTypingIndicator();
             this.updateInteractiveNarrativeButton();
             UI.showToast(error.message || 'Failed to start interactive narrative', 'error');
         }

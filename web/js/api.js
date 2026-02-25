@@ -262,6 +262,17 @@ class API {
         });
     }
 
+    static async advanceInteractiveNarrative(loopId, timeoutMs = 90000) {
+        const params = new URLSearchParams({ timeout_ms: String(timeoutMs) });
+        return this.request(`/interactive-narrative/${loopId}/advance?${params.toString()}`, {
+            method: 'POST',
+        });
+    }
+
+    static async getInteractiveNarrativeProgress(loopId) {
+        return this.request(`/interactive-narrative/${loopId}/progress`);
+    }
+
     static async listConversationSegments(conversationId, skip = 0, limit = 500) {
         const params = new URLSearchParams();
         if (skip) params.append('skip', skip);
@@ -653,6 +664,19 @@ class API {
         return this.request(`/characters/${characterId}/core-memories`, {
             method: 'POST',
             body: JSON.stringify(memoryData),
+        });
+    }
+
+    static async updateCoreMemory(characterId, memoryId, updates) {
+        return this.request(`/characters/${characterId}/core-memories/${memoryId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        });
+    }
+
+    static async deleteCoreMemory(characterId, memoryId) {
+        return this.request(`/characters/${characterId}/core-memories/${memoryId}`, {
+            method: 'DELETE',
         });
     }
     
