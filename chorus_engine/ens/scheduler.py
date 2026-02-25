@@ -95,17 +95,17 @@ class ENSScheduler:
         loop_id = str(signal_payload.get("loop_id") or "").strip() or None
         if signal_type == "loop_progression" and not loop_id:
             raise ValueError("loop_progression requires payload.loop_id")
-        if signal_type == "loop_progression" and loop_id:
-            existing_loop_pending = (
+        if signal_type == "loop_progression" and loop_id and not idempotency_key:
+            existing_loop_in_flight = (
                 db.query(ENSSignalQueue)
                 .filter(ENSSignalQueue.signal_type == "loop_progression")
-                .filter(ENSSignalQueue.status == STATUS_PENDING)
+                .filter(ENSSignalQueue.status.in_([STATUS_PENDING, STATUS_RUNNING]))
                 .filter(ENSSignalQueue.loop_id == loop_id)
                 .order_by(ENSSignalQueue.created_at.asc())
                 .first()
             )
-            if existing_loop_pending:
-                return existing_loop_pending
+            if existing_loop_in_flight:
+                return existing_loop_in_flight
 
         relationship_id, used_fallback_relationship = _relationship_id_for_signal(signal)
         if used_fallback_relationship:
@@ -137,17 +137,17 @@ class ENSScheduler:
             return row
         except IntegrityError:
             db.rollback()
-            if signal_type == "loop_progression" and loop_id:
-                existing_loop_pending = (
+            if signal_type == "loop_progression" and loop_id and not idempotency_key:
+                existing_loop_in_flight = (
                     db.query(ENSSignalQueue)
                     .filter(ENSSignalQueue.signal_type == "loop_progression")
-                    .filter(ENSSignalQueue.status == STATUS_PENDING)
+                    .filter(ENSSignalQueue.status.in_([STATUS_PENDING, STATUS_RUNNING]))
                     .filter(ENSSignalQueue.loop_id == loop_id)
                     .order_by(ENSSignalQueue.created_at.asc())
                     .first()
                 )
-                if existing_loop_pending:
-                    return existing_loop_pending
+                if existing_loop_in_flight:
+                    return existing_loop_in_flight
             if idempotency_key:
                 existing_by_key = (
                     db.query(ENSSignalQueue)

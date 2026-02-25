@@ -694,6 +694,20 @@ class ENSConfig(BaseModel):
             "off|chat_control_only|loop_image_only|both."
         ),
     )
+    loop_step_max_passes_per_step: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="ENS loop-step orchestration: maximum passes allowed per step execution.",
+    )
+    loop_step_allow_single_tool_loopback: bool = Field(
+        default=True,
+        description="ENS loop-step orchestration: allow at most one tool loopback per pass.",
+    )
+    loop_step_pass_trace_enabled: bool = Field(
+        default=True,
+        description="ENS loop-step orchestration: include pass_trace diagnostics in loop outputs/events.",
+    )
 
     @field_validator("native_tool_transport_debug_override_mode", mode="before")
     @classmethod

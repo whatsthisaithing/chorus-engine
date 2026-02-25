@@ -297,6 +297,9 @@ ens:
   native_tool_transport_sentinel_fallback_enabled: true  # Allow immediate sentinel fallback when native yields no control/tools
   native_tool_transport_narrative_v11_split_enabled: false  # Enable narrative.v1 split loop-step flow (Stage A beat + Stage B control)
   native_tool_transport_debug_override_mode: "off"  # DEBUG-ONLY: off|chat_control_only|loop_image_only|both
+  loop_step_max_passes_per_step: 4  # Multi-pass guardrail: maximum passes per loop step
+  loop_step_allow_single_tool_loopback: true  # Multi-pass guardrail: allow one tool loopback per pass
+  loop_step_pass_trace_enabled: true  # Persist pass_trace diagnostics in ENS loop step outputs
   
   # Permanent scheduler operation knobs (retained after migration)
   scheduler_sync_ticks_per_ingress: 1  # Bounded opportunistic ticks per ingress (0-10)

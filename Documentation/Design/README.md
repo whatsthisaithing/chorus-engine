@@ -208,6 +208,11 @@ Each design document should follow this general structure:
 
 ## Related Documentation
 
+### ENS and Agentic Loops
+
+- **[ENS_DEVELOPER_GUIDE.md](../ENS_DEVELOPER_GUIDE.md)**: ENS ownership, invariants, and contributor workflow
+- **[AGENTIC_LOOP_DEVELOPER_GUIDE.md](../AGENTIC_LOOP_DEVELOPER_GUIDE.md)**: Loop plugins, pass orchestration, outcome ladder, and loop debugging
+
 ### Active Development
 
 - **[PHASE_8_PLAN.md](../Development/PHASE_8_PLAN.md)**: Current implementation plan

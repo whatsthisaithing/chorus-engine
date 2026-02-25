@@ -11,6 +11,13 @@ Primary files:
 - API adapters: `chorus_engine/api/app.py`, `chorus_engine/api/model_routes.py`
 - LLM invoke: `chorus_engine/ens/llm_invocation_service.py`
 - LLM control plane: `chorus_engine/ens/llm_control_plane_service.py`
+- Loop plugins: `chorus_engine/ens/loop_plugins/*`
+- Step executor: `chorus_engine/ens/step_execution/pass_executor.py`
+- Outcome ladder: `chorus_engine/ens/control_resolution/ladders.py`
+
+Companion guide:
+
+- `Documentation/AGENTIC_LOOP_DEVELOPER_GUIDE.md`
 
 ---
 
@@ -367,6 +374,35 @@ Implementation evolved alongside planning docs under:
 Use them for historical rationale, but treat code references above as source of truth for behavior.
 
 ---
+
+## Agentic Loop Architecture Snapshot
+
+ENS now supports plugin-driven loop behavior with core pass orchestration.
+
+Current pattern:
+
+- core runtime/dispatcher own loop session state machine, queueing, persistence, and observability
+- loop plugins define loop-kind policy and pass planning
+- pass executor runs ordered passes with guardrails
+- outcome ladder resolves control action using native tools/content parse/json-schema retry/default wait
+
+Key contract files:
+
+- `chorus_engine/ens/loop_plugins/contracts.py`
+- `chorus_engine/ens/loop_plugins/registry.py`
+- `chorus_engine/ens/loop_plugins/narrative_v1.py`
+- `chorus_engine/ens/step_execution/pass_executor.py`
+
+Diagnostics naming:
+
+- use `outcome_*` keys (legacy `stage_b_*` removed)
+- `pass_trace` is persisted in loop step `output_json`
+
+Important scheduler behavior:
+
+- deterministic progression keys are used for auto-enqueued followups
+- manual interactive tick progression is currently unkeyed
+- scheduler dedupes unkeyed loop progression signals by existing in-flight (`pending`/`running`) loop progression
 
 ## ENS v3 Operational Addendum
 

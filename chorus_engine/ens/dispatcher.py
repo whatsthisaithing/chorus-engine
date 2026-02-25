@@ -89,7 +89,9 @@ from chorus_engine.ens.control_resolution.ladders import (
     extract_action_from_content,
     resolve_outcome_with_ladder,
 )
+from chorus_engine.ens.loop_plugins.contracts import PassExecutionResult, StepPassPlan
 from chorus_engine.ens.loop_plugins.registry import get_loop_plugin
+from chorus_engine.ens.step_execution import execute_step_passes
 
 logger = logging.getLogger(__name__)
 
@@ -2166,6 +2168,24 @@ class ENSDispatcher:
             return False
         return bool(getattr(ens_cfg, "native_tool_transport_narrative_v11_split_enabled", False))
 
+    def _loop_step_max_passes_per_step(self) -> int:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return 4
+        return max(1, int(getattr(ens_cfg, "loop_step_max_passes_per_step", 4) or 4))
+
+    def _loop_step_allow_single_tool_loopback(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return True
+        return bool(getattr(ens_cfg, "loop_step_allow_single_tool_loopback", True))
+
+    def _loop_step_pass_trace_enabled(self) -> bool:
+        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
+        if not ens_cfg:
+            return True
+        return bool(getattr(ens_cfg, "loop_step_pass_trace_enabled", True))
+
     @staticmethod
     def _loop_outcome_control_messages(
         *,
@@ -2341,6 +2361,37 @@ class ENSDispatcher:
             tool_transport_mode=tool_transport_mode,
         )
         outcome_pass_enabled = bool(loop_plan.enable_outcome_pass)
+        pass_plans: List[StepPassPlan] = list(loop_plan.passes or [])
+        if not pass_plans:
+            pass_plans.append(
+                StepPassPlan(
+                    pass_id="pass_primary_generation",
+                    kind="primary_generation",
+                    emit_to_user=True,
+                    parse_strategy="none",
+                    loop_stage_label=(loop_plan.primary_pass_label or "full"),
+                )
+            )
+            if outcome_pass_enabled and loop_plan.outcome_policy is not None:
+                pass_plans.append(
+                    StepPassPlan(
+                        pass_id="pass_outcome_resolution",
+                        kind="outcome_resolution",
+                        emit_to_user=False,
+                        parse_strategy="outcome_ladder",
+                        native_tool_policy={
+                            "policy_id": f"{loop_plugin.plugin_id}.outcome_control",
+                            "allowed_media_tools": [],
+                            "include_control": bool(loop_plan.outcome_policy.use_native_transport),
+                            "include_cold_recall": False,
+                            "tool_choice": loop_plan.outcome_policy.tool_choice,
+                        },
+                        temperature=float(loop_plan.outcome_policy.temperature),
+                        max_tokens=int(loop_plan.outcome_policy.max_tokens),
+                        allow_single_tool_loopback=False,
+                        loop_stage_label="control",
+                    )
+                )
         explicit_prompt = str(params.get("step_prompt") or "").strip()
         prompt_addendum = str(loop_plan.prompt_addendum or "")
         loop_system_prompt = getattr(character, "system_prompt", None)
@@ -2486,42 +2537,14 @@ class ENSDispatcher:
                 "step_event_id": step_event.event_id,
             }
 
-        stage_a_request_kwargs = dict(
-            invocation_kind="chat",
-            idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
-            model_id=effective.model_id,
-            provider=effective.provider,
-            engine=effective.engine,
-            conversation_id=session.conversation_id,
-            surface_id=session.surface_id,
-            character_id=character_id,
-            temperature=effective.temperature,
-            max_tokens=effective.max_tokens,
-            metadata={
-                "loop_id": loop_id,
-                "loop_kind": session.loop_kind,
-                "relationship_id": session.relationship_id,
-                "tool_transport_mode": tool_transport_mode,
-                "loop_stage": str(loop_plan.primary_pass_label or "full"),
-            },
-        )
-        if step_messages is not None:
-            stage_a_request_kwargs["messages"] = step_messages
-        else:
-            stage_a_request_kwargs["prompt"] = step_prompt
-            stage_a_request_kwargs["system_prompt"] = loop_system_prompt
-
-        invocation = await self.llm_invoker.invoke(InvocationRequest(**stage_a_request_kwargs))
-        if invocation.get("status") != "success":
-            session.state = "errored"
-            session.stop_reason = (invocation.get("error") or {}).get("message") or "loop_step_invocation_failed"
-            db.commit()
-            raise RuntimeError(str(session.stop_reason))
-
-        raw_content = invocation.get("output_text") or ""
-        assistant_result = self._assistant_result_from_invocation(raw_content, invocation)
-        requested_tools = assistant_result.tool_requests or []
-        native_transport = invocation.get("native_transport") or {}
+        invocation: Dict[str, Any] = {}
+        assistant_result: Optional[AssistantResult] = None
+        raw_content = ""
+        requested_tools: List[Any] = []
+        native_transport: Dict[str, Any] = {}
+        control_action: Optional[str] = None
+        control_source_result: Optional[AssistantResult] = None
+        pass_trace: List[Dict[str, Any]] = []
 
         outcome_invocation: Optional[Dict[str, Any]] = None
         outcome_assistant_result: Optional[AssistantResult] = None
@@ -2536,53 +2559,161 @@ class ENSDispatcher:
         outcome_rung1_native: Dict[str, Any] = {"attempted": False, "success": False, "ambiguous": False, "reason": "not_invoked", "action": None}
         outcome_rung2_parse: Dict[str, Any] = {"attempted": False, "success": False, "ambiguous": False, "reason": "not_invoked", "action": None}
         outcome_rung3_json_schema: Dict[str, Any] = {"attempted": False, "success": False, "reason": "not_invoked", "action": None}
+        primary_pass_assistant_result: Optional[AssistantResult] = None
+        primary_pass_raw_content = ""
 
-        control_action = assistant_result.control.action if assistant_result.control else None
-        control_source_result = assistant_result
+        async def _run_pass(pass_plan: StepPassPlan, loopback_payload: Optional[Dict[str, Any]]) -> PassExecutionResult:
+            _ = loopback_payload
+            if pass_plan.kind == "primary_generation":
+                stage_a_request_kwargs = dict(
+                    invocation_kind="chat",
+                    idempotency_key=f"loop:step:{loop_id}:{int(session.step_index or 0) + 1}",
+                    model_id=effective.model_id,
+                    provider=effective.provider,
+                    engine=effective.engine,
+                    conversation_id=session.conversation_id,
+                    surface_id=session.surface_id,
+                    character_id=character_id,
+                    temperature=(pass_plan.temperature if pass_plan.temperature is not None else effective.temperature),
+                    max_tokens=(pass_plan.max_tokens if pass_plan.max_tokens is not None else effective.max_tokens),
+                    metadata={
+                        "loop_id": loop_id,
+                        "loop_kind": session.loop_kind,
+                        "relationship_id": session.relationship_id,
+                        "tool_transport_mode": tool_transport_mode,
+                        "loop_stage": str(pass_plan.loop_stage_label or loop_plan.primary_pass_label or "full"),
+                    },
+                )
+                if step_messages is not None:
+                    stage_a_request_kwargs["messages"] = step_messages
+                else:
+                    stage_a_request_kwargs["prompt"] = step_prompt
+                    stage_a_request_kwargs["system_prompt"] = loop_system_prompt
 
-        if outcome_pass_enabled and loop_plan.outcome_policy is not None:
-            outcome_policy = loop_plan.outcome_policy
-            outcome_messages = self._loop_outcome_control_messages(
-                beat_text=assistant_result.display_text or raw_content,
-                user_input_text=(explicit_prompt or "continue"),
-                step_index=int(session.step_index or 0) + 1,
-                loop_kind=str(session.loop_kind or ""),
-                tool_transport_mode=tool_transport_mode,
+                stage_invocation = await self.llm_invoker.invoke(InvocationRequest(**stage_a_request_kwargs))
+                if stage_invocation.get("status") != "success":
+                    return PassExecutionResult(
+                        pass_id=pass_plan.pass_id,
+                        status="failed",
+                        output_text="",
+                        assistant_result_tier=None,
+                        finish_reason=None,
+                        tool_calls_count=0,
+                        error=((stage_invocation.get("error") or {}).get("message") or "loop_step_invocation_failed"),
+                        metadata={"invocation": stage_invocation},
+                    )
+                stage_raw = stage_invocation.get("output_text") or ""
+                stage_result = self._assistant_result_from_invocation(stage_raw, stage_invocation)
+                nonlocal primary_pass_assistant_result, primary_pass_raw_content
+                primary_pass_assistant_result = stage_result
+                primary_pass_raw_content = stage_raw
+                return PassExecutionResult(
+                    pass_id=pass_plan.pass_id,
+                    status="success",
+                    output_text=str(stage_result.display_text or ""),
+                    assistant_result_tier=str((stage_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                    finish_reason=(stage_invocation.get("finish_reason") or None),
+                    tool_calls_count=len(stage_result.tool_requests or []),
+                    metadata={
+                        "raw_content": stage_raw,
+                        "invocation": stage_invocation,
+                        "assistant_result": stage_result,
+                        "native_transport": dict(stage_invocation.get("native_transport") or {}),
+                    },
+                )
+
+            if pass_plan.kind == "outcome_resolution":
+                if primary_pass_assistant_result is None:
+                    return PassExecutionResult(
+                        pass_id=pass_plan.pass_id,
+                        status="failed",
+                        output_text="",
+                        assistant_result_tier=None,
+                        finish_reason=None,
+                        tool_calls_count=0,
+                        error="missing_primary_generation_result",
+                    )
+                outcome_messages = self._loop_outcome_control_messages(
+                    beat_text=primary_pass_assistant_result.display_text or primary_pass_raw_content,
+                    user_input_text=(explicit_prompt or "continue"),
+                    step_index=int(session.step_index or 0) + 1,
+                    loop_kind=str(session.loop_kind or ""),
+                    tool_transport_mode=tool_transport_mode,
+                )
+                outcome_request = InvocationRequest(
+                    invocation_kind="chat",
+                    idempotency_key=f"loop:step:control:{loop_id}:{int(session.step_index or 0) + 1}",
+                    model_id=effective.model_id,
+                    provider=effective.provider,
+                    engine=effective.engine,
+                    conversation_id=session.conversation_id,
+                    surface_id=session.surface_id,
+                    character_id=character_id,
+                    messages=outcome_messages,
+                    temperature=(pass_plan.temperature if pass_plan.temperature is not None else float(loop_plan.outcome_policy.temperature) if loop_plan.outcome_policy else 0.1),
+                    max_tokens=(pass_plan.max_tokens if pass_plan.max_tokens is not None else int(loop_plan.outcome_policy.max_tokens) if loop_plan.outcome_policy else 64),
+                    native_tool_policy=(dict(pass_plan.native_tool_policy or {}) or None),
+                    metadata={
+                        "loop_id": loop_id,
+                        "loop_kind": session.loop_kind,
+                        "relationship_id": session.relationship_id,
+                        "tool_transport_mode": tool_transport_mode,
+                        "loop_stage": str(pass_plan.loop_stage_label or "control"),
+                    },
+                )
+                pass_invocation = await self.llm_invoker.invoke(outcome_request)
+                if pass_invocation.get("status") != "success":
+                    return PassExecutionResult(
+                        pass_id=pass_plan.pass_id,
+                        status="failed",
+                        output_text="",
+                        assistant_result_tier=None,
+                        finish_reason=None,
+                        tool_calls_count=0,
+                        error=((pass_invocation.get("error") or {}).get("message") or "outcome_control_invocation_failed"),
+                        metadata={"invocation": pass_invocation},
+                    )
+                pass_raw = pass_invocation.get("output_text") or ""
+                pass_result = self._assistant_result_from_invocation(pass_raw, pass_invocation)
+                return PassExecutionResult(
+                    pass_id=pass_plan.pass_id,
+                    status="success",
+                    output_text=str(pass_result.display_text or pass_raw or ""),
+                    assistant_result_tier=str((pass_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
+                    finish_reason=(pass_invocation.get("finish_reason") or None),
+                    tool_calls_count=len(pass_result.tool_requests or []),
+                    metadata={
+                        "raw_content": pass_raw,
+                        "invocation": pass_invocation,
+                        "assistant_result": pass_result,
+                        "native_transport": dict(pass_invocation.get("native_transport") or {}),
+                    },
+                )
+
+            return PassExecutionResult(
+                pass_id=pass_plan.pass_id,
+                status="failed",
+                output_text="",
+                assistant_result_tier=None,
+                finish_reason=None,
+                tool_calls_count=0,
+                error=f"unsupported_pass_kind:{pass_plan.kind}",
             )
-            outcome_request = InvocationRequest(
-                invocation_kind="chat",
-                idempotency_key=f"loop:step:control:{loop_id}:{int(session.step_index or 0) + 1}",
-                model_id=effective.model_id,
-                provider=effective.provider,
-                engine=effective.engine,
-                conversation_id=session.conversation_id,
-                surface_id=session.surface_id,
-                character_id=character_id,
-                messages=outcome_messages,
-                temperature=float(outcome_policy.temperature),
-                max_tokens=int(outcome_policy.max_tokens),
-                native_tool_policy={
-                    "policy_id": f"{loop_plugin.plugin_id}.outcome_control",
-                    "allowed_media_tools": [],
-                    "include_control": bool(outcome_policy.use_native_transport),
-                    "include_cold_recall": False,
-                    "tool_choice": outcome_policy.tool_choice,
-                },
-                metadata={
-                    "loop_id": loop_id,
-                    "loop_kind": session.loop_kind,
-                    "relationship_id": session.relationship_id,
-                    "tool_transport_mode": tool_transport_mode,
-                    "loop_stage": "control",
-                },
-            )
-            outcome_invocation = await self.llm_invoker.invoke(outcome_request)
-            if outcome_invocation.get("status") == "success":
-                outcome_raw_content = outcome_invocation.get("output_text") or ""
-                outcome_assistant_result = self._assistant_result_from_invocation(outcome_raw_content, outcome_invocation)
-                outcome_native_transport = dict(outcome_invocation.get("native_transport") or {})
-            else:
-                outcome_error = (outcome_invocation.get("error") or {}).get("message") or "outcome_control_invocation_failed"
+
+        async def _resolve_outcome_for_pass(
+            pass_plan: StepPassPlan,
+            pass_result: PassExecutionResult,
+            prior_results: List[PassExecutionResult],
+        ) -> Optional[Any]:
+            _ = prior_results
+            if pass_plan.kind != "outcome_resolution" or loop_plan.outcome_policy is None:
+                return None
+            nonlocal outcome_retry_invocation
+
+            pass_assistant_result = pass_result.metadata.get("assistant_result")
+            if not isinstance(pass_assistant_result, AssistantResult):
+                return None
+
             async def _invoke_outcome_json_retry() -> Dict[str, Any]:
                 nonlocal outcome_retry_invocation
                 retry_request = InvocationRequest(
@@ -2596,10 +2727,10 @@ class ENSDispatcher:
                     character_id=character_id,
                     messages=self._loop_outcome_json_retry_messages(
                         loop_kind=str(session.loop_kind or ""),
-                        beat_text=assistant_result.display_text or raw_content,
+                        beat_text=(primary_pass_assistant_result.display_text if primary_pass_assistant_result else "") or primary_pass_raw_content,
                     ),
-                    temperature=float(outcome_policy.temperature),
-                    max_tokens=int(outcome_policy.max_tokens),
+                    temperature=float(loop_plan.outcome_policy.temperature),
+                    max_tokens=int(loop_plan.outcome_policy.max_tokens),
                     response_format=self._loop_outcome_json_schema_response_format(str(session.loop_kind or "")),
                     metadata={
                         "loop_id": loop_id,
@@ -2624,29 +2755,100 @@ class ENSDispatcher:
                     or "json_schema_retry_invocation_failed",
                 }
 
-            outcome_content_source = ""
-            if outcome_assistant_result is not None:
-                outcome_content_source = (
-                    outcome_assistant_result.raw_content
-                    or outcome_assistant_result.display_text
-                    or ""
-                )
-            resolution = await resolve_outcome_with_ladder(
-                outcome_pass_assistant_result=outcome_assistant_result,
+            outcome_content_source = (
+                pass_assistant_result.raw_content
+                or pass_assistant_result.display_text
+                or ""
+            )
+            return await resolve_outcome_with_ladder(
+                outcome_pass_assistant_result=pass_assistant_result,
                 provider_capabilities=outcome_capabilities,
                 outcome_content_source=outcome_content_source,
-                policy=outcome_policy,
+                policy=loop_plan.outcome_policy,
                 invoke_json_retry=_invoke_outcome_json_retry,
             )
-            control_action = resolution.action
-            outcome_defaulted_wait = bool(resolution.defaulted_wait)
-            outcome_ladder_rung_selected = str(resolution.ladder_rung_selected or "default_wait")
-            outcome_rung1_native = dict(resolution.rung1_native or {})
-            outcome_rung2_parse = dict(resolution.rung2_parse or {})
-            outcome_rung3_json_schema = dict(resolution.rung3_json_schema or {})
-            if resolution.source_assistant_result is not None:
-                control_source_result = resolution.source_assistant_result
-                outcome_assistant_result = resolution.source_assistant_result
+
+        execution = await execute_step_passes(
+            pass_plans=pass_plans,
+            run_pass=_run_pass,
+            resolve_outcome=_resolve_outcome_for_pass,
+            execute_loopback=None,
+            max_passes_per_step=self._loop_step_max_passes_per_step(),
+            allow_single_tool_loopback=self._loop_step_allow_single_tool_loopback(),
+        )
+
+        if not execution.pass_results:
+            session.state = "errored"
+            session.stop_reason = "loop_step_no_passes_executed"
+            db.commit()
+            raise RuntimeError(str(session.stop_reason))
+
+        for p in execution.pass_results:
+            resolution_meta = p.metadata.get("outcome_resolution") if isinstance(p.metadata, dict) else None
+            pass_trace.append(
+                {
+                    "pass_id": p.pass_id,
+                    "kind": (next((plan.kind for plan in pass_plans if plan.pass_id == p.pass_id), None)),
+                    "emit_to_user": bool(next((plan.emit_to_user for plan in pass_plans if plan.pass_id == p.pass_id), False)),
+                    "status": p.status,
+                    "assistant_result_tier": p.assistant_result_tier,
+                    "finish_reason": p.finish_reason,
+                    "tool_calls_count": int(p.tool_calls_count or 0),
+                    "loopback_invoked": bool(p.loopback_invoked),
+                    "outcome_action": (resolution_meta.get("action") if isinstance(resolution_meta, dict) else None),
+                    "defaulted_wait": (resolution_meta.get("defaulted_wait") if isinstance(resolution_meta, dict) else None),
+                    "error": p.error,
+                    "timing_ms": int(p.timing_ms or 0),
+                }
+            )
+
+        primary_pass = next((p for p in execution.pass_results if p.pass_id == "pass_primary_generation"), execution.pass_results[0])
+        primary_invocation = primary_pass.metadata.get("invocation") if isinstance(primary_pass.metadata, dict) else None
+        primary_assistant = primary_pass.metadata.get("assistant_result") if isinstance(primary_pass.metadata, dict) else None
+        if not isinstance(primary_invocation, dict) or not isinstance(primary_assistant, AssistantResult):
+            invocation = {"finish_reason": None, "output_empty": True, "completion_flags": ["pass_failure_defaulted_wait"]}
+            assistant_result = normalize_assistant_result(raw_content="")
+            raw_content = ""
+            requested_tools = []
+            native_transport = {}
+            control_action = "WAIT_FOR_USER"
+            control_source_result = assistant_result
+            outcome_defaulted_wait = True
+            outcome_error = primary_pass.error or "primary_pass_failed_default_wait"
+            outcome_ladder_rung_selected = "default_wait"
+        else:
+            invocation = primary_invocation
+            assistant_result = primary_assistant
+            raw_content = str(primary_pass.metadata.get("raw_content") or "")
+            requested_tools = assistant_result.tool_requests or []
+            native_transport = dict(primary_pass.metadata.get("native_transport") or {})
+            control_action = assistant_result.control.action if assistant_result.control else None
+            control_source_result = assistant_result
+
+        outcome_pass_result = next((p for p in execution.pass_results if p.pass_id == "pass_outcome_resolution"), None)
+        if outcome_pass_result is not None:
+            outcome_invocation = outcome_pass_result.metadata.get("invocation") if isinstance(outcome_pass_result.metadata, dict) else None
+            if not isinstance(outcome_invocation, dict):
+                outcome_invocation = None
+            outcome_assistant_result = outcome_pass_result.metadata.get("assistant_result") if isinstance(outcome_pass_result.metadata, dict) else None
+            if not isinstance(outcome_assistant_result, AssistantResult):
+                outcome_assistant_result = None
+            outcome_native_transport = dict(outcome_pass_result.metadata.get("native_transport") or {}) if isinstance(outcome_pass_result.metadata, dict) else {}
+            if outcome_pass_result.status != "success":
+                outcome_error = outcome_pass_result.error or "outcome_control_invocation_failed"
+                control_action = str((loop_plan.outcome_policy.default_action if loop_plan.outcome_policy else "WAIT_FOR_USER") or "WAIT_FOR_USER").strip().upper()
+                outcome_defaulted_wait = True
+                outcome_ladder_rung_selected = "default_wait"
+            resolution_meta = outcome_pass_result.metadata.get("outcome_resolution") if isinstance(outcome_pass_result.metadata, dict) else None
+            if isinstance(resolution_meta, dict):
+                control_action = resolution_meta.get("action")
+                outcome_defaulted_wait = bool(resolution_meta.get("defaulted_wait"))
+                outcome_ladder_rung_selected = str(resolution_meta.get("ladder_rung_selected") or "default_wait")
+                outcome_rung1_native = dict(resolution_meta.get("rung1_native") or {})
+                outcome_rung2_parse = dict(resolution_meta.get("rung2_parse") or {})
+                outcome_rung3_json_schema = dict(resolution_meta.get("rung3_json_schema") or {})
+                if outcome_assistant_result is not None:
+                    control_source_result = outcome_assistant_result
 
         if loop_plan.force_wait_when_missing_control and not control_action:
             control_action = "WAIT_FOR_USER"
@@ -2678,6 +2880,7 @@ class ENSDispatcher:
         allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
         allowed_tool_requests = [r for r in requested_tools if r.tool_name in allowed_tools]
         blocked_tool_requests = [r.tool_name for r in requested_tools if r.tool_name not in allowed_tools]
+        visible_display_text = str(execution.final_visible_text or assistant_result.display_text or "")
 
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         capture_full_prompt = bool(ens_cfg and getattr(ens_cfg, "debug_capture_full_prompt", False))
@@ -2691,7 +2894,7 @@ class ENSDispatcher:
             "step_index_before": step_index_before,
             "step_prompt_mode": ("messages" if step_messages is not None else "prompt"),
             "raw_content": raw_content,
-            "display_content": assistant_result.display_text,
+            "display_content": visible_display_text,
             "control_action": control_action,
             "assistant_result_tier": str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
             "tool_requests_total": len(requested_tools),
@@ -2765,6 +2968,9 @@ class ENSDispatcher:
                 if outcome_pass_enabled
                 else None
             ),
+            "pass_trace": (pass_trace if self._loop_step_pass_trace_enabled() else []),
+            "visible_pass_id": execution.visible_pass_id,
+            "visible_content_source": (f"pass:{execution.visible_pass_id}" if execution.visible_pass_id else None),
         }
         if capture_full_prompt:
             loop_log_event["prompt_capture"] = {
@@ -2848,7 +3054,7 @@ class ENSDispatcher:
                 db,
                 session=session,
                 step_index=int(session.step_index or 0),
-                display_text=assistant_result.display_text,
+                display_text=visible_display_text,
                 signal_id=signal_id,
                 control_action=control_action,
             )
@@ -2857,7 +3063,7 @@ class ENSDispatcher:
             assistant_message_id = self._persist_loop_visible_web_message(
                 db,
                 session=session,
-                display_text=assistant_result.display_text,
+                display_text=visible_display_text,
                 control_action=control_action,
                 step_index=int(session.step_index or 0),
             )
@@ -2866,7 +3072,7 @@ class ENSDispatcher:
                 db,
                 session=session,
                 step_index=int(session.step_index or 0),
-                display_text=assistant_result.display_text,
+                display_text=visible_display_text,
                 signal_id=signal_id,
                 control_action=control_action,
             )
@@ -2912,14 +3118,14 @@ class ENSDispatcher:
                 step_index_after=int(session.step_index or 0),
                 control_action=control_action,
                 state_after=str(session.state or ""),
-                display_text=assistant_result.display_text,
+                display_text=visible_display_text,
                 tool_requests_allowed=[r.tool_name for r in allowed_tool_requests],
                 tool_requests_blocked=blocked_tool_requests,
                 finish_reason=str(invocation.get("finish_reason") or "") or None,
                 assistant_result_tier=str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
             ),
             output_json={
-                "display_text": assistant_result.display_text,
+                "display_text": visible_display_text,
                 "loop_mode": loop_mode,
                 "assistant_result_tier": str((control_source_result.provider_raw or {}).get("assistant_result_tier") or "unknown"),
                 "finish_reason": invocation.get("finish_reason"),
@@ -2966,6 +3172,9 @@ class ENSDispatcher:
                     if isinstance(outcome_retry_invocation, dict)
                     else 0
                 ),
+                "pass_trace": (pass_trace if self._loop_step_pass_trace_enabled() else []),
+                "visible_pass_id": execution.visible_pass_id,
+                "visible_content_source": (f"pass:{execution.visible_pass_id}" if execution.visible_pass_id else None),
                 "tool_requests_allowed": len(allowed_tool_requests),
                 "tool_requests_blocked": blocked_tool_requests,
                 "tool_requests_total": len(requested_tools),
@@ -3043,7 +3252,7 @@ class ENSDispatcher:
             "step_count": int(session.step_count or 0),
             "token_budget_used": int(session.token_budget_used or 0),
             "tool_budget_used": int(session.tool_budget_used or 0),
-            "display_text": assistant_result.display_text,
+            "display_text": visible_display_text,
             "last_step_control_action": control_action,
             "control_action": control_action,
             "tool_requests_total": len(requested_tools),
@@ -3118,6 +3327,9 @@ class ENSDispatcher:
                 else 0
             ),
             "provider_raw_message": (native_transport or {}).get("provider_raw_message"),
+            "pass_trace": (pass_trace if self._loop_step_pass_trace_enabled() else []),
+            "visible_pass_id": execution.visible_pass_id,
+            "visible_content_source": (f"pass:{execution.visible_pass_id}" if execution.visible_pass_id else None),
             "next_progression_enqueued": bool(next_progression),
             "next_progression": next_progression,
             "outbox_count": outbox_count,

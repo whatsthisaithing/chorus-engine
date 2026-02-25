@@ -318,6 +318,63 @@ Short version:
 - determinism: stable idempotency keys + replay behavior
 - auditability: decision/action trail in SQL + JSONL
 - safety: centralized lock and mutation patterns
+
+---
+
+## Agentic Looping in ENS (Current)
+
+ENS loop architecture is now explicitly split between core orchestration and loop-kind plugins.
+
+Core owns:
+
+- loop session lifecycle and state transitions
+- scheduler queueing and signal arbitration
+- multi-pass step orchestration guardrails
+- loop step event persistence and diagnostics
+
+Plugin owns:
+
+- loop-specific pass plan
+- prompt addenda and outcome messaging policy
+- control normalization semantics
+
+Primary implementation files:
+
+- `chorus_engine/ens/dispatcher.py`
+- `chorus_engine/ens/scheduler.py`
+- `chorus_engine/ens/loop_plugins/contracts.py`
+- `chorus_engine/ens/loop_plugins/registry.py`
+- `chorus_engine/ens/loop_plugins/narrative_v1.py`
+- `chorus_engine/ens/step_execution/pass_executor.py`
+- `chorus_engine/ens/control_resolution/ladders.py`
+
+Current narrative wiring:
+
+- `pass_primary_generation` (visible content pass)
+- `pass_outcome_resolution` (control decision pass)
+
+Outcome resolution ladder order:
+
+1. native tool call parsing
+2. content parse salvage
+3. JSON schema retry
+4. default wait fallback
+
+Diagnostics:
+
+- canonical keys use `outcome_*`
+- per-pass trace captured as `pass_trace` in loop step `output_json`
+- visible content source captured via `visible_pass_id` and `visible_content_source`
+
+Progression dedupe and idempotency:
+
+- auto-enqueued followups use deterministic progression keys
+- manual interactive narrative ticks are currently unkeyed
+- scheduler prevents duplicate in-flight unkeyed loop progression signals for the same loop
+
+For detailed loop implementation guidance, see:
+
+- `Documentation/AGENTIC_LOOP_DEVELOPER_GUIDE.md`
 - future readiness: surface normalization, outbox model, relationship-oriented routing scaffolding
 
 ---

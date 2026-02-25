@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from chorus_engine.ens.loop_plugins.contracts import LoopStepPlan, StepOutcomePolicy
+from chorus_engine.ens.loop_plugins.contracts import LoopStepPlan, StepOutcomePolicy, StepPassPlan
 
 
 _NARRATIVE_V1_WAIT_EQUIVALENTS = {"WAIT_FOR_USER", "YIELD"}
@@ -33,10 +33,40 @@ class NarrativeV1LoopPlugin:
                 use_native_transport=(str(tool_transport_mode or "").strip().lower() == "native"),
                 tool_choice="auto",
             )
+        passes: List[StepPassPlan] = [
+            StepPassPlan(
+                pass_id="pass_primary_generation",
+                kind="primary_generation",
+                emit_to_user=True,
+                parse_strategy="none",
+                loop_stage_label=primary_pass_label,
+            )
+        ]
+        if enable_outcome_pass and outcome_policy is not None:
+            passes.append(
+                StepPassPlan(
+                    pass_id="pass_outcome_resolution",
+                    kind="outcome_resolution",
+                    emit_to_user=False,
+                    parse_strategy="outcome_ladder",
+                    native_tool_policy={
+                        "policy_id": f"{self.plugin_id}.outcome_control",
+                        "allowed_media_tools": [],
+                        "include_control": bool(outcome_policy.use_native_transport),
+                        "include_cold_recall": False,
+                        "tool_choice": outcome_policy.tool_choice,
+                    },
+                    temperature=float(outcome_policy.temperature),
+                    max_tokens=int(outcome_policy.max_tokens),
+                    allow_single_tool_loopback=False,
+                    loop_stage_label="control",
+                )
+            )
         return LoopStepPlan(
             enable_outcome_pass=enable_outcome_pass,
             primary_pass_label=primary_pass_label,
             prompt_addendum=self.loop_step_prompt_addendum(stage=primary_pass_label),
+            passes=passes,
             outcome_policy=outcome_policy,
             loop_policy={"max_consecutive_continue": 4},
             use_prompt_assembly_context=True,
@@ -203,6 +233,15 @@ class GenericLoopPlugin:
             enable_outcome_pass=False,
             primary_pass_label="full",
             prompt_addendum=self.loop_step_prompt_addendum(stage="full"),
+            passes=[
+                StepPassPlan(
+                    pass_id="pass_primary_generation",
+                    kind="primary_generation",
+                    emit_to_user=True,
+                    parse_strategy="none",
+                    loop_stage_label="full",
+                )
+            ],
             outcome_policy=None,
             loop_policy={},
             use_prompt_assembly_context=False,
