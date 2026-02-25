@@ -275,7 +275,7 @@ def test_interactive_narrative_loop_step_debug_capture_writes_prompt_payload(cli
         assert capture.get("prompt")
 
 
-def test_interactive_narrative_stage_b_uses_ladder_for_koboldcpp(client, db, helpers):
+def test_interactive_narrative_outcome_pass_uses_ladder_for_koboldcpp(client, db, helpers):
     _enable_v3_loop_flags(helpers)
     ens_cfg = helpers.app_module.app_state["system_config"].ens
     ens_cfg.native_tool_transport_narrative_v11_split_enabled = True
@@ -309,6 +309,6 @@ def test_interactive_narrative_stage_b_uses_ladder_for_koboldcpp(client, db, hel
     )
     assert step_event is not None
     output_json = step_event.output_json or {}
-    assert output_json.get("stage_b_forced_wait") is False
-    assert output_json.get("stage_b_forced_wait_reason") is None
+    assert output_json.get("outcome_forced_wait") is False
+    assert output_json.get("outcome_forced_wait_reason") is None
 

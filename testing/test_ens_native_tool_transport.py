@@ -333,3 +333,55 @@ def test_koboldcpp_provider_capabilities_disable_native_tools(helpers):
     assert tools is None
     assert tool_choice is None
     assert plan["attempted"] is False
+
+
+def test_explicit_native_tool_policy_overrides_metadata_heuristics(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+    llm = helpers.app_module.app_state["llm_client"]
+
+    captured = {}
+
+    async def fake_generate_with_history(messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+        _ = (messages, temperature, max_tokens, model)
+        captured["tools"] = tools
+        captured["tool_choice"] = tool_choice
+        return LLMResponse(
+            content="policy test",
+            model="test-model",
+            finish_reason="stop",
+            tool_calls=[],
+            raw_message={"content": "policy test"},
+        )
+
+    llm.generate_with_history = fake_generate_with_history
+
+    req = InvocationRequest(
+        invocation_kind="chat",
+        idempotency_key="native-policy-override-001",
+        model_id="test-model",
+        provider="local",
+        engine="lmstudio",
+        messages=[{"role": "user", "content": "continue"}],
+        native_tool_policy={
+            "policy_id": "test.control_only",
+            "allowed_media_tools": [],
+            "include_control": True,
+            "include_cold_recall": False,
+            "tool_choice": {"type": "function", "function": {"name": "chorus.control"}},
+        },
+        metadata={
+            "media_gate_snapshot": {"allowed_tools_final": ["image.generate"]},
+            "loop_id": "loop-x",
+            "loop_kind": "generic.v1",
+        },
+    )
+    result = asyncio.run(invoker.invoke(req))
+    assert result["status"] == "success"
+    tool_names = [
+        str(((tool.get("function") or {}).get("name")) or "")
+        for tool in (captured.get("tools") or [])
+        if isinstance(tool, dict)
+    ]
+    assert tool_names == ["chorus.control"]
+    assert captured.get("tool_choice") == {"type": "function", "function": {"name": "chorus.control"}}

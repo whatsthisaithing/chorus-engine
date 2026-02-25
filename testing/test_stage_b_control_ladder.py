@@ -8,7 +8,7 @@ def _dispatcher(helpers) -> ENSDispatcher:
 
 def test_stage_b_content_parse_extracts_single_action(helpers):
     dispatcher = _dispatcher(helpers)
-    result = dispatcher._extract_stage_b_action_from_content('{"action":"continue"}')
+    result = dispatcher._extract_outcome_action_from_content('{"action":"continue"}')
     assert result["success"] is True
     assert result["ambiguous"] is False
     assert result["action"] == "CONTINUE"
@@ -16,7 +16,7 @@ def test_stage_b_content_parse_extracts_single_action(helpers):
 
 def test_stage_b_content_parse_marks_ambiguity_for_continue_and_yield(helpers):
     dispatcher = _dispatcher(helpers)
-    result = dispatcher._extract_stage_b_action_from_content(
+    result = dispatcher._extract_outcome_action_from_content(
         "```json\n{\"action\":\"CONTINUE\"}\n```\n```json\n{\"action\":\"YIELD\"}\n```"
     )
     assert result["success"] is False
@@ -49,8 +49,7 @@ def test_stage_b_native_rung_marks_multiple_control_calls_ambiguous(helpers):
             ]
         },
     )
-    result = dispatcher._evaluate_stage_b_native_rung(assistant_result)
+    result = dispatcher._evaluate_outcome_native_rung(assistant_result)
     assert result["success"] is False
     assert result["ambiguous"] is True
     assert "ambiguous_native_control_actions" in str(result["reason"] or "")
-

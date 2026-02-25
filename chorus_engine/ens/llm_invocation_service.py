@@ -79,6 +79,7 @@ class InvocationRequest:
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Any] = None
     response_format: Optional[Dict[str, Any]] = None
+    native_tool_policy: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -304,6 +305,9 @@ class LLMInvocationService:
     def _prepare_native_transport(self, request: InvocationRequest) -> tuple[Optional[List[Dict[str, Any]]], Optional[Any], Dict[str, Any]]:
         if not self._native_tool_transport_enabled(request=request):
             return None, None, {"attempted": False, "enabled": False}
+        explicit_policy = request.native_tool_policy if isinstance(request.native_tool_policy, dict) else None
+        if explicit_policy is not None:
+            return self._prepare_native_transport_from_policy(request=request, policy=explicit_policy)
         metadata = request.metadata or {}
         media_gate = (metadata.get("media_gate_snapshot") or {})
         allowed_tools = set(media_gate.get("allowed_tools_final") or [])
@@ -329,7 +333,7 @@ class LLMInvocationService:
                 "enabled": True,
                 "include_control": True,
                 "tool_count": len(tools),
-                "loop_policy": ("narrative_v1_stage_b_control_only_auto_choice" if use_auto_choice else "narrative_v1_control_only_required"),
+                "loop_policy": ("narrative_v1_outcome_control_only_auto_choice" if use_auto_choice else "narrative_v1_control_only_required"),
                 "loop_stage": loop_stage or "full",
                 },
             )
@@ -356,6 +360,39 @@ class LLMInvocationService:
             tools=tools,
             tool_choice=tool_choice,
             native_plan={"attempted": True, "enabled": True, "include_control": include_control, "tool_count": len(tools)},
+        )
+
+    def _prepare_native_transport_from_policy(
+        self,
+        *,
+        request: InvocationRequest,
+        policy: Dict[str, Any],
+    ) -> tuple[Optional[List[Dict[str, Any]]], Optional[Any], Dict[str, Any]]:
+        tools = policy.get("tools")
+        if not isinstance(tools, list):
+            allowed_media_tools = set(policy.get("allowed_media_tools") or [])
+            include_control = bool(policy.get("include_control", False))
+            include_cold_recall = bool(policy.get("include_cold_recall", False))
+            tools = native_tool_definitions(
+                allowed_media_tools=allowed_media_tools,
+                include_control=include_control,
+                include_cold_recall=include_cold_recall,
+            )
+        if not tools:
+            return None, None, {"attempted": False, "enabled": True, "reason": "no_tools_available", "policy": "explicit"}
+        tool_choice = policy.get("tool_choice", "auto")
+        native_plan = {
+            "attempted": True,
+            "enabled": True,
+            "tool_count": len(tools),
+            "policy": str(policy.get("policy_id") or "explicit"),
+            "explicit_policy": True,
+        }
+        return self._apply_native_transport_debug_overrides(
+            request=request,
+            tools=tools,
+            tool_choice=tool_choice,
+            native_plan=native_plan,
         )
 
     @staticmethod
@@ -438,6 +475,7 @@ class LLMInvocationService:
             "stop": request.stop,
             "vision_images": request.vision_images,
             "vision_image_mime_type": request.vision_image_mime_type,
+            "native_tool_policy": request.native_tool_policy,
             "metadata": self._sanitize_metadata(request.metadata),
             "session_id": request.session_id,
             "conversation_id": request.conversation_id,
