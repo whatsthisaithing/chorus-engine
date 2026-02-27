@@ -9,6 +9,7 @@ from typing import Optional
 from chorus_engine.config.models import CharacterConfig, ImmersionSettings
 from chorus_engine.ens.tool_registry import (
     TOOL_CHORUS_CONTROL,
+    TOOL_MOMENT_PIN_COLD_RECALL,
     prompt_doc_lines,
 )
 from chorus_engine.ens.loop_plugins.registry import get_loop_plugin
@@ -37,6 +38,8 @@ class SystemPromptGenerator:
         loop_kind: Optional[str] = None,
         tool_transport_mode: str = "sentinel",
         loop_stage: Optional[str] = None,
+        contract_tools: Optional[set[str]] = None,
+        prompt_mode: str = "normal",
     ) -> str:
         """
         Generate the complete system prompt for a character.
@@ -51,6 +54,8 @@ class SystemPromptGenerator:
             Complete system prompt with immersion guidance and optional multi-user context
         """
         parts = []
+        prompt_mode_norm = str(prompt_mode or "normal").strip().lower()
+        archival_rerun_mode = prompt_mode_norm == "archival_rerun"
         
         # 1. Base system prompt (always included)
         parts.append(character.system_prompt.strip())
@@ -122,7 +127,7 @@ class SystemPromptGenerator:
         # 5. Add media generation guidance if enabled
         image_enabled = bool(character.image_generation and character.image_generation.enabled)
         video_enabled = bool(getattr(character, "video_generation", None) and character.video_generation.enabled)
-        if image_enabled or video_enabled:
+        if (not archival_rerun_mode) and (image_enabled or video_enabled):
             if allowed_media_tools is None:
                 tools_for_contract: set[str] = set()
                 if image_enabled:
@@ -135,26 +140,29 @@ class SystemPromptGenerator:
             parts.append(self._generate_media_guidance(tools_for_contract, proactive_offers_allowed, media_gate_context))
 
         # 5.5 Control/tool contract and loop-step addenda.
-        # Keep non-loop behavior unchanged: contract is required only when tool payloads can appear.
+        # Keep non-loop behavior unchanged: contract is required only when control/tools can appear.
         # Loop steps always need the contract because structured control is required there.
         loop_stage_norm = str(loop_stage or "").strip().lower()
         is_narrative_beat_stage = bool(loop_step) and str(loop_kind or "").strip().lower() == "narrative.v1" and loop_stage_norm == "beat"
-        should_add_contract = (bool(loop_step) and not is_narrative_beat_stage) or bool(image_enabled or video_enabled)
-        if should_add_contract:
+        if contract_tools is None:
+            resolved_contract_tools: set[str] = set()
             if allowed_media_tools is None:
-                contract_tools: set[str] = set()
                 if image_enabled:
-                    contract_tools.add("image.generate")
+                    resolved_contract_tools.add("image.generate")
                 if video_enabled:
-                    contract_tools.add("video.generate")
+                    resolved_contract_tools.add("video.generate")
             else:
-                contract_tools = set(allowed_media_tools)
+                resolved_contract_tools = set(allowed_media_tools)
+        else:
+            resolved_contract_tools = set(contract_tools)
+        should_add_contract = (not archival_rerun_mode) and (((bool(loop_step) and not is_narrative_beat_stage) or bool(resolved_contract_tools)))
+        if should_add_contract:
             if str(tool_transport_mode or "sentinel").strip().lower() == "native":
-                parts.append(self._generate_native_tool_contract(contract_tools, loop_step=bool(loop_step)))
+                parts.append(self._generate_native_tool_contract(resolved_contract_tools, loop_step=bool(loop_step)))
             else:
-                parts.append(self._generate_tool_payload_contract(contract_tools, loop_step=bool(loop_step)))
+                parts.append(self._generate_tool_payload_contract(resolved_contract_tools, loop_step=bool(loop_step)))
 
-        if loop_step:
+        if loop_step and not archival_rerun_mode:
             loop_kind_key = str(loop_kind or "").strip()
             if loop_kind_key:
                 plugin = get_loop_plugin(loop_kind_key)
@@ -171,7 +179,7 @@ class SystemPromptGenerator:
                         loop_stage=loop_stage,
                     )
                 )
-        
+
         # 6. Add structured response contract (always enforced)
         structured_contract = self._generate_structured_response_contract(
             character,
@@ -179,8 +187,27 @@ class SystemPromptGenerator:
         )
         if structured_contract:
             parts.append(structured_contract)
+
+        # 7. Archival interpretation mode block must be final for recency.
+        if archival_rerun_mode:
+            parts.append(self._generate_archival_interpretation_mode_block())
         
         return "\n\n".join(parts)
+
+    def _generate_archival_interpretation_mode_block(self) -> str:
+        lines = [
+            "**ARCHIVAL INTERPRETATION MODE (Mandatory):**",
+            "- The archival transcript has already been retrieved and is provided immediately below in this same system message.",
+            "- Tools are not available in this pass.",
+            "- Do not mention tools, tool calls, or retrieval steps.",
+            "- Do not say you are retrieving the transcript.",
+            "- Use ONLY the ARCHIVAL TRANSCRIPT content to answer the user's question.",
+            "- If asked for exact wording, begin your response by quoting the relevant lines verbatim from the ARCHIVAL TRANSCRIPT.",
+            "- Do not summarize when exact wording was requested.",
+            "- After the quote, you may add a brief in-character reflection.",
+            "- If the transcript excerpt is partial, state that briefly and only claim what is present.",
+        ]
+        return "\n".join(lines)
 
     def _generate_general_chat_modifier(self) -> str:
         parts = ["**General Chat Conversation Stance:**"]
@@ -480,6 +507,7 @@ class SystemPromptGenerator:
             "**Character Capabilities:**",
             f"You can generate {media_label}.",
             f"{media_label.capitalize()} are created by writing a descriptive prompt for the generation engine.",
+            "When moment pin transcript tools are available this turn, you can retrieve exact transcript details with `moment_pin.cold_recall`.",
             "",
             request_line,
         ]
@@ -503,19 +531,20 @@ class SystemPromptGenerator:
                 "",
                 "**Media Tooling Runtime Gate (Authoritative):**",
                 f"- MEDIA_TOOL_CALLS_ALLOWED: {media_allowed_text}",
-                f"- ALLOWED_TOOLS: {allowed_tools_list}",
+                f"- ALLOWED_MEDIA_TOOLS: {allowed_tools_list}",
                 f"- REQUESTED_MEDIA_TYPE: {requested_type}",
                 f"- IS_ITERATION_REQUEST: {iteration_text}",
-                "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT emit any media tool call payload.",
-                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is not 'none', you MUST emit exactly one valid tool payload.",
-                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is 'none', you may emit at most one tool payload only when making a genuine proactive offer.",
-                "- Do not force or invent a tool payload unless intentionally offering media.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is NO, you MUST NOT make any media tool call.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is not 'none', you MUST make exactly one valid media tool call.",
+                "- If MEDIA_TOOL_CALLS_ALLOWED is YES and REQUESTED_MEDIA_TYPE is 'none', you may make at most one media tool call only when making a genuine proactive offer.",
+                "- Do not force or invent a tool call unless intentionally offering media.",
                 "- When MEDIA_TOOL_CALLS_ALLOWED is NO:",
                 "  - Do not say \"here's the prompt,\" \"I'll craft a prompt,\" \"prompt for the image/video,\" \"ready to generate,\" \"let me create/craft that visual,\" etc.",
                 "  - Respond as normal conversation: acknowledge + (optional) ask a gentle follow-up question.",
                 "  - When tools are disabled, do not provide prompt-like content at all (no \"enhanced version,\" no long visual spec, no \"imagine...\" block). Keep it conversational.",
-                "- You may only emit tools listed in ALLOWED_TOOLS.",
-                "- If the user message is primarily praise/acknowledgement, respond conversationally and do not emit tool payload.",
+                "- You may only call media tools listed in ALLOWED_MEDIA_TOOLS.",
+                "- This restriction applies only to image.generate/video.generate, not to other tools listed elsewhere (for example, moment pin tools).",
+                "- If the user message is primarily praise/acknowledgement, respond conversationally and do not make a tool call.",
             ])
 
         lines.extend([
@@ -526,8 +555,8 @@ class SystemPromptGenerator:
             "- If the user's message is primarily praise, thanks, approval, or acknowledgement "
             "(for example: \"Lovely\", \"Perfect\", \"Nice\", \"Wow\", \"I love it\", "
             "\"That's a lovely photo\"), respond conversationally.",
-            "- In these acknowledgement cases, you must NOT emit a tool call.",
-            "- Do NOT include a media tool payload.",
+            "- In these acknowledgement cases, you must NOT make a tool call.",
+            "- Do NOT make a media tool call.",
             "- No automatic \"next media\" on approval.",
             f"- After any media tool call, do not generate another tool call unless the user explicitly asks for "
             f"{media_next_item} or explicitly requests changes or iteration.",
@@ -552,7 +581,7 @@ class SystemPromptGenerator:
             "- Use dense visual specificity.",
             "- Avoid vague phrases like \"capturing her essence,\" \"beautiful scene,\" \"serene moment,\" etc.",
             "- Prioritize lighting, composition, materials, and environment.",
-            "- The content inside `args.prompt` should read like a professional art-direction brief.",
+            "- The tool's `prompt` argument should read like a professional art-direction brief.",
             "",
             "**Image Prompt Crafting Standards (High Priority)**",
             "- When generating an image prompt:",
@@ -598,9 +627,11 @@ class SystemPromptGenerator:
     def _generate_tool_payload_contract(self, allowed_tools: set[str], *, loop_step: bool = False) -> str:
         supported_tools: list[str] = []
         if "image.generate" in allowed_tools:
-            supported_tools.append("- image.generate")
+            supported_tools.append("- image.generate: args = {\"prompt\": string}")
         if "video.generate" in allowed_tools:
-            supported_tools.append("- video.generate")
+            supported_tools.append("- video.generate: args = {\"prompt\": string}")
+        if TOOL_MOMENT_PIN_COLD_RECALL in allowed_tools:
+            supported_tools.append("- moment_pin.cold_recall: args = {\"pin_id\": string, \"reason\": string}")
         supported_tools_block = "\n".join(supported_tools)
 
         contract = """**Control / Tool Payload Contract (Mandatory When Requested):**
@@ -627,9 +658,7 @@ JSON schema (version 1):
       "id": "unique_call_identifier",
       "tool": "<supported_tool>",
       "requires_approval": true,
-      "args": {
-        "prompt": "Full generation prompt text"
-      }
+      "args": {}
     }
   ]
 }
@@ -706,7 +735,7 @@ Only one tool call is recommended."""
         if loop_stage_norm == "beat":
             lines[5:5] = [
                 "- This is the beat-generation stage.",
-                "- Do not emit loop control payloads or control tool calls in this stage.",
+                "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
                 "",
                 "Beat Shape (Mandatory):",
                 "- Write 1-3 short paragraphs (aim ~80-250 words).",

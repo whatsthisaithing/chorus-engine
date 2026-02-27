@@ -62,10 +62,11 @@ class LLMConfig(BaseModel):
         default=False,
         description="Compat-only: use Ollama legacy /api/chat transport instead of OpenAI-compatible /v1/chat/completions.",
     )
-    ollama_capture_raw_http_debug: bool = Field(
+    llm_capture_raw_http_debug: bool = Field(
         default=False,
+        validation_alias=AliasChoices("llm_capture_raw_http_debug", "ollama_capture_raw_http_debug"),
         description=(
-            "Debug-only: capture raw request/response payloads for Ollama calls "
+            "Debug-only: capture raw request/response payloads for LLM calls "
             "to data/debug/requests/*.json"
         ),
     )

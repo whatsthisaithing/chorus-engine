@@ -37,6 +37,7 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
         NotImplementedError: If provider is not yet implemented
     """
     provider = config.provider.lower()
+    capture_raw_http_debug = bool(getattr(config, "llm_capture_raw_http_debug", False))
     
     if provider == "ollama":
         return OllamaLLMClient(
@@ -47,7 +48,7 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             max_tokens=config.max_response_tokens,
             context_window=config.context_window,
             use_legacy_chat_api=bool(getattr(config, "ollama_legacy_chat_api_enabled", False)),
-            capture_raw_http_debug=bool(getattr(config, "ollama_capture_raw_http_debug", False)),
+            capture_raw_http_debug=capture_raw_http_debug,
         )
     
     elif provider == "lmstudio":
@@ -63,6 +64,7 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             temperature=config.temperature,
             max_tokens=config.max_response_tokens,
             context_window=config.context_window,
+            capture_raw_http_debug=capture_raw_http_debug,
         )
     
     elif provider == "koboldcpp":
@@ -78,6 +80,7 @@ def create_llm_client(config: "LLMConfig") -> BaseLLMClient:
             temperature=config.temperature,
             max_tokens=config.max_response_tokens,
             context_window=config.context_window,
+            capture_raw_http_debug=capture_raw_http_debug,
         )
     
     elif provider in ["openai-compatible", "llamacpp", "integrated"]:

@@ -12,7 +12,6 @@ from chorus_engine.models.conversation import MomentPin
 from chorus_engine.repositories.moment_pin_repository import MomentPinRepository
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
 from chorus_engine.services.embedding_service import EmbeddingService
-from chorus_engine.services.tool_payload import MOMENT_PIN_COLD_RECALL_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -128,67 +127,18 @@ class MomentPinRetrievalService:
     def format_for_prompt(retrieved: List[RetrievedMomentPin], tool_transport_mode: str = "sentinel") -> str:
         if not retrieved:
             return ""
-        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        _ = tool_transport_mode
         lines = [
             "MOMENT PIN INSTRUCTIONS",
             "",
             "The following Moment Pins are summaries of past conversational events.",
             "They are NOT full transcripts.",
             "",
-            "If transcript precision is required:",
-            "1. Complete your <assistant_response> normally.",
-            (
-                "2. Emit a native tool call to `moment_pin.cold_recall`."
-                if native_transport
-                else "2. After </assistant_response>, append a tool payload using the required sentinel format."
-            ),
-            "3. Do NOT reference the tool call payload in visible text.",
-            (
-                "4. Do NOT emit sentinel markers or raw JSON in visible text."
-                if native_transport
-                else "4. Do NOT include any text after the END sentinel."
-            ),
-            "",
-            "Use tool name: moment_pin.cold_recall",
-            "Only use this tool if necessary.",
+            "If the user asks for exact transcript wording (verbatim, exact quote, etc.), you MUST call `moment_pin.cold_recall` before answering.",
             "Do NOT guess exact quotes.",
             "Maximum one cold recall per turn.",
             "",
         ]
-        if native_transport:
-            lines.extend(
-                [
-                    "Native tool args template:",
-                    "{",
-                    '  "pin_id": "<one_of_the_injected_pin_ids>",',
-                    '  "reason": "brief explanation"',
-                    "}",
-                    "",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    "Tool payload template:",
-                    "---CHORUS_TOOL_PAYLOAD_BEGIN---",
-                    "{",
-                    '  "version": 1,',
-                    '  "tool_calls": [',
-                    "    {",
-                    '      "id": "unique_identifier",',
-                    f'      "tool": "{MOMENT_PIN_COLD_RECALL_TOOL}",',
-                    '      "requires_approval": false,',
-                    '      "args": {',
-                    '        "pin_id": "<one_of_the_injected_pin_ids>",',
-                    '        "reason": "brief explanation"',
-                    "      }",
-                    "    }",
-                    "  ]",
-                    "}",
-                    "---CHORUS_TOOL_PAYLOAD_END---",
-                    "",
-                ]
-            )
         lines.extend(
             [
             "Injected Moment Pins:",

@@ -2,8 +2,15 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, AsyncIterator, List
+import base64
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
 import httpx
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class LLMResponse(BaseModel):
@@ -38,6 +45,7 @@ class BaseLLMClient(ABC):
         temperature: float,
         max_tokens: int,
         context_window: int = 8192,
+        capture_raw_http_debug: bool = False,
     ):
         """
         Initialize LLM client.
@@ -56,7 +64,64 @@ class BaseLLMClient(ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.context_window = context_window
+        self.capture_raw_http_debug = bool(capture_raw_http_debug)
         self.client = httpx.AsyncClient(timeout=timeout)
+
+    def _capture_raw_http_exchange(
+        self,
+        *,
+        provider: str,
+        endpoint_path: str,
+        payload: dict,
+        request_body_bytes: bytes,
+        response: httpx.Response,
+    ) -> None:
+        if not self.capture_raw_http_debug:
+            return
+        try:
+            from .request_debug_context import get_request_debug_context
+
+            ctx = get_request_debug_context()
+            conversation_id = str(ctx.get("conversation_id") or "unknown").strip() or "unknown"
+            chat_type = str(ctx.get("chat_type") or "normal").strip().lower() or "normal"
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+            endpoint_slug = endpoint_path.strip("/").replace("/", "_")
+            filename = f"{conversation_id}_{chat_type}_{timestamp}_{endpoint_slug}.json"
+            out_dir = Path("data/debug/requests")
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            response_body_bytes = bytes(response.content or b"")
+            request_text = request_body_bytes.decode("utf-8", errors="replace")
+            response_text = response_body_bytes.decode("utf-8", errors="replace")
+
+            doc = {
+                "captured_at_utc": datetime.utcnow().isoformat() + "Z",
+                "conversation_id": conversation_id,
+                "chat_type": chat_type,
+                "context": ctx,
+                "provider": provider,
+                "base_url": self.base_url,
+                "endpoint_path": endpoint_path,
+                "model": str(payload.get("model") or self.model),
+                "status_code": response.status_code,
+                "request": {
+                    "content_type": "application/json",
+                    "body_text": request_text,
+                    "body_bytes_b64": base64.b64encode(request_body_bytes).decode("ascii"),
+                },
+                "response": {
+                    "content_type": response.headers.get("content-type"),
+                    "body_text": response_text,
+                    "body_bytes_b64": base64.b64encode(response_body_bytes).decode("ascii"),
+                },
+            }
+
+            (out_dir / filename).write_text(
+                json.dumps(doc, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to capture raw %s HTTP exchange: %s", str(provider or "llm"), exc)
     
     @abstractmethod
     async def health_check(self) -> bool:

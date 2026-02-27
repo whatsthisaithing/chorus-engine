@@ -42,6 +42,7 @@ from chorus_engine.db.vector_store import VectorStore
 from chorus_engine.db.conversation_summary_vector_store import ConversationSummaryVectorStore
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
 from chorus_engine.services.moment_pin_retrieval_service import MomentPinRetrievalService
+from chorus_engine.ens.tool_registry import TOOL_MOMENT_PIN_COLD_RECALL
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class PromptComponents:
     token_breakdown: Dict[str, int]
     moment_pins_text: str = ""
     used_moment_pin_ids: List[str] = field(default_factory=list)
+    contract_tools: List[str] = field(default_factory=list)
     general_chat_bootstrap_injected: bool = False
     general_chat_bootstrap_fingerprint: Optional[str] = None
     segment_recap_injected: bool = False
@@ -355,6 +357,8 @@ class PromptAssemblyService:
         loop_kind: Optional[str] = None,
         tool_transport_mode: str = "sentinel",
         loop_stage: Optional[str] = None,
+        include_cold_recall_tool: Optional[bool] = None,
+        prompt_mode: str = "normal",
     ) -> PromptComponents:
         """
         Assemble a complete prompt for LLM generation.
@@ -378,11 +382,91 @@ class PromptAssemblyService:
         Returns:
             PromptComponents with assembled prompt and token breakdown
         """
-        # Load character config and generate system prompt with immersion guidance
+        prompt_mode_norm = str(prompt_mode or "normal").strip().lower()
+        archival_rerun_mode = prompt_mode_norm == "archival_rerun"
+        if archival_rerun_mode:
+            include_memories = False
+            include_conversation_context = False
+
+        # Load character config.
         config_loader = ConfigLoader()
         character_config = config_loader.load_character(self.character_id)
         system_config = config_loader.load_system_config()
         media_interpretation = bool(image_prompt_context or video_prompt_context)
+        skip_history_for_media_interpretation = media_interpretation
+        message_content_overrides: Dict[str, str] = {}
+
+        # Gather history early so prompt-level tool contract selection can include cold recall
+        # when moment pin IDs are injected this turn.
+        if skip_history_for_media_interpretation:
+            messages = []
+            logger.debug("Skipping conversation history for media prompt interpretation")
+        else:
+            messages = self.message_repository.list_by_thread(
+                thread_id,
+                limit=max_history_messages
+            )
+            if conversation_kind == "general_chat":
+                messages = self._scope_messages_to_general_chat_segment(
+                    messages=messages,
+                    conversation_id=conversation_id,
+                    active_segment_id=str((segment_context or {}).get("segment_id") or "").strip() or None,
+                )
+
+        # Determine per-turn cold-recall availability for prompt injection/contract docs.
+        if include_cold_recall_tool is None:
+            normalized_loop_kind = str(loop_kind or "").strip().lower()
+            include_cold_recall_tool = not (loop_step and normalized_loop_kind == "narrative.v1")
+
+        # Determine memory query (use last user message if not provided).
+        if memory_query is None and messages:
+            last_user_messages = [
+                m for m in reversed(messages)
+                if m.role == MessageRole.USER
+            ]
+            if last_user_messages:
+                memory_query = last_user_messages[0].content
+
+        moment_pins_text = ""
+        used_moment_pin_ids: List[str] = []
+        recent_pin_ids = self._recent_used_moment_pin_ids(messages, assistant_turn_window=2)
+        user_scope = (user_id or primary_user or "User").strip()
+        if memory_query and user_scope and not archival_rerun_mode:
+            try:
+                retrieved_pins = self.moment_pin_service.retrieve(
+                    user_id=user_scope,
+                    character_id=self.character_id,
+                    query=memory_query,
+                    top_n=10,
+                    inject_k=3,
+                    recent_pin_ids=recent_pin_ids,
+                )
+                if retrieved_pins:
+                    if include_cold_recall_tool:
+                        moment_pins_text = self.moment_pin_service.format_for_prompt(
+                            retrieved_pins,
+                            tool_transport_mode=tool_transport_mode,
+                        )
+                        used_moment_pin_ids = [item.pin.id for item in retrieved_pins]
+                        logger.info(f"Added {len(retrieved_pins)} moment pins to prompt")
+                    else:
+                        logger.info(
+                            "Retrieved %s moment pins but skipped injection because moment_pin.cold_recall is unavailable for this turn",
+                            len(retrieved_pins),
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to retrieve moment pins: {e}")
+
+        if archival_rerun_mode:
+            contract_tools: set[str] = set()
+        else:
+            contract_tools = self._resolve_contract_tools(
+                character_config=character_config,
+                allowed_media_tools=allowed_media_tools,
+                include_cold_recall=bool(include_cold_recall_tool and used_moment_pin_ids),
+            )
+
+        # Generate system prompt with immersion guidance and explicit contract tool scope.
         system_prompt = self.system_prompt_generator.generate(
             character_config,
             primary_user=primary_user,
@@ -396,6 +480,8 @@ class PromptAssemblyService:
             loop_kind=loop_kind,
             tool_transport_mode=tool_transport_mode,
             loop_stage=loop_stage,
+            contract_tools=contract_tools,
+            prompt_mode=prompt_mode_norm,
         )
         segment_recap_injected = False
         segment_recap_source_segment_id: Optional[str] = None
@@ -457,28 +543,9 @@ class PromptAssemblyService:
             conversation_source=conversation_source
         )
         
-        # CRITICAL: When interpreting a generated image/video prompt, skip conversation history
-        # The character's ONLY job is to describe the pre-generated prompt, not respond to conversation
-        # Step 1 (prompt generation) already used full context, Step 2 (interpretation) needs NONE
-        skip_history_for_media_interpretation = bool(image_prompt_context or video_prompt_context)
-        message_content_overrides: Dict[str, str] = {}
-        
-        # Get conversation history (unless we're just interpreting a media prompt)
-        if skip_history_for_media_interpretation:
-            messages = []  # No conversation history needed for prompt interpretation
-            logger.debug("Skipping conversation history for media prompt interpretation")
-        else:
-            messages = self.message_repository.list_by_thread(
-                thread_id,
-                limit=max_history_messages
-            )
-            if conversation_kind == "general_chat":
-                messages = self._scope_messages_to_general_chat_segment(
-                    messages=messages,
-                    conversation_id=conversation_id,
-                    active_segment_id=active_segment_id,
-                )
-            
+        # CRITICAL: When interpreting a generated image/video prompt, skip conversation history.
+        # Step 1 (prompt generation) already used full context; Step 2 (interpretation) needs none.
+        if not skip_history_for_media_interpretation:
             # Task 1.8: Enrich user messages with vision observations from attached images.
             # Keep enrichments ephemeral for this prompt only; never mutate persisted message rows.
             try:
@@ -635,43 +702,10 @@ class PromptAssemblyService:
             f"History: {history_budget}, Document: {document_budget}, Reserve: {reserve_budget}"
         )
         
-        # Determine memory query (use last user message if not provided)
-        if memory_query is None and messages:
-            last_user_messages = [
-                m for m in reversed(messages)
-                if m.role == MessageRole.USER
-            ]
-            if last_user_messages:
-                memory_query = last_user_messages[0].content
-        
         # Retrieve relevant past conversation summaries FIRST (budget cascade)
         # Unused conversation context budget flows to memory retrieval
         conversation_context_tokens = 0
         unused_context_budget = conversation_context_budget  # Start with full allocation
-        moment_pins_text = ""
-        used_moment_pin_ids: List[str] = []
-        recent_pin_ids = self._recent_used_moment_pin_ids(messages, assistant_turn_window=2)
-
-        user_scope = (user_id or primary_user or "User").strip()
-        if memory_query and user_scope:
-            try:
-                retrieved_pins = self.moment_pin_service.retrieve(
-                    user_id=user_scope,
-                    character_id=self.character_id,
-                    query=memory_query,
-                    top_n=10,
-                    inject_k=3,
-                    recent_pin_ids=recent_pin_ids,
-                )
-                if retrieved_pins:
-                    moment_pins_text = self.moment_pin_service.format_for_prompt(
-                        retrieved_pins,
-                        tool_transport_mode=tool_transport_mode,
-                    )
-                    used_moment_pin_ids = [item.pin.id for item in retrieved_pins]
-                    logger.info(f"Added {len(retrieved_pins)} moment pins to prompt")
-            except Exception as e:
-                logger.warning(f"Failed to retrieve moment pins: {e}")
         
         if include_conversation_context and memory_query:
             try:
@@ -782,6 +816,7 @@ class PromptAssemblyService:
             token_breakdown=token_breakdown,
             moment_pins_text=moment_pins_text,
             used_moment_pin_ids=used_moment_pin_ids,
+            contract_tools=sorted(contract_tools),
             general_chat_bootstrap_injected=general_chat_bootstrap_injected,
             general_chat_bootstrap_fingerprint=general_chat_bootstrap_fingerprint,
             segment_recap_injected=segment_recap_injected,
@@ -813,6 +848,8 @@ class PromptAssemblyService:
         loop_kind: Optional[str] = None,
         tool_transport_mode: str = "sentinel",
         loop_stage: Optional[str] = None,
+        include_cold_recall_tool: Optional[bool] = None,
+        prompt_mode: str = "normal",
     ) -> PromptComponents:
         """
         Assemble prompt with smart summarization for long conversations (Phase 8 - Day 9).
@@ -860,6 +897,8 @@ class PromptAssemblyService:
                 loop_kind=loop_kind,
                 tool_transport_mode=tool_transport_mode,
                 loop_stage=loop_stage,
+                include_cold_recall_tool=include_cold_recall_tool,
+                prompt_mode=prompt_mode,
             )
         
         # Check if summarization needed
@@ -888,8 +927,14 @@ class PromptAssemblyService:
                 loop_kind=loop_kind,
                 tool_transport_mode=tool_transport_mode,
                 loop_stage=loop_stage,
+                include_cold_recall_tool=include_cold_recall_tool,
+                prompt_mode=prompt_mode,
             )
         
+        if include_cold_recall_tool is None:
+            normalized_loop_kind = str(loop_kind or "").strip().lower()
+            include_cold_recall_tool = not (loop_step and normalized_loop_kind == "narrative.v1")
+
         # Long conversation - apply selective preservation
         logger.info(f"Applying summarization to conversation {conversation_id}")
         
@@ -900,6 +945,19 @@ class PromptAssemblyService:
         character_config = config_loader.load_character(self.character_id)
         system_config = config_loader.load_system_config()
         media_interpretation = bool(image_prompt_context or video_prompt_context)
+        prompt_mode_norm = str(prompt_mode or "normal").strip().lower()
+        archival_rerun_mode = prompt_mode_norm == "archival_rerun"
+        if archival_rerun_mode:
+            include_memories = False
+            include_conversation_context = False
+        if archival_rerun_mode:
+            contract_tools: set[str] = set()
+        else:
+            contract_tools = self._resolve_contract_tools(
+                character_config=character_config,
+                allowed_media_tools=allowed_media_tools,
+                include_cold_recall=bool(include_cold_recall_tool),
+            )
         system_prompt = self.system_prompt_generator.generate(
             character_config,
             primary_user=primary_user,
@@ -913,6 +971,8 @@ class PromptAssemblyService:
             loop_kind=loop_kind,
             tool_transport_mode=tool_transport_mode,
             loop_stage=loop_stage,
+            contract_tools=contract_tools,
+            prompt_mode=prompt_mode_norm,
         )
         
         # Inject identity/time headers before other system prompt additions
@@ -945,6 +1005,7 @@ class PromptAssemblyService:
                     logger.info(f"Added document context: {len(document_context.chunks)} chunks ({document_tokens} tokens)")
             except Exception as e:
                 logger.error(f"Error injecting document context: {e}", exc_info=True)
+        system_tokens = base_system_tokens + document_tokens
         
         # Calculate available budget after system prompt AND documents
         # Document tokens are pre-allocated, so exclude them from "available" space
@@ -1048,9 +1109,29 @@ class PromptAssemblyService:
             token_breakdown=token_breakdown,
             moment_pins_text="",
             used_moment_pin_ids=[],
+            contract_tools=sorted(contract_tools),
             general_chat_bootstrap_injected=False,
             general_chat_bootstrap_fingerprint=None,
         )
+
+    def _resolve_contract_tools(
+        self,
+        *,
+        character_config,
+        allowed_media_tools: Optional[set[str]],
+        include_cold_recall: bool,
+    ) -> set[str]:
+        if allowed_media_tools is None:
+            tools: set[str] = set()
+            if bool(getattr(character_config, "image_generation", None) and character_config.image_generation.enabled):
+                tools.add("image.generate")
+            if bool(getattr(character_config, "video_generation", None) and character_config.video_generation.enabled):
+                tools.add("video.generate")
+        else:
+            tools = set(allowed_media_tools)
+        if include_cold_recall:
+            tools.add(TOOL_MOMENT_PIN_COLD_RECALL)
+        return tools
     
     def _build_selective_context(
         self,

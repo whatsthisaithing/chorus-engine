@@ -25,7 +25,7 @@ llm:
   analysis_min_tokens_memories: 0  # Minimum tokens required for memory extraction analysis
   timeout_seconds: 120
   unload_during_image_generation: true
-  ollama_capture_raw_http_debug: false  # DEBUG-ONLY: dump exact request/response payloads for Ollama calls
+  llm_capture_raw_http_debug: false  # DEBUG-ONLY: dump exact request/response payloads for LLM calls
   provider_capabilities:
     ollama:
       supports_native_tools: true

@@ -21,6 +21,26 @@ class LMStudioLLMClient(BaseLLMClient):
     - Multiple model instances: Same model can be loaded multiple times
     - Enhanced stats: tokens/second, time to first token
     """
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float,
+        temperature: float,
+        max_tokens: int,
+        context_window: int = 8192,
+        capture_raw_http_debug: bool = False,
+    ):
+        super().__init__(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            context_window=context_window,
+            capture_raw_http_debug=capture_raw_http_debug,
+        )
     
     async def health_check(self) -> bool:
         """Check if LM Studio is available."""
@@ -116,9 +136,22 @@ class LMStudioLLMClient(BaseLLMClient):
             
             logger.debug(f"LM Studio request: model={payload['model']}, messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
+            request_body_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             response = await self.client.post(
                 f"{self.base_url}/v1/chat/completions",
-                json=payload
+                content=request_body_bytes,
+                headers={"Content-Type": "application/json"},
+            )
+            self._capture_raw_http_exchange(
+                provider="lmstudio",
+                endpoint_path="/v1/chat/completions",
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
             )
             response.raise_for_status()
 
@@ -218,7 +251,23 @@ class LMStudioLLMClient(BaseLLMClient):
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
             )
-            response = await self.client.post(f"{self.base_url}/v1/chat/completions", json=payload)
+            request_body_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            response = await self.client.post(
+                f"{self.base_url}/v1/chat/completions",
+                content=request_body_bytes,
+                headers={"Content-Type": "application/json"},
+            )
+            self._capture_raw_http_exchange(
+                provider="lmstudio",
+                endpoint_path="/v1/chat/completions",
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
+            )
             response.raise_for_status()
             data = response.json()
             choice = data.get("choices", [{}])[0]
@@ -295,9 +344,22 @@ class LMStudioLLMClient(BaseLLMClient):
             logger.info(f"  Max tokens: {payload['max_tokens']}")
             logger.info(f"  Message count: {len(messages)}")
             
+            request_body_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             response = await self.client.post(
                 f"{self.base_url}/v1/chat/completions",
-                json=payload
+                content=request_body_bytes,
+                headers={"Content-Type": "application/json"},
+            )
+            self._capture_raw_http_exchange(
+                provider="lmstudio",
+                endpoint_path="/v1/chat/completions",
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
             )
             response.raise_for_status()
 

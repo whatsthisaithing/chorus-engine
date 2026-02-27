@@ -1,5 +1,6 @@
 import asyncio
 
+from chorus_engine.ens.dispatcher import ENSDispatcher
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 from chorus_engine.llm.base import LLMResponse
 
@@ -121,6 +122,87 @@ def test_non_narrative_loop_step_keeps_policy_tools_and_auto_tool_choice(helpers
     }
     assert "chorus.control" in tool_names
     assert "image.generate" in tool_names
+
+
+def test_cold_recall_trigger_keeps_auto_tool_choice_when_pin_is_injected(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+    llm = helpers.app_module.app_state["llm_client"]
+
+    captured = {}
+
+    async def fake_generate_with_history(messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+        _ = (messages, temperature, max_tokens, model)
+        captured["tools"] = tools
+        captured["tool_choice"] = tool_choice
+        return LLMResponse(
+            content="native response",
+            model="test-model",
+            finish_reason="stop",
+            tool_calls=[],
+            raw_message={"content": "native response"},
+        )
+
+    llm.generate_with_history = fake_generate_with_history
+
+    req = InvocationRequest(
+        invocation_kind="chat",
+        idempotency_key="native-map-cold-force-001",
+        model_id="test-model",
+        provider="local",
+        engine="lmstudio",
+        messages=[{"role": "user", "content": "Do you remember the exact wording of that conversation?"}],
+        metadata={
+            "media_gate_snapshot": {"allowed_tools_final": ["image.generate"]},
+            "used_moment_pin_ids": ["pin-1"],
+        },
+    )
+    result = asyncio.run(invoker.invoke(req))
+    assert result["status"] == "success"
+    assert captured.get("tool_choice") == "auto"
+    tool_names = {
+        str(((tool.get("function") or {}).get("name")) or "")
+        for tool in (captured.get("tools") or [])
+        if isinstance(tool, dict)
+    }
+    assert "moment_pin.cold_recall" in tool_names
+
+
+def test_cold_recall_trigger_keeps_auto_tool_choice_without_injected_pin(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+    llm = helpers.app_module.app_state["llm_client"]
+
+    captured = {}
+
+    async def fake_generate_with_history(messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+        _ = (messages, temperature, max_tokens, model)
+        captured["tool_choice"] = tool_choice
+        return LLMResponse(
+            content="native response",
+            model="test-model",
+            finish_reason="stop",
+            tool_calls=[],
+            raw_message={"content": "native response"},
+        )
+
+    llm.generate_with_history = fake_generate_with_history
+
+    req = InvocationRequest(
+        invocation_kind="chat",
+        idempotency_key="native-map-cold-force-002",
+        model_id="test-model",
+        provider="local",
+        engine="lmstudio",
+        messages=[{"role": "user", "content": "Do you remember the exact wording of that conversation?"}],
+        metadata={
+            "media_gate_snapshot": {"allowed_tools_final": ["image.generate"]},
+            "used_moment_pin_ids": [],
+        },
+    )
+    result = asyncio.run(invoker.invoke(req))
+    assert result["status"] == "success"
+    assert captured.get("tool_choice") == "auto"
 
 
 def test_native_empty_uses_immediate_sentinel_fallback_when_enabled(helpers):
@@ -385,3 +467,80 @@ def test_explicit_native_tool_policy_overrides_metadata_heuristics(helpers):
     ]
     assert tool_names == ["chorus.control"]
     assert captured.get("tool_choice") == {"type": "function", "function": {"name": "chorus.control"}}
+
+
+def test_native_transport_plan_reports_prompt_contract_mismatch(helpers):
+    _enable_native_transport(helpers, fallback_enabled=True)
+    invoker = LLMInvocationService(helpers.app_module.app_state)
+    llm = helpers.app_module.app_state["llm_client"]
+
+    async def fake_generate_with_history(messages, temperature=None, max_tokens=None, model=None, tools=None, tool_choice=None):
+        _ = (messages, temperature, max_tokens, model, tools, tool_choice)
+        return LLMResponse(
+            content="policy test",
+            model="test-model",
+            finish_reason="stop",
+            tool_calls=[],
+            raw_message={"content": "policy test"},
+        )
+
+    llm.generate_with_history = fake_generate_with_history
+
+    req = InvocationRequest(
+        invocation_kind="chat",
+        idempotency_key="native-policy-mismatch-001",
+        model_id="test-model",
+        provider="local",
+        engine="lmstudio",
+        messages=[{"role": "user", "content": "continue"}],
+        native_tool_policy={
+            "policy_id": "test.image_only",
+            "allowed_media_tools": ["image.generate"],
+            "include_control": False,
+            "include_cold_recall": False,
+            "tool_choice": "auto",
+        },
+        metadata={
+            "tool_transport_mode": "native",
+            "prompt_contract_tools": ["image.generate", "moment_pin.cold_recall"],
+            "used_moment_pin_ids": ["pin-1"],
+            "media_gate_snapshot": {"allowed_tools_final": ["image.generate"]},
+        },
+    )
+    result = asyncio.run(invoker.invoke(req))
+    assert result["status"] == "success"
+    plan = (result.get("native_transport") or {}).get("plan") or {}
+    assert "moment_pin.cold_recall" in (plan.get("docs_without_runtime") or [])
+
+
+def test_prompt_cold_recall_availability_matches_narrative_v1_loop_policy():
+    assert ENSDispatcher._cold_recall_available_for_prompt(
+        loop_step=True,
+        loop_kind="narrative.v1",
+        loop_stage="beat",
+    ) is False
+    assert ENSDispatcher._cold_recall_available_for_prompt(
+        loop_step=True,
+        loop_kind="narrative.v1",
+        loop_stage=None,
+    ) is False
+    assert ENSDispatcher._cold_recall_available_for_prompt(
+        loop_step=True,
+        loop_kind="generic.v1",
+        loop_stage="full",
+    ) is True
+
+
+def test_prompt_cold_recall_availability_honors_explicit_policy_override():
+    assert ENSDispatcher._cold_recall_available_for_prompt(
+        loop_step=True,
+        loop_kind="narrative.v1",
+        loop_stage="beat",
+        native_tool_policy={"include_cold_recall": True},
+    ) is True
+    assert ENSDispatcher._cold_recall_available_for_prompt(
+        loop_step=False,
+        loop_kind=None,
+        loop_stage=None,
+        native_tool_policy={"include_cold_recall": False},
+    ) is False

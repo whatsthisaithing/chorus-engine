@@ -1,17 +1,13 @@
 """Ollama LLM client implementation."""
 
-import base64
 import json
 from typing import List
 
 from .text_normalization import normalize_mojibake
 import logging
 from typing import Optional, AsyncIterator
-from datetime import datetime
-from pathlib import Path
 from .base import BaseLLMClient, LLMResponse, LLMError
 import httpx
-from .request_debug_context import get_request_debug_context
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +33,9 @@ class OllamaLLMClient(BaseLLMClient):
             temperature=temperature,
             max_tokens=max_tokens,
             context_window=context_window,
+            capture_raw_http_debug=capture_raw_http_debug,
         )
         self.use_legacy_chat_api = bool(use_legacy_chat_api)
-        self.capture_raw_http_debug = bool(capture_raw_http_debug)
 
     async def _post_with_optional_raw_capture(self, endpoint_path: str, payload: dict) -> httpx.Response:
         request_body_bytes = json.dumps(
@@ -53,64 +49,14 @@ class OllamaLLMClient(BaseLLMClient):
             headers={"Content-Type": "application/json"},
         )
         if self.capture_raw_http_debug:
-            self._write_raw_http_capture(
+            self._capture_raw_http_exchange(
+                provider="ollama",
                 endpoint_path=endpoint_path,
                 payload=payload,
                 request_body_bytes=request_body_bytes,
                 response=response,
             )
         return response
-
-    def _write_raw_http_capture(
-        self,
-        *,
-        endpoint_path: str,
-        payload: dict,
-        request_body_bytes: bytes,
-        response: httpx.Response,
-    ) -> None:
-        try:
-            ctx = get_request_debug_context()
-            conversation_id = str(ctx.get("conversation_id") or "unknown").strip() or "unknown"
-            chat_type = str(ctx.get("chat_type") or "normal").strip().lower() or "normal"
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-            endpoint_slug = endpoint_path.strip("/").replace("/", "_")
-            filename = f"{conversation_id}_{chat_type}_{timestamp}_{endpoint_slug}.json"
-            out_dir = Path("data/debug/requests")
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            response_body_bytes = bytes(response.content or b"")
-            request_text = request_body_bytes.decode("utf-8", errors="replace")
-            response_text = response_body_bytes.decode("utf-8", errors="replace")
-
-            doc = {
-                "captured_at_utc": datetime.utcnow().isoformat() + "Z",
-                "conversation_id": conversation_id,
-                "chat_type": chat_type,
-                "context": ctx,
-                "provider": "ollama",
-                "base_url": self.base_url,
-                "endpoint_path": endpoint_path,
-                "model": str(payload.get("model") or self.model),
-                "status_code": response.status_code,
-                "request": {
-                    "content_type": "application/json",
-                    "body_text": request_text,
-                    "body_bytes_b64": base64.b64encode(request_body_bytes).decode("ascii"),
-                },
-                "response": {
-                    "content_type": response.headers.get("content-type"),
-                    "body_text": response_text,
-                    "body_bytes_b64": base64.b64encode(response_body_bytes).decode("ascii"),
-                },
-            }
-
-            (out_dir / filename).write_text(
-                json.dumps(doc, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.warning("Failed to capture raw Ollama HTTP exchange: %s", exc)
 
     @staticmethod
     def _apply_openai_sampling_fields(

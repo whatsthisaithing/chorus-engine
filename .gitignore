@@ -37,6 +37,8 @@ env/
 # Embedded Python (portable installation)
 python_embeded/
 
+.codex/
+
 # IDEs
 .vscode/
 .idea/

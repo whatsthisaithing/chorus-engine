@@ -6,6 +6,7 @@ import httpx
 from chorus_engine.config.models import CharacterConfig, LLMConfig, PreferredLLMConfig, SystemConfig
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
 from chorus_engine.llm.base import LLMResponse
+from chorus_engine.llm.client import create_llm_client
 from chorus_engine.llm.koboldcpp import KoboldCppLLMClient
 from chorus_engine.llm.lmstudio import LMStudioLLMClient
 from chorus_engine.llm.ollama import OllamaLLMClient
@@ -94,6 +95,34 @@ def test_sampling_clamps_for_system_and_preferred_configs():
     assert preferred.repeat_penalty == 0.01
     assert preferred.presence_penalty == -2.0
     assert preferred.frequency_penalty == 2.0
+
+
+def test_llm_capture_raw_http_debug_legacy_alias_supported():
+    cfg = LLMConfig.model_validate(
+        {
+            "provider": "lmstudio",
+            "base_url": "http://localhost:1234",
+            "model": "test",
+            "ollama_capture_raw_http_debug": True,
+        }
+    )
+    assert cfg.llm_capture_raw_http_debug is True
+
+
+def test_create_llm_client_applies_generic_capture_flag_all_providers():
+    for provider, base_url in (
+        ("ollama", "http://localhost:11434"),
+        ("lmstudio", "http://localhost:1234"),
+        ("koboldcpp", "http://localhost:5001"),
+    ):
+        cfg = LLMConfig(
+            provider=provider,
+            base_url=base_url,
+            model="test",
+            llm_capture_raw_http_debug=True,
+        )
+        client = create_llm_client(cfg)
+        assert getattr(client, "capture_raw_http_debug", False) is True
 
 
 def test_resolve_effective_sampling_precedence():

@@ -90,6 +90,6 @@ def test_native_narrative_beat_stage_removes_mandatory_control_requirements():
 
     assert "**Loop Step Mode (Mandatory):**" in prompt
     assert "This is the beat-generation stage." in prompt
-    assert "Do not emit loop control payloads or control tool calls in this stage." in prompt
+    assert "Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage." in prompt
     assert "Emit exactly one `chorus.control` tool call." not in prompt
     assert "Set `chorus.control.action` to one of: CONTINUE, YIELD, COMPLETE." not in prompt

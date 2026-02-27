@@ -417,6 +417,68 @@ class LLMInvocationService:
                 return {}
         return {}
 
+    @staticmethod
+    def _requested_tool_names(tools: Optional[List[Dict[str, Any]]]) -> set[str]:
+        names: set[str] = set()
+        for tool in (tools or []):
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = str(fn.get("name") or "").strip()
+            if name:
+                names.add(name)
+        return names
+
+    def _annotate_prompt_tool_alignment(
+        self,
+        *,
+        request: InvocationRequest,
+        requested_tools: Optional[List[Dict[str, Any]]],
+        native_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        prompt_contract_tools_raw = metadata.get("prompt_contract_tools")
+        if not isinstance(prompt_contract_tools_raw, list):
+            return native_plan
+        prompt_contract_tools = {
+            str(item).strip()
+            for item in prompt_contract_tools_raw
+            if str(item).strip()
+        }
+        requested_tool_names = self._requested_tool_names(requested_tools)
+        docs_without_runtime = sorted(prompt_contract_tools - requested_tool_names)
+        runtime_without_docs = sorted(requested_tool_names - prompt_contract_tools)
+        annotated_plan = dict(native_plan or {})
+        annotated_plan["prompt_contract_tools"] = sorted(prompt_contract_tools)
+        annotated_plan["requested_tool_names"] = sorted(requested_tool_names)
+        annotated_plan["docs_without_runtime"] = docs_without_runtime
+        annotated_plan["runtime_without_docs"] = runtime_without_docs
+        if docs_without_runtime:
+            logger.warning(
+                "[NATIVE_TOOL_TRANSPORT][CONTRACT_MISMATCH] docs_without_runtime=%s engine=%s model=%s",
+                docs_without_runtime,
+                request.engine,
+                request.model_id,
+            )
+        if runtime_without_docs:
+            logger.info(
+                "[NATIVE_TOOL_TRANSPORT][CONTRACT_MISMATCH] runtime_without_docs=%s engine=%s model=%s",
+                runtime_without_docs,
+                request.engine,
+                request.model_id,
+            )
+        logger.info(
+            "[NATIVE_TOOL_TRANSPORT][CONTRACT_TRACE] transport=%s contract_tools=%s requested_tools=%s used_pin_ids=%s allowed_media_tools=%s",
+            str(metadata.get("tool_transport_mode") or "unknown"),
+            sorted(prompt_contract_tools),
+            sorted(requested_tool_names),
+            len(list(metadata.get("used_moment_pin_ids") or [])),
+            sorted(set(((metadata.get("media_gate_snapshot") or {}).get("allowed_tools_final") or []))),
+        )
+        return annotated_plan
+
     def _map_native_tool_calls(
         self,
         *,
@@ -519,6 +581,11 @@ class LLMInvocationService:
                 request_debug_token = None
                 try:
                     req_tools, req_tool_choice, native_plan = self._prepare_native_transport(request)
+                    native_plan = self._annotate_prompt_tool_alignment(
+                        request=request,
+                        requested_tools=req_tools,
+                        native_plan=native_plan,
+                    )
                     request.tools = req_tools
                     request.tool_choice = req_tool_choice
                     request_debug_token = set_request_debug_context(

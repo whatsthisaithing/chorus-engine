@@ -95,7 +95,7 @@ class NarrativeV1LoopPlugin:
             lines.extend(
                 [
                     "- This is the beat-generation stage.",
-                    "- Do not emit loop control payloads or control tool calls in this stage.",
+                    "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
                 ]
             )
         elif native_transport:

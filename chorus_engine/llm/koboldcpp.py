@@ -23,6 +23,26 @@ class KoboldCppLLMClient(BaseLLMClient):
     Note: Unlike LM Studio/Ollama, KoboldCpp loads ONE model at startup.
     To switch models, user must restart KoboldCpp with different --model flag.
     """
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float,
+        temperature: float,
+        max_tokens: int,
+        context_window: int = 8192,
+        capture_raw_http_debug: bool = False,
+    ):
+        super().__init__(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            context_window=context_window,
+            capture_raw_http_debug=capture_raw_http_debug,
+        )
     
     async def health_check(self) -> bool:
         """Check if KoboldCpp is available."""
@@ -138,9 +158,22 @@ class KoboldCppLLMClient(BaseLLMClient):
             
             logger.debug(f"KoboldCpp request: messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
+            request_body_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             response = await self.client.post(
                 f"{self.base_url}/v1/chat/completions",
-                json=payload
+                content=request_body_bytes,
+                headers={"Content-Type": "application/json"},
+            )
+            self._capture_raw_http_exchange(
+                provider="koboldcpp",
+                endpoint_path="/v1/chat/completions",
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
             )
             if response.status_code >= 400:
                 error_body = response.text
@@ -155,9 +188,22 @@ class KoboldCppLLMClient(BaseLLMClient):
                     retry_payload = dict(payload)
                     for key in ("top_p", "top_k", "repeat_penalty", "presence_penalty", "frequency_penalty"):
                         retry_payload.pop(key, None)
+                    retry_body_bytes = json.dumps(
+                        retry_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
                     retry_response = await self.client.post(
                         f"{self.base_url}/v1/chat/completions",
-                        json=retry_payload,
+                        content=retry_body_bytes,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    self._capture_raw_http_exchange(
+                        provider="koboldcpp",
+                        endpoint_path="/v1/chat/completions",
+                        payload=retry_payload,
+                        request_body_bytes=retry_body_bytes,
+                        response=retry_response,
                     )
                     retry_response.raise_for_status()
                     response = retry_response
@@ -262,9 +308,22 @@ class KoboldCppLLMClient(BaseLLMClient):
             
             logger.debug(f"KoboldCpp request: messages={len(messages)}, temp={payload['temperature']}, max_tokens={payload['max_tokens']}")
             
+            request_body_bytes = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             response = await self.client.post(
                 f"{self.base_url}/v1/chat/completions",
-                json=payload
+                content=request_body_bytes,
+                headers={"Content-Type": "application/json"},
+            )
+            self._capture_raw_http_exchange(
+                provider="koboldcpp",
+                endpoint_path="/v1/chat/completions",
+                payload=payload,
+                request_body_bytes=request_body_bytes,
+                response=response,
             )
             if response.status_code >= 400:
                 error_body = response.text
@@ -279,9 +338,22 @@ class KoboldCppLLMClient(BaseLLMClient):
                     retry_payload = dict(payload)
                     for key in ("top_p", "top_k", "repeat_penalty", "presence_penalty", "frequency_penalty"):
                         retry_payload.pop(key, None)
+                    retry_body_bytes = json.dumps(
+                        retry_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
                     retry_response = await self.client.post(
                         f"{self.base_url}/v1/chat/completions",
-                        json=retry_payload,
+                        content=retry_body_bytes,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    self._capture_raw_http_exchange(
+                        provider="koboldcpp",
+                        endpoint_path="/v1/chat/completions",
+                        payload=retry_payload,
+                        request_body_bytes=retry_body_bytes,
+                        response=retry_response,
                     )
                     retry_response.raise_for_status()
                     response = retry_response
