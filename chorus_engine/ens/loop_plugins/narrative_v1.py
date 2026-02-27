@@ -92,10 +92,20 @@ class NarrativeV1LoopPlugin:
             "You MUST:",
         ]
         if stage_norm == "beat":
+            # lines.extend(
+            #     [
+            #         "- This is the beat-generation stage.",
+            #         "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
+            #     ]
+            # )
+
             lines.extend(
                 [
-                    "- This is the beat-generation stage.",
-                    "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
+                    "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
+                    "- **Do not** start another `<assistant_response>` block.",
+                    "- Continue the scene with a single small update.",
+                    "- Do not resolve major user-character decisions without input.",
+                    "- Do not encode control decisions in prose.",
                 ]
             )
         elif native_transport:
@@ -114,38 +124,38 @@ class NarrativeV1LoopPlugin:
                     "- Include `control.action` with one of: CONTINUE, YIELD, COMPLETE.",
                 ]
             )
-        lines.extend(
-            [
-                "",
-                "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
-                "- If you want the story to continue, **do not** start another `<assistant_response>` root.",
-                "- Write one narrative beat.",
-                "- Do not resolve major user-character decisions without input.",
-                "- Do not encode control decisions in prose.",
-                "",
-            ]
-        )
+
+        
+
         if stage_norm == "beat":
             lines.extend(
                 [
-                    "Control selection is handled in a separate control-evaluation stage.",
                     "",
-                    "Beat Shape (Mandatory):",
-                    "- Write 1-3 short paragraphs (aim ~80-250 words).",
-                    "- Advance exactly ONE concrete change in the scene (action, dialogue, or environmental shift).",
-                    "- Do NOT write recaps, summaries, checklists, headings, or analysis.",
-                    "- Do NOT explain rules, your process, or how you are roleplaying.",
-                    "- Do NOT write plans, reasoning, self-instructions, or \"I need to...\" statements.",
-                    "- Do NOT include bullet points, numbered lists, headers, or sections.",
-                    "- Do NOT restate character sheets, traits, or \"key aspects\".",
-                    "- Stay fully in-scene: only narration/action and/or in-character dialogue.",
-                    "- Target 60-160 words unless the user explicitly asks for more detail.",
-                    "- Include at most ONE short spoken line from a character (optional).",
-                    "- End on motion or a concrete beat, not a question, unless user choice is truly required.",
-                    "- Avoid ending the beat with a question unless you intend to pause for user input.",
-                    "- Do NOT write the user's part in the narrative. You are writing within the scene and as the non-user character or characters present ONLY.",
-                    "- If the user requests media in this beat, acknowledge in-character but do NOT generate media prompts.",
+                    "Scene Update Rules (Strict):",
+
+                    "You are in single-update mode.",
+
+                    "- Write exactly one short paragraph.",
+                    "- Limit yourself to 3 to 6 sentences maximum.",
+                    "- Advance only ONE immediate change in the scene.",
+                    # "  - One action, OR,"
+                    # "  - One short spoken line, OR,"
+                    # "  - One environmental shift.",
+                    "- Do NOT chain multiple consequences.",
+                    "- Do NOT advance time significantly.",
+                    "- Do NOT summarize or recap prior events.",
+                    "- Do NOT explain rules, process, or roleplay framing.",
+                    "- Do NOT write plans, reasoning, or \"I need to…\" statements.",
+                    "- Do NOT use bullet points, lists, headings, or sections.",
+                    "- Do NOT restate character sheets or traits.",
+                    "- Stay fully in-scene with narration and/or in-character dialogue only.",
+                    "- Do NOT write the user's actions or dialogue.",
+                    "- Prefer under-writing to over-writing.",
+                    "- STOP after the first concrete shift in the scene.",
                     "",
+                    "If the user requests media during this update, acknowledge in-character but do not generate media prompts.",
+                    "",
+                    "Follow the established template rules and structure for this scene update."
                 ]
             )
         else:
