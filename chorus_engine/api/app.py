@@ -82,11 +82,10 @@ from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
 from chorus_engine.services.continuity_bootstrap_service import ContinuityBootstrapService
 from chorus_engine.services.structured_response import (
-    parse_structured_response,
-    serialize_structured_response,
     template_rules,
     StructuredSegment,
 )
+from chorus_engine.services.response_finalizer import ResponseFinalizer
 from chorus_engine.services.tool_payload import (
     extract_tool_payload,
     parse_tool_payload,
@@ -136,6 +135,8 @@ logger = logging.getLogger(__name__)
 # Set level to DEBUG for our app logger, let it propagate to parent handlers
 logger.setLevel(logging.DEBUG)
 logger.debug(f"[STARTUP] Logger '{__name__}' configured: level={logger.level}, handlers={len(logger.handlers)}, propagate={logger.propagate}")
+
+response_finalizer = ResponseFinalizer()
 
 
 def _strip_image_tags(text: str) -> str:
@@ -8536,14 +8537,15 @@ async def send_message(
         
         template = _get_effective_template(character)
         allowed_channels, required_channels = template_rules(template)
-        parsed = parse_structured_response(
+        finalized = response_finalizer.finalize(
             response_content,
+            adapter_name="xml",
             allowed_channels=allowed_channels,
-            required_channels=required_channels
+            required_channels=required_channels,
         )
         
-        segments = parsed.segments
-        if parsed.had_untagged:
+        segments = finalized.segments
+        if finalized.had_untagged:
             logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation.id}")
         segments = _apply_media_prefix(segments, media_prefix)
         
@@ -8552,7 +8554,11 @@ async def send_message(
             logger.info(f"Appended {len(doc_context.citations)} citations to response")
         segments = _append_citations_to_segments(segments, citations_text)
         
-        response_content = serialize_structured_response(segments)
+        response_content = "".join(
+            ["<assistant_response>"]
+            + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments]
+            + ["</assistant_response>"]
+        )
         
         # Save assistant message
         assistant_message = msg_repo.create(
@@ -8564,9 +8570,13 @@ async def send_message(
                 "character": character.name,
                 "used_moment_pin_ids": injected_moment_pin_ids,
                 "structured_response": {
-                    "is_fallback": parsed.is_fallback,
-                    "parse_error": parsed.parse_error,
-                    "had_untagged": parsed.had_untagged,
+                    "is_fallback": finalized.is_fallback,
+                    "parse_error": finalized.parse_error,
+                    "had_untagged": finalized.had_untagged,
+                    "unknown_tags": finalized.unknown_tags,
+                    "trailing_text_dropped": finalized.trailing_text_dropped,
+                    "adapter": finalized.adapter_name,
+                    "adapter_diagnostics": finalized.diagnostics,
                     "template": template,
                     "raw_response": raw_response_content
                 }
@@ -9896,14 +9906,15 @@ async def send_message_stream(
             
             template = _get_effective_template(character_config_for_stream)
             allowed_channels, required_channels = template_rules(template)
-            parsed = parse_structured_response(
+            finalized = response_finalizer.finalize(
                 extracted.display_text,
+                adapter_name="xml",
                 allowed_channels=allowed_channels,
-                required_channels=required_channels
+                required_channels=required_channels,
             )
             
-            segments = parsed.segments
-            if parsed.had_untagged:
+            segments = finalized.segments
+            if finalized.had_untagged:
                 logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation_id_for_stream}")
             segments = _apply_media_prefix(segments, media_prefix)
             
@@ -9912,7 +9923,11 @@ async def send_message_stream(
                 logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
             segments = _append_citations_to_segments(segments, citations_text)
             
-            normalized_content = serialize_structured_response(segments)
+            normalized_content = "".join(
+                ["<assistant_response>"]
+                + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments]
+                + ["</assistant_response>"]
+            )
             yield f"data: {json.dumps({'type': 'content', 'content': normalized_content})}\n\n"
             
             # Log the full interaction to debug file
@@ -9947,9 +9962,13 @@ async def send_message_stream(
                         "character": character_name,
                         "used_moment_pin_ids": injected_moment_pin_ids_for_stream,
                         "structured_response": {
-                            "is_fallback": parsed.is_fallback,
-                            "parse_error": parsed.parse_error,
-                            "had_untagged": parsed.had_untagged,
+                            "is_fallback": finalized.is_fallback,
+                            "parse_error": finalized.parse_error,
+                            "had_untagged": finalized.had_untagged,
+                            "unknown_tags": finalized.unknown_tags,
+                            "trailing_text_dropped": finalized.trailing_text_dropped,
+                            "adapter": finalized.adapter_name,
+                            "adapter_diagnostics": finalized.diagnostics,
                             "template": template,
                             "raw_response": full_raw_content
                         }

@@ -76,10 +76,9 @@ from chorus_engine.ens.loop_memory_compression import (
     fold_memory_payloads,
 )
 from chorus_engine.services.structured_response import (
-    parse_structured_response,
-    serialize_structured_response,
     template_rules,
 )
+from chorus_engine.services.response_finalizer import ResponseFinalizer
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
@@ -377,6 +376,7 @@ class ENSDispatcher:
         self.app_state = app_state
         self.llm_invoker = LLMInvocationService(app_state)
         self.llm_control_service = LLMControlPlaneService(app_state)
+        self.response_finalizer = ResponseFinalizer()
 
     def _slice7_enabled(self) -> bool:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
@@ -1797,29 +1797,32 @@ class ENSDispatcher:
         if _looks_like_structured_content(display_text):
             template = _get_effective_template(character)
             allowed_channels, required_channels = template_rules(template)
-            parsed = parse_structured_response(
+            finalized = self.response_finalizer.finalize(
                 display_text,
+                adapter_name="xml",
                 allowed_channels=allowed_channels,
                 required_channels=required_channels,
             )
-            display_text = serialize_structured_response(parsed.segments)
+            display_text = finalized.text
             assistant_metadata["structured_response"] = {
-                "is_fallback": parsed.is_fallback,
-                "parse_error": parsed.parse_error,
-                "had_untagged": parsed.had_untagged,
+                "is_fallback": finalized.is_fallback,
+                "parse_error": finalized.parse_error,
+                "had_untagged": finalized.had_untagged,
                 "template": template,
                 "raw_response": raw_content,
+                "adapter": finalized.adapter_name,
+                "adapter_diagnostics": dict(finalized.diagnostics or {}),
             }
-            if parsed.unknown_tags or parsed.trailing_text_dropped:
+            if finalized.unknown_tags or finalized.trailing_text_dropped:
                 assistant_metadata["structured_response"]["invalid_output"] = {
-                    "unknown_tags": parsed.unknown_tags,
-                    "trailing_text": bool(parsed.trailing_text_dropped),
+                    "unknown_tags": finalized.unknown_tags,
+                    "trailing_text": bool(finalized.trailing_text_dropped),
                     "action": "dropped",
                 }
                 logger.warning(
                     "structured_response.invalid_output: unknown_tags=%s trailing_text=%s action=dropped thread_id=%s",
-                    parsed.unknown_tags,
-                    bool(parsed.trailing_text_dropped),
+                    finalized.unknown_tags,
+                    bool(finalized.trailing_text_dropped),
                     thread_id,
                 )
         detected_raw_malformed, detected_raw_payload_type = detect_malformed_tool_payload_block(raw_content)
@@ -2887,6 +2890,14 @@ class ENSDispatcher:
         prompt_token_breakdown = None
         prompt_contract_tools: List[str] = []
         prompt_used_pin_ids: List[str] = []
+        bypass_loop_prompt_addendum = str(session.loop_kind or "").strip().lower() == "narrative.v1"
+        primary_prompt_loop_step = not bypass_loop_prompt_addendum
+        primary_prompt_loop_stage = (
+            (loop_plan.primary_pass_label if loop_plan.primary_pass_label != "full" else None)
+            if primary_prompt_loop_step
+            else None
+        )
+        primary_prompt_loop_kind = (str(session.loop_kind or "") if primary_prompt_loop_step else "")
         if character is not None:
             loop_allowed_tools = self._allowed_tools_for_loop_kind(session.loop_kind)
             loop_system_prompt = SystemPromptGenerator().generate(
@@ -2897,10 +2908,10 @@ class ENSDispatcher:
                 allowed_media_tools=loop_allowed_tools,
                 allow_proactive_media_offers=False,
                 media_gate_context=None,
-                loop_step=True,
-                loop_kind=str(session.loop_kind or ""),
+                loop_step=primary_prompt_loop_step,
+                loop_kind=primary_prompt_loop_kind,
                 tool_transport_mode=tool_transport_mode,
-                loop_stage=(loop_plan.primary_pass_label if loop_plan.primary_pass_label != "full" else None),
+                loop_stage=primary_prompt_loop_stage,
                 contract_tools=loop_allowed_tools,
             )
             if loop_plan.use_prompt_assembly_context and conversation is not None:
@@ -2937,14 +2948,14 @@ class ENSDispatcher:
                         allow_proactive_media_offers=False,
                         media_gate_context=None,
                         segment_context=params.get("segment_context"),
-                        loop_step=True,
-                        loop_kind=str(session.loop_kind or ""),
+                        loop_step=primary_prompt_loop_step,
+                        loop_kind=primary_prompt_loop_kind,
                         tool_transport_mode=tool_transport_mode,
-                        loop_stage=(loop_plan.primary_pass_label if loop_plan.primary_pass_label != "full" else None),
+                        loop_stage=primary_prompt_loop_stage,
                         include_cold_recall_tool=self._cold_recall_available_for_prompt(
-                            loop_step=True,
-                            loop_kind=str(session.loop_kind or ""),
-                            loop_stage=(loop_plan.primary_pass_label if loop_plan.primary_pass_label != "full" else None),
+                            loop_step=primary_prompt_loop_step,
+                            loop_kind=primary_prompt_loop_kind,
+                            loop_stage=primary_prompt_loop_stage,
                             native_tool_policy=None,
                         ),
                     )
@@ -2964,15 +2975,22 @@ class ENSDispatcher:
 
         if step_messages is None:
             if explicit_prompt:
-                step_prompt = f"{explicit_prompt}\n\n{prompt_addendum}"
-            else:
-                context_doc = self._build_loop_prompt_context(db, session=session)
                 step_prompt = (
-                    f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}.\n"
-                    "Deterministic working memory context (folded + recent raw):\n"
-                    f"{canonical_json(context_doc)}\n\n"
-                    f"{prompt_addendum}"
+                    explicit_prompt
+                    if bypass_loop_prompt_addendum
+                    else f"{explicit_prompt}\n\n{prompt_addendum}"
                 )
+            else:
+                if bypass_loop_prompt_addendum:
+                    step_prompt = "continue"
+                else:
+                    context_doc = self._build_loop_prompt_context(db, session=session)
+                    step_prompt = (
+                        f"Loop progression step {int(session.step_index or 0) + 1} for {session.loop_kind}.\n"
+                        "Deterministic working memory context (folded + recent raw):\n"
+                        f"{canonical_json(context_doc)}\n\n"
+                        f"{prompt_addendum}"
+                    )
 
         # Hidden loops preempt immediately when newer user input is waiting.
         if loop_mode == "hidden" and self._has_newer_pending_user_signal(
@@ -3118,6 +3136,16 @@ class ENSDispatcher:
                     )
                 stage_raw = stage_invocation.get("output_text") or ""
                 stage_result = self._assistant_result_from_invocation(stage_raw, stage_invocation)
+                if _looks_like_structured_content(stage_result.display_text):
+                    loop_template = _get_effective_template(character)
+                    loop_allowed_channels, loop_required_channels = template_rules(loop_template)
+                    loop_finalized = self.response_finalizer.finalize(
+                        stage_result.display_text,
+                        adapter_name="xml",
+                        allowed_channels=loop_allowed_channels,
+                        required_channels=loop_required_channels,
+                    )
+                    stage_result.display_text = loop_finalized.text
                 nonlocal primary_pass_assistant_result, primary_pass_raw_content
                 primary_pass_assistant_result = stage_result
                 primary_pass_raw_content = stage_raw

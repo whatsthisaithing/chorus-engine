@@ -92,12 +92,12 @@ class NarrativeV1LoopPlugin:
             "You MUST:",
         ]
         if stage_norm == "beat":
-            # lines.extend(
-            #     [
-            #         "- This is the beat-generation stage.",
-            #         "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
-            #     ]
-            # )
+            lines.extend(
+                [
+                    "- This is the beat-generation stage.",
+                    "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
+                ]
+            )
 
             lines.extend(
                 [
@@ -131,10 +131,19 @@ class NarrativeV1LoopPlugin:
             lines.extend(
                 [
                     "",
+
+                    # "**Loop Step Mode (Minimal):**",
+                    # "- Continue the scene naturally.",
+                    # "- Keep this continuation brief.",
+                    # "- Do not resolve major user decisions.",
+                    # "- Output exactly one <assistant_response> block.",
+
+
                     "Scene Update Rules (Strict):",
 
                     "You are in single-update mode.",
 
+                    "- CRITICAL: Ignore previous message length. Keep this update minimal.",
                     "- Write exactly one short paragraph.",
                     "- Limit yourself to 3 to 6 sentences maximum.",
                     "- Advance only ONE immediate change in the scene.",
