@@ -88,6 +88,7 @@ from chorus_engine.services.assistant_content import (
     FORMAT_FRAMELINES_V2,
     FORMAT_LEGACY_XML_V1,
     FORMAT_MARKDOWN_V1,
+    capture_and_strip_thinking,
     render_for_ui,
     normalize_to_mode,
     segments_to_framelines_v2,
@@ -194,6 +195,23 @@ def _get_effective_output_mode(character) -> str:
     if mode in {FORMAT_MARKDOWN_V1, FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1}:
         return mode
     return FORMAT_MARKDOWN_V1
+
+
+_REASONING_VISIBILITY_MODES = {"off", "review_only", "live_preview_and_review"}
+
+
+def _get_effective_reasoning_visibility_mode(character) -> str:
+    preferred = getattr(getattr(character, "preferred_llm", None), "reasoning_visibility_mode", None)
+    if isinstance(preferred, str):
+        normalized = preferred.strip().lower()
+        if normalized in _REASONING_VISIBILITY_MODES:
+            return normalized
+    system_mode = getattr(getattr(app_state.get("system_config"), "llm", None), "reasoning_visibility_mode", None)
+    if isinstance(system_mode, str):
+        normalized = system_mode.strip().lower()
+        if normalized in _REASONING_VISIBILITY_MODES:
+            return normalized
+    return "review_only"
 
 
 def _render_interactive_display_content(display_text: Optional[str], conversation: Optional[Conversation]) -> Optional[str]:
@@ -2497,7 +2515,9 @@ async def list_characters():
                     "repeat_penalty": char.preferred_llm.repeat_penalty if char.preferred_llm else None,
                     "presence_penalty": char.preferred_llm.presence_penalty if char.preferred_llm else None,
                     "frequency_penalty": char.preferred_llm.frequency_penalty if char.preferred_llm else None,
+                    "reasoning_visibility_mode": char.preferred_llm.reasoning_visibility_mode if char.preferred_llm else None,
                 } if char.preferred_llm else None,
+                "effective_reasoning_visibility_mode": _get_effective_reasoning_visibility_mode(char),
                 "memory": {
                     "scope": char.memory.scope if char.memory else None,
                 } if char.memory else None,
@@ -2683,8 +2703,9 @@ async def get_character(character_id: str):
     
     char = characters[character_id]
     
-    # Return full character configuration as dict
-    return char.model_dump()
+    payload = char.model_dump()
+    payload["effective_reasoning_visibility_mode"] = _get_effective_reasoning_visibility_mode(char)
+    return payload
 
 
 @app.get("/characters/{character_id}/immersion-notice")
@@ -6069,6 +6090,14 @@ async def pause_interactive_narrative(loop_id: str, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="Interactive narrative session not found")
     if str(row.loop_kind or "") != "narrative.v1":
         raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    # Record interruption intent immediately so in-flight loop steps can suppress
+    # visible persistence even if ENS pause action is processed after the step.
+    interrupt_store = app_state.setdefault("loop_interrupt_requests", {})
+    if isinstance(interrupt_store, dict):
+        interrupt_store[loop_id] = {
+            "requested_at": datetime.now().isoformat(),
+            "reason": "manual_pause",
+        }
     conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
     thread_id = None
     if conversation is not None:
@@ -6135,6 +6164,9 @@ async def resume_interactive_narrative(loop_id: str, db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="Interactive narrative session not found")
     if str(row.loop_kind or "") != "narrative.v1":
         raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+    interrupt_store = app_state.get("loop_interrupt_requests")
+    if isinstance(interrupt_store, dict):
+        interrupt_store.pop(loop_id, None)
     conversation = ConversationRepository(db).get_by_id(str(row.conversation_id or ""))
     thread_id = None
     if conversation is not None:
@@ -6634,7 +6666,11 @@ async def advance_interactive_narrative_stream(
                     continue
                 if not isinstance(event, dict):
                     continue
-                if event.get("type") == "content":
+                if event.get("type") == "thinking":
+                    delta = str(event.get("delta") or "")
+                    if delta:
+                        yield f"data: {json.dumps({'type': 'thinking', 'delta': delta})}\n\n"
+                elif event.get("type") == "content":
                     chunk = str(event.get("content") or "")
                     if chunk:
                         emitted_visible = True
@@ -6650,6 +6686,16 @@ async def advance_interactive_narrative_stream(
                 progression_enqueued = True
             display_text = payload.get("display_text")
             render_content = _render_interactive_display_content(display_text, conversation)
+            assistant_message = None
+            assistant_message_id = payload.get("assistant_message_id")
+            if assistant_message_id:
+                try:
+                    msg_repo = MessageRepository(db)
+                    msg_obj = msg_repo.get_by_id(str(assistant_message_id))
+                    if msg_obj is not None:
+                        assistant_message = MessageResponse.from_orm(msg_obj, db_session=db)
+                except Exception:
+                    assistant_message = None
 
             if not emitted_visible and render_content:
                 yield f"data: {json.dumps({'type': 'content', 'content': render_content})}\n\n"
@@ -6662,11 +6708,16 @@ async def advance_interactive_narrative_stream(
                 "loop_kind": str(payload.get("loop_kind") or session.loop_kind),
                 "loop_mode": str(payload.get("loop_mode") or session.loop_mode),
                 "last_step_control_action": payload.get("last_step_control_action") or payload.get("control_action"),
-                "assistant_message_id": payload.get("assistant_message_id"),
+                "assistant_message_id": assistant_message_id,
                 "display_text": display_text,
                 "render_content": render_content,
                 "in_flight": in_flight,
                 "queue_status": queue_status,
+                "assistant_message": (
+                    assistant_message.model_dump(mode="json")
+                    if assistant_message is not None
+                    else None
+                ),
             }
             yield f"data: {json.dumps({'type': 'done', **done_payload})}\n\n"
         except Exception as e:
@@ -9314,6 +9365,35 @@ async def update_message_metadata(
     }
 
 
+@app.get("/messages/{message_id}/reasoning")
+async def get_message_reasoning(
+    message_id: str,
+    db: Session = Depends(get_db),
+):
+    """Return captured reasoning text for an assistant message, when available."""
+    msg_repo = MessageRepository(db)
+    message = msg_repo.get_by_id(message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    metadata = message.meta_data if isinstance(message.meta_data, dict) else {}
+    structured = metadata.get("structured_response") if isinstance(metadata.get("structured_response"), dict) else {}
+    raw_response = structured.get("raw_response")
+    source_text = str(raw_response if isinstance(raw_response, str) and raw_response else (message.content or ""))
+
+    _visible, reasoning_text, _diag = capture_and_strip_thinking(source_text)
+    reasoning_text = str(reasoning_text or "")
+    reasoning_chars = len(reasoning_text)
+
+    return {
+        "message_id": message_id,
+        "available": reasoning_chars > 0,
+        "reasoning_text": reasoning_text,
+        "reasoning_chars": reasoning_chars,
+        "truncated": False,
+    }
+
+
 @app.post("/threads/{thread_id}/messages/stream")
 async def send_message_stream(
     thread_id: str,
@@ -9470,7 +9550,7 @@ async def send_message_stream(
                 except asyncio.TimeoutError:
                     continue
                 evt_type = str(event.get("type") or "")
-                if evt_type in {"user_message", "content", "tool_calls", "title_updated"}:
+                if evt_type in {"user_message", "content", "thinking", "tool_calls", "title_updated"}:
                     yield f"data: {json.dumps(event)}\n\n"
 
             outcome = await ingest_task

@@ -49,6 +49,8 @@ window.App = {
             tickInFlight: false,
             progressPollTimerId: null,
             progressStatusText: '',
+            inFlightEpoch: 0,
+            streamingMessageElement: null,
         },
     },
     
@@ -259,6 +261,13 @@ window.App = {
             if (pinIds.length === 0) return;
             this.showMomentPinsModal(pinIds, { forceScope: 'character', focusPinIds: pinIds });
         });
+        messagesContainer.addEventListener('click', (e) => {
+            const indicator = e.target.closest('.reasoning-indicator');
+            if (!indicator) return;
+            const messageId = String(indicator.getAttribute('data-message-id') || '').trim();
+            if (!messageId) return;
+            this.showReasoningModal(messageId);
+        });
         document.getElementById('momentPinsScopeSelect').addEventListener('change', async (e) => {
             this.state.momentPinsScope = e.target.value === 'character' ? 'character' : 'conversation';
             await this.refreshMomentPinsList();
@@ -279,6 +288,20 @@ window.App = {
         });
         document.getElementById('confirmDeleteMomentPin').addEventListener('click', () => {
             this.confirmDeleteActiveMomentPin();
+        });
+        document.getElementById('copyReasoningBtn')?.addEventListener('click', async () => {
+            const reasoningEl = document.getElementById('reasoningModalText');
+            const text = (reasoningEl && reasoningEl.dataset && reasoningEl.dataset.rawReasoning)
+                || (reasoningEl ? reasoningEl.textContent : '')
+                || '';
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+                UI.showToast('Reasoning copied to clipboard.', 'success');
+            } catch (error) {
+                console.error('Failed to copy reasoning:', error);
+                UI.showToast('Failed to copy reasoning text.', 'error');
+            }
         });
         
         // Confirm delete selected messages
@@ -565,6 +588,7 @@ window.App = {
         document.getElementById('messageInput').addEventListener('input', () => {
             const value = (document.getElementById('messageInput').value || '').trim();
             if (value.length > 0) {
+                this.invalidateInteractiveNarrativeInFlight('typing');
                 this.pauseInteractiveNarrativeAutoplay('typing');
             }
         });
@@ -1650,6 +1674,57 @@ window.App = {
         }
     },
 
+    getSelectedCharacter() {
+        return this.state.characters.find((c) => c.id === this.state.selectedCharacterId) || null;
+    },
+
+    getEffectiveReasoningVisibilityMode() {
+        const character = this.getSelectedCharacter();
+        const mode = String(
+            (character && (
+                character.effective_reasoning_visibility_mode
+                || (character.preferred_llm && character.preferred_llm.reasoning_visibility_mode)
+            )) || 'review_only'
+        ).trim().toLowerCase();
+        if (mode === 'review_only' || mode === 'live_preview_and_review') {
+            return mode;
+        }
+        return 'review_only';
+    },
+
+    summarizeThinkingPreview(text) {
+        const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!normalized) return '';
+        const maxLen = 120;
+        if (normalized.length <= maxLen) return normalized;
+        return `...${normalized.slice(normalized.length - (maxLen - 3))}`;
+    },
+
+    async showReasoningModal(messageId) {
+        try {
+            const result = await API.getMessageReasoning(messageId);
+            if (!result || !result.available) {
+                UI.showToast('No captured reasoning found for this message.', 'info');
+                return;
+            }
+            const textEl = document.getElementById('reasoningModalText');
+            if (textEl) {
+                const rawReasoning = result.reasoning_text || '';
+                textEl.dataset.rawReasoning = rawReasoning;
+                textEl.innerHTML = UI.renderMarkdown(rawReasoning);
+                textEl.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+            }
+            const modalEl = document.getElementById('reasoningModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+        } catch (error) {
+            console.error('Failed to load message reasoning:', error);
+            UI.showToast('Failed to load reasoning text.', 'error');
+        }
+    },
+
     isInteractiveNarrativeEnabledForCharacter() {
         const character = this.state.characters.find((c) => c.id === this.state.selectedCharacterId);
         return !!(character && character.features && character.features.interactive_narrative);
@@ -1674,6 +1749,20 @@ window.App = {
         if (timerId) {
             clearTimeout(timerId);
             this.state.interactiveNarrative.progressPollTimerId = null;
+        }
+    },
+
+    invalidateInteractiveNarrativeInFlight(_reason = 'manual') {
+        this.state.interactiveNarrative.inFlightEpoch = (this.state.interactiveNarrative.inFlightEpoch || 0) + 1;
+        const streamingEl = this.state.interactiveNarrative.streamingMessageElement;
+        if (streamingEl) {
+            const row = streamingEl.closest('.message-row');
+            if (row) {
+                row.remove();
+            } else if (typeof streamingEl.remove === 'function') {
+                streamingEl.remove();
+            }
+            this.state.interactiveNarrative.streamingMessageElement = null;
         }
     },
 
@@ -1723,6 +1812,7 @@ window.App = {
     async refreshInteractiveNarrativeState() {
         this.clearInteractiveNarrativeTimer();
         this.clearInteractiveNarrativeProgressPoll();
+        this.invalidateInteractiveNarrativeInFlight('refresh');
         this.state.interactiveNarrative.loopId = null;
         this.state.interactiveNarrative.state = 'paused';
         this.state.interactiveNarrative.autoplayActive = false;
@@ -1753,6 +1843,7 @@ window.App = {
         if (!this.state.interactiveNarrative.autoplayActive) return;
         this.clearInteractiveNarrativeTimer();
         this.clearInteractiveNarrativeProgressPoll();
+        this.invalidateInteractiveNarrativeInFlight(reason);
         const loopId = this.state.interactiveNarrative.loopId;
         this.state.interactiveNarrative.autoplayActive = false;
         this.state.interactiveNarrative.state = 'paused';
@@ -1820,26 +1911,46 @@ window.App = {
                 return;
             }
             this.state.interactiveNarrative.tickInFlight = true;
+            const tickEpoch = this.state.interactiveNarrative.inFlightEpoch || 0;
             try {
                 UI.showTypingIndicator(this.state.interactiveNarrative.progressStatusText || 'Processing loop step...');
                 let result = null;
                 let streamingMessageEl = null;
                 if (this.shouldStreamInteractiveNarrativeLoop()) {
                     let streamedContent = '';
+                    let thinkingBuffer = '';
+                    let lastThinkingUpdateMs = 0;
+                    const reasoningMode = this.getEffectiveReasoningVisibilityMode();
+                    const onChunk = (chunk) => {
+                        if (!chunk) return;
+                        UI.hideTypingIndicator();
+                        streamedContent += chunk;
+                        if (!streamingMessageEl) {
+                            streamingMessageEl = UI.appendStreamingMessage();
+                            this.state.interactiveNarrative.streamingMessageElement = streamingMessageEl;
+                        }
+                        if (streamingMessageEl) {
+                            UI.updateStreamingMessage(streamingMessageEl, streamedContent);
+                        }
+                    };
+                    onChunk.thinkingCallback = (delta) => {
+                        if (reasoningMode !== 'live_preview_and_review') return;
+                        if (streamedContent) return;
+                        const text = String(delta || '');
+                        if (!text) return;
+                        thinkingBuffer += text;
+                        const now = Date.now();
+                        if ((now - lastThinkingUpdateMs) < 250) return;
+                        const preview = this.summarizeThinkingPreview(thinkingBuffer);
+                        if (preview) {
+                            UI.showThinkingPreview(preview);
+                            lastThinkingUpdateMs = now;
+                        }
+                    };
                     result = await new Promise((resolve, reject) => {
                         API.advanceInteractiveNarrativeStream(
                             loopId,
-                            (chunk) => {
-                                if (!chunk) return;
-                                UI.hideTypingIndicator();
-                                streamedContent += chunk;
-                                if (!streamingMessageEl) {
-                                    streamingMessageEl = UI.appendStreamingMessage();
-                                }
-                                if (streamingMessageEl) {
-                                    UI.updateStreamingMessage(streamingMessageEl, streamedContent);
-                                }
-                            },
+                            onChunk,
                             (doneData) => resolve(doneData || {}),
                             reject
                         );
@@ -1851,17 +1962,34 @@ window.App = {
                 } else {
                     result = await API.advanceInteractiveNarrative(loopId);
                 }
+                const invalidated = tickEpoch !== (this.state.interactiveNarrative.inFlightEpoch || 0);
+                if (invalidated || !this.state.interactiveNarrative.autoplayActive) {
+                    if (streamingMessageEl) {
+                        const row = streamingMessageEl.closest('.message-row');
+                        if (row) row.remove();
+                        else if (typeof streamingMessageEl.remove === 'function') streamingMessageEl.remove();
+                    }
+                    this.state.interactiveNarrative.streamingMessageElement = null;
+                    return;
+                }
                 this.state.interactiveNarrative.state = result.state || this.state.interactiveNarrative.state;
                 const control = (result.last_step_control_action || '').toUpperCase();
                 const inFlight = !!result.in_flight;
-                if (result.display_text) {
+                const assistantPayload = (result && result.assistant_message) ? result.assistant_message : null;
+                const displayText = assistantPayload
+                    ? (assistantPayload.content || result.display_text || '')
+                    : (result.display_text || '');
+                const renderContent = assistantPayload
+                    ? (assistantPayload.render_content || result.render_content || null)
+                    : (result.render_content || null);
+                if (displayText) {
                     const assistantMsg = {
                         role: 'assistant',
-                        content: result.display_text,
-                        render_content: result.render_content || null,
-                        created_at: new Date().toISOString(),
-                        id: result.assistant_message_id || null,
-                        metadata: {
+                        content: displayText,
+                        render_content: renderContent,
+                        created_at: (assistantPayload && assistantPayload.created_at) || new Date().toISOString(),
+                        id: (assistantPayload && assistantPayload.id) || result.assistant_message_id || null,
+                        metadata: (assistantPayload && assistantPayload.metadata) || {
                             loop: {
                                 loop_id: this.state.interactiveNarrative.loopId,
                                 control_action: control || null,
@@ -1871,6 +1999,7 @@ window.App = {
                     this.state.messages.push(assistantMsg);
                     if (this.shouldStreamInteractiveNarrativeLoop() && streamingMessageEl) {
                         UI.finalizeStreamingAssistantMessage(streamingMessageEl, assistantMsg);
+                        this.state.interactiveNarrative.streamingMessageElement = null;
                     } else {
                         const element = UI.appendMessage(assistantMsg);
                         if (element && assistantMsg.id) {
@@ -1894,6 +2023,7 @@ window.App = {
             } catch (error) {
                 console.error('Interactive narrative tick failed:', error);
                 this.state.interactiveNarrative.autoplayActive = false;
+                this.state.interactiveNarrative.streamingMessageElement = null;
                 this.setInteractiveNarrativeProgressStatus('');
                 UI.hideTypingIndicator();
                 UI.showToast('Interactive narrative stopped due to an error.', 'warning');
@@ -2005,6 +2135,9 @@ window.App = {
             let streamingMessageEl = null;
             let streamedContent = '';
             let streamedToolCalls = [];
+            let thinkingBuffer = '';
+            let lastThinkingUpdateMs = 0;
+            const reasoningMode = this.getEffectiveReasoningVisibilityMode();
 
             const onChunk = (chunk) => {
                 if (!chunk) return;
@@ -2015,6 +2148,20 @@ window.App = {
                 }
                 if (streamingMessageEl) {
                     UI.updateStreamingMessage(streamingMessageEl, streamedContent);
+                }
+            };
+            onChunk.thinkingCallback = (delta) => {
+                if (reasoningMode !== 'live_preview_and_review') return;
+                if (streamedContent) return;
+                const text = String(delta || '');
+                if (!text) return;
+                thinkingBuffer += text;
+                const now = Date.now();
+                if ((now - lastThinkingUpdateMs) < 250) return;
+                const preview = this.summarizeThinkingPreview(thinkingBuffer);
+                if (preview) {
+                    UI.showThinkingPreview(preview);
+                    lastThinkingUpdateMs = now;
                 }
             };
 

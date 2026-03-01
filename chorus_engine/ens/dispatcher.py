@@ -81,6 +81,7 @@ from chorus_engine.services.assistant_content import (
     FORMAT_LEGACY_XML_V1,
     FORMAT_MARKDOWN_V1,
     ThinkingCaptureProcessor,
+    capture_and_strip_thinking,
     normalize_to_mode,
     render_for_ui,
     segments_to_framelines_v2,
@@ -215,6 +216,23 @@ def _get_effective_output_mode(character) -> str:
     if mode in {FORMAT_MARKDOWN_V1, FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1}:
         return mode
     return FORMAT_MARKDOWN_V1
+
+
+_REASONING_VISIBILITY_MODES = {"off", "review_only", "live_preview_and_review"}
+
+
+def _get_effective_reasoning_visibility_mode(character, system_config) -> str:
+    preferred = getattr(getattr(character, "preferred_llm", None), "reasoning_visibility_mode", None)
+    if isinstance(preferred, str):
+        normalized = preferred.strip().lower()
+        if normalized in _REASONING_VISIBILITY_MODES:
+            return normalized
+    system_mode = getattr(getattr(system_config, "llm", None), "reasoning_visibility_mode", None)
+    if isinstance(system_mode, str):
+        normalized = system_mode.strip().lower()
+        if normalized in _REASONING_VISIBILITY_MODES:
+            return normalized
+    return "review_only"
 
 
 def _attempt_media_payload_repair_prompt(
@@ -1657,6 +1675,11 @@ class ENSDispatcher:
         )
         stream_callback = params.get("stream_callback")
         streaming_enabled = bool(params.get("streaming"))
+        reasoning_visibility_mode = _get_effective_reasoning_visibility_mode(
+            character,
+            self.app_state.get("system_config"),
+        )
+        emit_thinking_preview = bool(streaming_enabled and reasoning_visibility_mode == "live_preview_and_review")
         thinking_processor = ThinkingCaptureProcessor() if streaming_enabled else None
         payload_suppressor = _ToolPayloadDeltaSuppressor() if streaming_enabled else None
         markdown_terminator = _MarkdownTerminatorSuppressor() if streaming_enabled else None
@@ -1668,6 +1691,10 @@ class ENSDispatcher:
             if thinking_processor is not None:
                 thinking_step = thinking_processor.process_delta(visible)
                 visible = str(thinking_step.visible_delta or "")
+                if emit_thinking_preview and str(thinking_step.reasoning_delta or "").strip():
+                    out = stream_callback({"type": "thinking", "delta": str(thinking_step.reasoning_delta)})
+                    if hasattr(out, "__await__"):
+                        await out
             if payload_suppressor is not None:
                 visible = payload_suppressor.process(visible)
             if markdown_terminator is not None:
@@ -1951,6 +1978,17 @@ class ENSDispatcher:
                 metadata={"assistant_output_format": FORMAT_MARKDOWN_V1},
             )["canonical_text"]
         assistant_metadata["assistant_output_format"] = output_mode
+        provider_raw = assistant_result.provider_raw or {}
+        thinking_capture = provider_raw.get("thinking_capture")
+        thinking_diag = dict(thinking_capture) if isinstance(thinking_capture, dict) else {}
+        reasoning_chars = 0
+        if isinstance(provider_raw.get("reasoning_chars"), int):
+            reasoning_chars = int(provider_raw.get("reasoning_chars") or 0)
+        elif isinstance(thinking_diag.get("reasoning_chars"), int):
+            reasoning_chars = int(thinking_diag.get("reasoning_chars") or 0)
+        assistant_metadata["reasoning_available"] = reasoning_chars > 0
+        assistant_metadata["reasoning_chars"] = max(reasoning_chars, 0)
+        assistant_metadata["reasoning_visibility_mode"] = reasoning_visibility_mode
         assistant_metadata["render_content"] = render_for_ui(display_text, format_id=output_mode, template_id=template)
         assistant_metadata["structured_response"] = {
             "is_fallback": finalized.is_fallback,
@@ -2619,6 +2657,7 @@ class ENSDispatcher:
         *,
         session: ENSLoopSession,
         display_text: str,
+        raw_response: Optional[str],
         control_action: Optional[str],
         step_index: int,
     ) -> Optional[str]:
@@ -2650,9 +2689,26 @@ class ENSDispatcher:
             template_id = "C"
             output_mode = FORMAT_MARKDOWN_V1
         msg_repo = MessageRepository(db)
+        resolved_character = locals().get("character")
+        reasoning_source = str(raw_response or "")
+        _visible_unused, reasoning_text, _reasoning_diag = capture_and_strip_thinking(
+            reasoning_source or text
+        )
+        reasoning_chars = len(str(reasoning_text or ""))
         metadata = {
             "assistant_output_format": output_mode,
             "render_content": render_for_ui(text, format_id=output_mode, template_id=template_id),
+            "reasoning_available": reasoning_chars > 0,
+            "reasoning_chars": reasoning_chars,
+            "reasoning_visibility_mode": _get_effective_reasoning_visibility_mode(
+                resolved_character,
+                self.app_state.get("system_config"),
+            ),
+            "structured_response": (
+                {"raw_response": reasoning_source}
+                if reasoning_source
+                else None
+            ),
             "loop": {
                 "loop_id": session.loop_id,
                 "control_action": control_action,
@@ -3245,6 +3301,10 @@ class ENSDispatcher:
         streaming_requested = bool(params.get("streaming")) and callable(stream_callback)
         loop_template = _get_effective_template(character)
         loop_output_mode = _get_effective_output_mode(character)
+        reasoning_visibility_mode = _get_effective_reasoning_visibility_mode(
+            character,
+            self.app_state.get("system_config"),
+        )
         enable_primary_streaming = bool(streaming_requested and loop_output_mode == FORMAT_MARKDOWN_V1)
 
         async def _run_pass(pass_plan: StepPassPlan, loopback_payload: Optional[Dict[str, Any]]) -> PassExecutionResult:
@@ -3286,6 +3346,7 @@ class ENSDispatcher:
                     thinking_processor = ThinkingCaptureProcessor()
                     payload_suppressor = _ToolPayloadDeltaSuppressor()
                     markdown_terminator = _MarkdownTerminatorSuppressor()
+                    emit_thinking_preview = reasoning_visibility_mode == "live_preview_and_review"
 
                     async def _emit_stream_content(text: str) -> None:
                         payload = {"type": "content", "content": text}
@@ -3302,10 +3363,14 @@ class ENSDispatcher:
                         visible = delta
                         think_result = thinking_processor.process_delta(visible)
                         visible = think_result.visible_delta
+                        if emit_thinking_preview and str(think_result.reasoning_delta or "").strip():
+                            out = stream_callback({"type": "thinking", "delta": str(think_result.reasoning_delta)})
+                            if hasattr(out, "__await__"):
+                                await out
                         if payload_suppressor:
-                            visible = payload_suppressor.process_delta(visible)
+                            visible = payload_suppressor.process(visible)
                         if markdown_terminator:
-                            visible = markdown_terminator.process_delta(visible)
+                            visible = markdown_terminator.process(visible)
                         if visible:
                             await _emit_stream_content(visible)
 
@@ -3318,10 +3383,10 @@ class ENSDispatcher:
                     think_flush = thinking_processor.finalize()
                     trailing_visible += think_flush.visible_delta
                     if payload_suppressor:
-                        trailing_visible = payload_suppressor.process_delta(trailing_visible)
+                        trailing_visible = payload_suppressor.process(trailing_visible)
                         trailing_visible += payload_suppressor.finalize()
                     if markdown_terminator:
-                        trailing_visible = markdown_terminator.process_delta(trailing_visible)
+                        trailing_visible = markdown_terminator.process(trailing_visible)
                         trailing_visible += markdown_terminator.finalize()
                     if trailing_visible:
                         await _emit_stream_content(trailing_visible)
@@ -3832,26 +3897,53 @@ class ENSDispatcher:
         # (loop:progression:{loop_id}:{step_index+1}) cannot be reused.
         db.commit()
 
+        suppress_visible_output = False
+        suppress_visible_reason = None
+        interrupt_store = self.app_state.get("loop_interrupt_requests")
+        if loop_mode == "visible" and isinstance(interrupt_store, dict):
+            interrupt_req = interrupt_store.pop(loop_id, None)
+            if interrupt_req:
+                suppress_visible_output = True
+                suppress_visible_reason = "INTERRUPT_REQUESTED"
+                visible_display_text = ""
+        if loop_mode == "visible":
+            try:
+                db.refresh(session)
+            except Exception:
+                session = (
+                    db.query(ENSLoopSession)
+                    .filter(ENSLoopSession.loop_id == loop_id)
+                    .first()
+                ) or session
+            session_state = str(getattr(session, "state", "") or "").strip().lower()
+            stop_reason = str(getattr(session, "stop_reason", "") or "").strip().upper()
+            if session_state == "paused" and stop_reason in {"MANUAL_PAUSE", "USER_PREEMPT"}:
+                suppress_visible_output = True
+                suppress_visible_reason = stop_reason
+                visible_display_text = ""
+
         outbox_count = 0
         assistant_message_id = None
         if loop_mode == "visible":
-            intent_id = self._persist_loop_visible_egress(
-                db,
-                session=session,
-                step_index=int(session.step_index or 0),
-                display_text=visible_display_text,
-                signal_id=signal_id,
-                control_action=control_action,
-            )
-            if intent_id:
-                outbox_count = 1
-            assistant_message_id = self._persist_loop_visible_web_message(
-                db,
-                session=session,
-                display_text=visible_display_text,
-                control_action=control_action,
-                step_index=int(session.step_index or 0),
-            )
+            if not suppress_visible_output:
+                intent_id = self._persist_loop_visible_egress(
+                    db,
+                    session=session,
+                    step_index=int(session.step_index or 0),
+                    display_text=visible_display_text,
+                    signal_id=signal_id,
+                    control_action=control_action,
+                )
+                if intent_id:
+                    outbox_count = 1
+                assistant_message_id = self._persist_loop_visible_web_message(
+                    db,
+                    session=session,
+                    display_text=visible_display_text,
+                    raw_response=raw_content,
+                    control_action=control_action,
+                    step_index=int(session.step_index or 0),
+                )
         elif loop_mode == "hidden" and control_action == "COMPLETE":
             intent_id = self._persist_loop_visible_egress(
                 db,
@@ -4010,6 +4102,8 @@ class ENSDispatcher:
                 "next_progression_enqueued": bool(next_progression),
                 "outbox_count": outbox_count,
                 "assistant_message_id": assistant_message_id,
+                "visible_output_suppressed": bool(suppress_visible_output),
+                "visible_output_suppressed_reason": suppress_visible_reason,
             },
             created_at_us=next_created_at_us(),
         )
@@ -4121,6 +4215,8 @@ class ENSDispatcher:
             "outbox_count": outbox_count,
             "assistant_message_id": assistant_message_id,
             "step_event_id": step_event.event_id,
+            "visible_output_suppressed": bool(suppress_visible_output),
+            "visible_output_suppressed_reason": suppress_visible_reason,
         }
 
     @staticmethod

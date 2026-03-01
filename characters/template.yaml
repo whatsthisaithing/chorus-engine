@@ -153,6 +153,7 @@ preferred_llm:
   repeat_penalty: null        # Override repeat penalty (> 0) or null for system default
   presence_penalty: null      # Override presence penalty (-2.0 to 2.0) or null for system default
   frequency_penalty: null     # Override frequency penalty (-2.0 to 2.0) or null for system default
+  reasoning_visibility_mode: null  # Override reasoning visibility mode (off|review_only|live_preview_and_review) or null for system default
 
 # IMMERSION SETTINGS
 # ------------------

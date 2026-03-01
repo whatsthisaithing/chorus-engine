@@ -389,15 +389,11 @@ const UI = {
         const usedPinIds = Array.isArray(message.metadata?.used_moment_pin_ids)
             ? message.metadata.used_moment_pin_ids.filter((id) => typeof id === 'string' && id.trim().length > 0)
             : [];
-        const pinIndicatorHtml = (message.role === 'assistant' && usedPinIds.length > 0)
-            ? `<button type="button" class="moment-pin-indicator" data-pin-ids="${this.escapeHtml(usedPinIds.join(','))}" title="View recalled moment pins">
-                    <i class="bi bi-pin-angle-fill"></i><span>${usedPinIds.length}</span>
-               </button>`
-            : '';
+        const indicatorHtml = this._buildMessageIndicatorsHtml(message, usedPinIds);
         contentHtml += `
             <div class="message-meta">
                 <div class="message-timestamp">${this.formatTime(message.created_at)}</div>
-                ${pinIndicatorHtml}
+                ${indicatorHtml}
             </div>`;
         
         messageDiv.innerHTML = contentHtml;
@@ -600,6 +596,28 @@ const UI = {
         return row;
     },
 
+    _shouldShowReasoningIndicator(message) {
+        if (!message || message.role !== 'assistant') return false;
+        const metadata = (message.metadata && typeof message.metadata === 'object') ? message.metadata : {};
+        if (!metadata.reasoning_available) return false;
+        const mode = String(metadata.reasoning_visibility_mode || '').trim().toLowerCase();
+        return mode === 'review_only' || mode === 'live_preview_and_review';
+    },
+
+    _buildMessageIndicatorsHtml(message, usedPinIds = []) {
+        const pinIndicatorHtml = (message.role === 'assistant' && Array.isArray(usedPinIds) && usedPinIds.length > 0)
+            ? `<button type="button" class="moment-pin-indicator" data-pin-ids="${this.escapeHtml(usedPinIds.join(','))}" title="View recalled moment pins">
+                    <i class="bi bi-pin-angle-fill"></i><span>${usedPinIds.length}</span>
+               </button>`
+            : '';
+        const reasoningIndicatorHtml = this._shouldShowReasoningIndicator(message)
+            ? `<button type="button" class="reasoning-indicator" data-message-id="${this.escapeHtml(String(message.id || ''))}" title="View captured reasoning">
+                    <i class="bi bi-lightbulb-fill"></i>
+               </button>`
+            : '';
+        return `${pinIndicatorHtml}${reasoningIndicatorHtml}`;
+    },
+
     attachMessageId(messageElement, messageId, role = 'assistant') {
         if (!messageElement || !messageId) return;
         
@@ -644,8 +662,18 @@ const UI = {
             `;
             container.appendChild(indicator);
         }
+        indicator.classList.remove('thinking-preview');
         this.updateTypingIndicatorStatus(statusText);
         this.scrollToBottom();
+    },
+
+    showThinkingPreview(previewText) {
+        this.showTypingIndicator();
+        const indicator = document.getElementById('typing-indicator');
+        if (indicator) {
+            indicator.classList.add('thinking-preview');
+        }
+        this.updateTypingIndicatorStatus(previewText || '');
     },
 
     updateTypingIndicatorStatus(statusText = null) {
@@ -755,15 +783,11 @@ const UI = {
         const usedPinIds = Array.isArray(message.metadata?.used_moment_pin_ids)
             ? message.metadata.used_moment_pin_ids.filter((id) => typeof id === 'string' && id.trim().length > 0)
             : [];
-        const pinIndicatorHtml = (usedPinIds.length > 0)
-            ? `<button type="button" class="moment-pin-indicator" data-pin-ids="${this.escapeHtml(usedPinIds.join(','))}" title="View recalled moment pins">
-                    <i class="bi bi-pin-angle-fill"></i><span>${usedPinIds.length}</span>
-               </button>`
-            : '';
+        const indicatorHtml = this._buildMessageIndicatorsHtml(message, usedPinIds);
         contentHtml += `
             <div class="message-meta">
                 <div class="message-timestamp">${this.formatTime(message.created_at || new Date().toISOString())}</div>
-                ${pinIndicatorHtml}
+                ${indicatorHtml}
             </div>`;
 
         messageDiv.innerHTML = contentHtml;

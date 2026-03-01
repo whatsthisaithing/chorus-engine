@@ -303,6 +303,10 @@ class API {
                         const data = JSON.parse(line.slice(6));
                         if (data.type === 'content') {
                             if (onChunk) onChunk(data.content || '');
+                        } else if (data.type === 'thinking') {
+                            if (onChunk && onChunk.thinkingCallback) {
+                                onChunk.thinkingCallback(data.delta || '');
+                            }
                         } else if (data.type === 'done') {
                             if (onComplete) onComplete(data);
                             return;
@@ -597,6 +601,10 @@ class API {
                                 }
                             } else if (data.type === 'content') {
                                 onChunk(data.content);
+                            } else if (data.type === 'thinking') {
+                                if (onChunk.thinkingCallback) {
+                                    onChunk.thinkingCallback(data.delta || '');
+                                }
                             } else if (data.type === 'tool_calls') {
                                 if (onChunk.toolCallsCallback) {
                                     onChunk.toolCallsCallback(data.tool_calls || []);
@@ -676,6 +684,10 @@ class API {
 
     static async getMomentPin(pinId) {
         return this.request(`/moment-pins/${pinId}`);
+    }
+
+    static async getMessageReasoning(messageId) {
+        return this.request(`/messages/${messageId}/reasoning`);
     }
 
     static async updateMomentPin(pinId, updates) {

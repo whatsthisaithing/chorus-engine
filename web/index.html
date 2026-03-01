@@ -874,6 +874,17 @@
                                     </div>
                                 </div>
                                 <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label text-light">Reasoning Visibility</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="llm_reasoning_visibility_mode">
+                                            <option value="off">Off</option>
+                                            <option value="review_only">Review only</option>
+                                            <option value="live_preview_and_review">Live preview + review</option>
+                                        </select>
+                                        <div class="form-text text-secondary">Controls reasoning preview/review behavior for all characters unless overridden.</div>
+                                    </div>
+                                </div>
+                                <div class="row">
                                     <div class="col-md-12 mb-3">
                                         <div class="form-check form-switch">
                                             <input class="form-check-input" type="checkbox" id="llm_unload_during_image_generation">
@@ -1234,7 +1245,7 @@
                                     </div>
                                     
                                     <!-- Memory Integration -->
-                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-brain me-2"></i>Memory Integration</h6>
+                                    <h6 class="text-light mt-3 mb-2"><i class="bi bi-lightbulb-fill me-2"></i>Memory Integration</h6>
                                     <div class="row">
                                         <div class="col-md-3 mb-3">
                                             <div class="form-check form-switch">
@@ -2197,6 +2208,15 @@
                                                         <div class="col-md-4 mb-2">
                                                             <label class="form-label">Frequency Penalty</label>
                                                             <input type="number" class="form-control form-control-sm" id="charLlmFrequencyPenalty" min="-2" max="2" step="0.01" placeholder="optional">
+                                                        </div>
+                                                        <div class="col-md-6 mb-2">
+                                                            <label class="form-label">Reasoning Visibility Override</label>
+                                                            <select class="form-select form-select-sm" id="charLlmReasoningVisibilityMode">
+                                                                <option value="">Use system default</option>
+                                                                <option value="off">Off</option>
+                                                                <option value="review_only">Review only</option>
+                                                                <option value="live_preview_and_review">Live preview + review</option>
+                                                            </select>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -4375,6 +4395,25 @@
                     <button type="button" class="btn btn-danger" id="confirmDeleteMomentPin">
                         <i class="bi bi-trash"></i> Delete
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reasoning Modal -->
+    <div class="modal fade" id="reasoningModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-lightbulb-fill me-2"></i>Reasoning</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="reasoningModalText" class="message-content bg-dark text-light p-3 rounded"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" id="copyReasoningBtn">Copy</button>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>

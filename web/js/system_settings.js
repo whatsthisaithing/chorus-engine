@@ -145,6 +145,7 @@ class SystemSettingsManager {
         document.getElementById('llm_repeat_penalty').value = config.llm.repeat_penalty ?? '';
         document.getElementById('llm_presence_penalty').value = config.llm.presence_penalty ?? '';
         document.getElementById('llm_frequency_penalty').value = config.llm.frequency_penalty ?? '';
+        document.getElementById('llm_reasoning_visibility_mode').value = config.llm.reasoning_visibility_mode || 'review_only';
         document.getElementById('llm_timeout_seconds').value = config.llm.timeout_seconds || 120;
         document.getElementById('llm_unload_during_image_generation').checked = config.llm.unload_during_image_generation || false;
 
@@ -305,6 +306,7 @@ class SystemSettingsManager {
                 context_window: parseInt(document.getElementById('llm_context_window').value),
                 max_response_tokens: parseInt(document.getElementById('llm_max_response_tokens').value),
                 temperature: parseFloat(document.getElementById('llm_temperature').value),
+                reasoning_visibility_mode: document.getElementById('llm_reasoning_visibility_mode').value || 'review_only',
                 timeout_seconds: parseInt(document.getElementById('llm_timeout_seconds').value),
                 unload_during_image_generation: document.getElementById('llm_unload_during_image_generation').checked
             },

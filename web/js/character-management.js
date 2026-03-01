@@ -374,6 +374,8 @@ window.CharacterManagement = {
         document.getElementById('charLlmRepeatPenalty').value = character.preferred_llm?.repeat_penalty ?? '';
         document.getElementById('charLlmPresencePenalty').value = character.preferred_llm?.presence_penalty ?? '';
         document.getElementById('charLlmFrequencyPenalty').value = character.preferred_llm?.frequency_penalty ?? '';
+        const reasoningMode = character.preferred_llm?.reasoning_visibility_mode ?? '';
+        document.getElementById('charLlmReasoningVisibilityMode').value = reasoningMode;
         this.updateOllamaSamplingFieldState();
         
         // IMMERSION TAB
@@ -630,6 +632,7 @@ window.CharacterManagement = {
         document.getElementById('charOfferCooldownMinutes').value = '';
         document.getElementById('charOfferMinTurnGap').value = '';
         document.getElementById('charOfferMaxPerConversation').value = '';
+        document.getElementById('charLlmReasoningVisibilityMode').value = '';
         document.getElementById('charBackupEnabled').checked = false;
         document.getElementById('charBackupSchedule').value = 'daily';
         document.getElementById('charBackupLocalTime').value = '03:00';
@@ -886,8 +889,9 @@ window.CharacterManagement = {
         const llmRepeatPenalty = document.getElementById('charLlmRepeatPenalty').value.trim();
         const llmPresencePenalty = document.getElementById('charLlmPresencePenalty').value.trim();
         const llmFrequencyPenalty = document.getElementById('charLlmFrequencyPenalty').value.trim();
+        const llmReasoningVisibilityMode = document.getElementById('charLlmReasoningVisibilityMode').value.trim();
         
-        if (llmModel || llmTemp || llmMaxTokens || llmContextWindow || llmTopP || llmTopK || llmRepeatPenalty || llmPresencePenalty || llmFrequencyPenalty) {
+        if (llmModel || llmTemp || llmMaxTokens || llmContextWindow || llmTopP || llmTopK || llmRepeatPenalty || llmPresencePenalty || llmFrequencyPenalty || llmReasoningVisibilityMode) {
             characterData.preferred_llm = {};
             if (llmModel) characterData.preferred_llm.model = llmModel;
             if (llmTemp) characterData.preferred_llm.temperature = parseFloat(llmTemp);
@@ -898,6 +902,8 @@ window.CharacterManagement = {
             if (llmRepeatPenalty) characterData.preferred_llm.repeat_penalty = parseFloat(llmRepeatPenalty);
             if (llmPresencePenalty) characterData.preferred_llm.presence_penalty = parseFloat(llmPresencePenalty);
             if (llmFrequencyPenalty) characterData.preferred_llm.frequency_penalty = parseFloat(llmFrequencyPenalty);
+            if (llmReasoningVisibilityMode) characterData.preferred_llm.reasoning_visibility_mode = llmReasoningVisibilityMode;
+            else if (this.isEditMode) characterData.preferred_llm.reasoning_visibility_mode = null;
         }
         
         // UI preferences

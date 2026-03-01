@@ -14,6 +14,7 @@ llm:
   context_window: 8192  # Safe default - adjust based on your model's capabilities
   max_response_tokens: 4096
   temperature: 0.7
+  reasoning_visibility_mode: review_only  # off | review_only | live_preview_and_review
   archivist_model: "qwen3:4b-instruct"  # Ollama model name for archivist analysis (summary + memories)
                               # LM Studio: use the exact LM Studio model name if provider=lmstudio
                               # KoboldCpp: leave blank (single-model runtime)

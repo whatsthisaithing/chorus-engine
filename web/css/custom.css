@@ -696,6 +696,23 @@ html, body {
     text-decoration: underline;
 }
 
+.reasoning-indicator {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    cursor: pointer;
+}
+
+.reasoning-indicator:hover {
+    color: var(--accent-primary);
+    text-decoration: underline;
+}
+
 /* Username label for multi-user conversations (non-web) */
 .message-username {
     font-size: 0.65rem;
@@ -856,6 +873,10 @@ html, body {
 
 .typing-indicator span:nth-child(3) {
     animation-delay: 0.4s;
+}
+
+#typing-indicator.thinking-preview .typing-indicator {
+    display: none;
 }
 
 @keyframes typing {
@@ -1197,6 +1218,25 @@ button:disabled {
 
 .message-content li {
     margin: 0.25rem 0;
+}
+
+/* Keep captured reasoning readable but denser than default chat markdown */
+#reasoningModalText p {
+    margin: 0 0 0.3rem 0;
+}
+
+#reasoningModalText ul,
+#reasoningModalText ol {
+    margin: 0.25rem 0;
+    padding-left: 1.2rem;
+}
+
+#reasoningModalText li {
+    margin: 0.1rem 0;
+}
+
+#reasoningModalText li > p {
+    margin: 0;
 }
 
 .message-content code {

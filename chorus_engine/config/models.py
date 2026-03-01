@@ -57,6 +57,10 @@ class LLMConfig(BaseModel):
     presence_penalty: Optional[float] = Field(default=None, description="Presence penalty (-2.0 to 2.0)")
     frequency_penalty: Optional[float] = Field(default=None, description="Frequency penalty (-2.0 to 2.0)")
     timeout_seconds: int = Field(default=120, gt=0)
+    reasoning_visibility_mode: Literal["off", "review_only", "live_preview_and_review"] = Field(
+        default="review_only",
+        description="Controls whether model reasoning is hidden, reviewable post-turn, or live-previewed during streaming.",
+    )
     unload_during_image_generation: bool = Field(default=False, description="Unload model from VRAM during image generation to free memory")
     ollama_legacy_chat_api_enabled: bool = Field(
         default=False,
@@ -134,6 +138,16 @@ class LLMConfig(BaseModel):
             return None
         numeric = float(value)
         return min(2.0, max(-2.0, numeric))
+
+    @field_validator("reasoning_visibility_mode", mode="before")
+    @classmethod
+    def normalize_reasoning_visibility_mode(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"off", "review_only", "live_preview_and_review"}:
+                return normalized
+        # Backward/legacy tolerant default
+        return "review_only"
 
 
 class MemoryConfig(BaseModel):
@@ -1148,6 +1162,10 @@ class PreferredLLMConfig(BaseModel):
     repeat_penalty: Optional[float] = Field(default=None, description="Override repeat_penalty (> 0)")
     presence_penalty: Optional[float] = Field(default=None, description="Override presence_penalty (-2.0 to 2.0)")
     frequency_penalty: Optional[float] = Field(default=None, description="Override frequency_penalty (-2.0 to 2.0)")
+    reasoning_visibility_mode: Optional[Literal["off", "review_only", "live_preview_and_review"]] = Field(
+        default=None,
+        description="Optional per-character override for reasoning visibility behavior.",
+    )
 
     @field_validator("top_p", mode="before")
     @classmethod
