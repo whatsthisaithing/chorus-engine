@@ -638,74 +638,11 @@ class GeneralChatSegmentationConfig(BaseModel):
 
 
 class ENSConfig(BaseModel):
-    """ENS feature flags for incremental rollout."""
+    """ENS operational controls."""
 
-    enabled: bool = Field(default=False, description="Enable ENS routing")
-    slice1_chat_ownership: bool = Field(default=False, description="Route non-stream chat through ENS core actions")
-    nonstream_intake_only: bool = Field(
-        default=True,
-        description="When true, non-stream /messages remains on legacy execution and ENS records intake decisions only",
-    )
-    streaming_intake_only: bool = Field(default=True, description="Stream route uses ENS intake only")
-    slice1_compat_postprocessing_enabled: bool = Field(default=False, description="Temporary legacy post-processing after ENS core actions")
-    slice2_tool_parsing_ownership: bool = Field(default=False, description="ENS owns non-stream tool payload parsing")
-    slice2_tool_dispatch_ownership: bool = Field(default=False, description="ENS owns tool-originated media dispatch")
-    slice2_scene_capture_ownership: bool = Field(default=False, description="ENS owns scene-capture preview and confirm flows")
-    slice2_scene_capture_legacy_confirm_without_tool_call: bool = Field(
+    context_compression_enabled: bool = Field(
         default=False,
-        description="Dev-only compat: allow scene-capture confirm without tool_call_id while scene-capture ownership is enabled",
-    )
-    slice25_media_gating_ownership: bool = Field(
-        default=False,
-        description="ENS owns media gating snapshot + tool payload adjudication actions",
-    )
-    slice3_continuity_writes_ownership: bool = Field(
-        default=False,
-        description="ENS owns continuity-affecting writes (summaries, memories, pins, continuity state)",
-    )
-    slice4_config_ownership: bool = Field(
-        default=False,
-        description="ENS owns config/control-plane writes (system, character, conversation toggles, workflows, core-memory sync)",
-    )
-    slice6_surface_routing_ownership: bool = Field(
-        default=False,
-        description="ENS owns normalized surface routing via canonical binding resolution",
-    )
-    slice65_egress_outbox_ownership: bool = Field(
-        default=False,
-        description="ENS owns normalized surface egress outbox intent persistence",
-    )
-    slice7_unified_llm_invocation: bool = Field(
-        default=False,
-        description="ENS owns unified provider-agnostic LLM invocation path",
-    )
-    slice75_llm_control_plane_ownership: bool = Field(
-        default=False,
-        description="ENS owns LLM control-plane operations (health/load/unload/reload/switch)",
-    )
-    v3_scheduler_enabled: bool = Field(
-        default=False,
-        description="ENS v3: route runnable work through scheduler/queue boundary",
-    )
-    v3_arbitration_enabled: bool = Field(
-        default=False,
-        description="ENS v3: enable arbitration and deterministic scheduler selection rules",
-    )
-    v3_loop_sessions_enabled: bool = Field(
-        default=False,
-        description="ENS v3: enable loop sessions as signal producers",
-    )
-    v3_structured_control_enabled: bool = Field(
-        default=False,
-        description="ENS v3: accept loop control only from structured control channel",
-    )
-    v3_assistant_result_enabled: bool = Field(
-        default=False,
-        description="ENS v3: enable canonical AssistantResult normalization path",
-    )
-    v3_context_compression_enabled: bool = Field(
-        default=False,
-        description="ENS v3: enable deterministic context compression hooks",
+        description="Enable deterministic context compression hooks.",
     )
     loop_memory_compress_every_n_steps: int = Field(
         default=10,
@@ -719,10 +656,6 @@ class ENSConfig(BaseModel):
         le=500,
         description="ENS v3 compression: keep last K raw loop steps uncompressed",
     )
-    v3_sentinel_fallback_enabled: bool = Field(
-        default=False,
-        description="ENS v3: keep sentinel payload parsing fallback enabled",
-    )
     native_tool_transport_enabled: bool = Field(
         default=False,
         description="ENS: enable provider-native tool transport for supported engines.",
@@ -734,10 +667,6 @@ class ENSConfig(BaseModel):
     native_tool_transport_sentinel_fallback_enabled: bool = Field(
         default=True,
         description="ENS: allow sentinel fallback when native transport attempt yields no control/tools.",
-    )
-    native_tool_transport_narrative_v11_split_enabled: bool = Field(
-        default=False,
-        description="ENS: enable narrative.v1 split loop-step flow (Stage A beat + Stage B control evaluation).",
     )
     native_tool_transport_debug_override_mode: str = Field(
         default="off",
@@ -779,28 +708,24 @@ class ENSConfig(BaseModel):
         default=1,
         ge=0,
         le=10,
-        validation_alias=AliasChoices("scheduler_sync_ticks_per_ingress", "v3_sync_ticks_per_ingress"),
         description="ENS scheduler: maximum synchronous scheduler ticks per ingress",
     )
     scheduler_drain_interval_ms: int = Field(
         default=250,
         ge=250,
         le=500,
-        validation_alias=AliasChoices("scheduler_drain_interval_ms", "v3_background_drain_interval_ms"),
         description="ENS scheduler: periodic scheduler drain interval in milliseconds",
     )
     scheduler_max_ticks_per_drain: int = Field(
         default=10,
         ge=1,
         le=100,
-        validation_alias=AliasChoices("scheduler_max_ticks_per_drain", "v3_max_ticks_per_drain"),
         description="ENS scheduler: maximum ticks per background drain cycle",
     )
     scheduler_max_wall_ms_per_drain: int = Field(
         default=50,
         ge=1,
         le=5000,
-        validation_alias=AliasChoices("scheduler_max_wall_ms_per_drain", "v3_max_wall_ms_per_drain"),
         description="ENS scheduler: maximum wall-clock milliseconds per background drain cycle",
     )
     scheduler_running_ttl_seconds: int = Field(

@@ -645,8 +645,6 @@ async def _run_ens_scheduler_periodic_drain() -> None:
         runtime = app_state.get("ens_runtime")
         scheduler_enabled = bool(
             ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "v3_scheduler_enabled", False)
             and runtime
         )
         if not scheduler_enabled:
@@ -805,7 +803,7 @@ async def lifespan(app: FastAPI):
             analysis_min_tokens_summary=system_config.llm.analysis_min_tokens_summary,
             analysis_min_tokens_memories=system_config.llm.analysis_min_tokens_memories,
             analysis_context_window=system_config.llm.context_window,
-            llm_invoke_fn=_invoke_llm_analysis_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+            llm_invoke_fn=_invoke_llm_analysis_unified,
         )
         logger.info("✓ Conversation analysis service initialized")
 
@@ -814,7 +812,7 @@ async def lifespan(app: FastAPI):
             llm_client=llm_client,
             llm_usage_lock=llm_usage_lock,
             max_tokens=1024,
-            llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+            llm_invoke_fn=_invoke_llm_unified,
             shared_embedding_service=embedding_service,
             shared_memory_vector_store=vector_store,
             shared_summary_vector_store=summary_vector_store,
@@ -846,7 +844,7 @@ async def lifespan(app: FastAPI):
                     
                     image_prompt_service = ImagePromptService(
                         llm_client=llm_client,
-                        llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+                        llm_invoke_fn=_invoke_llm_unified,
                     )
                     
                     image_storage_service = ImageStorageService(
@@ -868,7 +866,7 @@ async def lifespan(app: FastAPI):
                     try:
                         video_prompt_service = VideoPromptService(
                             llm_client=llm_client,
-                            llm_invoke_fn=_invoke_llm_analysis_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+                            llm_invoke_fn=_invoke_llm_analysis_unified,
                         )
                         
                         video_storage_service = VideoStorageService(
@@ -984,7 +982,7 @@ async def lifespan(app: FastAPI):
         from chorus_engine.services.title_generation import TitleGenerationService
         title_service = TitleGenerationService(
             llm_client=llm_client,
-            llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+            llm_invoke_fn=_invoke_llm_unified,
         )
         app_state["title_service"] = title_service
         logger.info("✓ Title generation service initialized")
@@ -1001,7 +999,7 @@ async def lifespan(app: FastAPI):
                     vision_config=vision_config.dict(),
                     llm_config=system_config.llm.dict(),
                     llm_client=llm_client,
-                    llm_invoke_fn=_invoke_llm_unified if bool(getattr(system_config.ens, "slice7_unified_llm_invocation", False) and getattr(system_config.ens, "enabled", False)) else None,
+                    llm_invoke_fn=_invoke_llm_unified,
                 )
                 
                 image_attachment_service = ImageAttachmentService(
@@ -1254,7 +1252,7 @@ async def lifespan(app: FastAPI):
                         )
                     queued_retention = 0
                     ens_cfg = getattr(app_st.get("system_config"), "ens", None)
-                    if ens_cfg and ens_cfg.enabled:
+                    if ens_cfg:
                         existing = getattr(heartbeat_svc, "_task_queue", [])
                         already_queued = any(
                             t.task_type == "ens_retention" and t.status.value == "pending"
@@ -4177,68 +4175,46 @@ async def get_intent_detection_log(lines: int = Query(default=100, le=1000)):
 
 
 def _ens_flags():
-    system_config = app_state.get("system_config")
-    ens_cfg = getattr(system_config, "ens", None) if system_config else None
     return {
-        "enabled": bool(ens_cfg and ens_cfg.enabled),
-        "slice1_chat_ownership": bool(ens_cfg and ens_cfg.slice1_chat_ownership),
-        "nonstream_intake_only": bool(ens_cfg and getattr(ens_cfg, "nonstream_intake_only", False)),
-        "streaming_intake_only": bool(ens_cfg and ens_cfg.streaming_intake_only),
-        "slice2_tool_parsing_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)),
-        "slice2_tool_dispatch_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_tool_dispatch_ownership", False)),
-        "slice2_scene_capture_ownership": bool(ens_cfg and getattr(ens_cfg, "slice2_scene_capture_ownership", False)),
-        "slice2_scene_capture_legacy_confirm_without_tool_call": bool(
-            ens_cfg and getattr(ens_cfg, "slice2_scene_capture_legacy_confirm_without_tool_call", False)
-        ),
-        "slice3_continuity_writes_ownership": bool(
-            ens_cfg and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
-        ),
-        "slice4_config_ownership": bool(
-            ens_cfg and getattr(ens_cfg, "slice4_config_ownership", False)
-        ),
-        "slice6_surface_routing_ownership": bool(
-            ens_cfg and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
-        ),
-        "slice65_egress_outbox_ownership": bool(
-            ens_cfg and getattr(ens_cfg, "slice65_egress_outbox_ownership", False)
-        ),
-        "slice7_unified_llm_invocation": bool(
-            ens_cfg and getattr(ens_cfg, "slice7_unified_llm_invocation", False)
-        ),
-        "slice75_llm_control_plane_ownership": bool(
-            ens_cfg and getattr(ens_cfg, "slice75_llm_control_plane_ownership", False)
-        ),
+        "enabled": True,
+        "slice1_chat_ownership": True,
+        "nonstream_intake_only": False,
+        "streaming_intake_only": True,
+        "slice2_tool_parsing_ownership": True,
+        "slice2_tool_dispatch_ownership": True,
+        "slice2_scene_capture_ownership": True,
+        "slice2_scene_capture_legacy_confirm_without_tool_call": False,
+        "slice3_continuity_writes_ownership": True,
+        "slice4_config_ownership": True,
+        "slice6_surface_routing_ownership": True,
+        "slice65_egress_outbox_ownership": True,
+        "slice7_unified_llm_invocation": True,
+        "slice75_llm_control_plane_ownership": True,
     }
 
 
 def _ens_slice3_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice3_continuity_writes_ownership"))
+    return True
 
 
 def _ens_slice4_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice4_config_ownership"))
+    return True
 
 
 def _ens_slice6_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice6_surface_routing_ownership"))
+    return True
 
 
 def _ens_slice65_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice65_egress_outbox_ownership"))
+    return True
 
 
 def _ens_slice7_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice7_unified_llm_invocation"))
+    return True
 
 
 def _ens_slice75_enabled() -> bool:
-    flags = _ens_flags()
-    return bool(flags.get("enabled") and flags.get("slice75_llm_control_plane_ownership"))
+    return True
 
 
 def _get_llm_invoker() -> LLMInvocationService:
@@ -12165,36 +12141,35 @@ async def generate_image(
                 detail=f"Image generation not enabled for character {character_id}"
             )
 
-        flags = _ens_flags()
-        if (
-            flags["enabled"]
-            and flags["slice2_tool_dispatch_ownership"]
-            and request.tool_call_id
-        ):
-            runtime = app_state.get("ens_runtime")
-            if not runtime:
-                raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-            signal = Signal(
-                type="tool.execute_requested",
-                scope="SESSION",
-                source="external",
-                assistant_id=character_id,
-                payload={
-                    "tool_call_id": request.tool_call_id,
-                    "thread_id": thread_id,
-                    "prompt": request.prompt,
-                    "disable_future_confirmations": request.disable_future_confirmations,
-                },
+        if not request.tool_call_id:
+            raise HTTPException(
+                status_code=400,
+                detail="tool_call_id is required for ENS image generation confirm",
             )
-            outcome = await runtime.ingest(
-                signal,
-                ENSContext(
-                    app_state=app_state,
-                    surface=conversation.source or "web",
-                    source=conversation.source or "web",
-                ),
-            )
-            return ImageGenerationResponse(**(outcome.response_payload or {}))
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = Signal(
+            type="tool.execute_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=character_id,
+            payload={
+                "tool_call_id": request.tool_call_id,
+                "thread_id": thread_id,
+                "prompt": request.prompt,
+                "disable_future_confirmations": request.disable_future_confirmations,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        return ImageGenerationResponse(**(outcome.response_payload or {}))
         
         # Get workflow - use selected workflow_id or fall back to default
         from chorus_engine.repositories import WorkflowRepository
@@ -12741,36 +12716,35 @@ async def generate_video(
                 detail=f"Video generation not enabled for character {character_id}"
             )
 
-        flags = _ens_flags()
-        if (
-            flags["enabled"]
-            and flags["slice2_tool_dispatch_ownership"]
-            and request.tool_call_id
-        ):
-            runtime = app_state.get("ens_runtime")
-            if not runtime:
-                raise HTTPException(status_code=503, detail="ENS runtime not initialized")
-            signal = Signal(
-                type="tool.execute_requested",
-                scope="SESSION",
-                source="external",
-                assistant_id=character_id,
-                payload={
-                    "tool_call_id": request.tool_call_id,
-                    "thread_id": thread_id,
-                    "prompt": request.prompt,
-                    "disable_future_confirmations": request.disable_future_confirmations,
-                },
+        if not request.tool_call_id:
+            raise HTTPException(
+                status_code=400,
+                detail="tool_call_id is required for ENS video generation confirm",
             )
-            outcome = await runtime.ingest(
-                signal,
-                ENSContext(
-                    app_state=app_state,
-                    surface=conversation.source or "web",
-                    source=conversation.source or "web",
-                ),
-            )
-            return VideoGenerationResponse(**(outcome.response_payload or {}))
+        runtime = app_state.get("ens_runtime")
+        if not runtime:
+            raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+        signal = Signal(
+            type="tool.execute_requested",
+            scope="SESSION",
+            source="external",
+            assistant_id=character_id,
+            payload={
+                "tool_call_id": request.tool_call_id,
+                "thread_id": thread_id,
+                "prompt": request.prompt,
+                "disable_future_confirmations": request.disable_future_confirmations,
+            },
+        )
+        outcome = await runtime.ingest(
+            signal,
+            ENSContext(
+                app_state=app_state,
+                surface=conversation.source or "web",
+                source=conversation.source or "web",
+            ),
+        )
+        return VideoGenerationResponse(**(outcome.response_payload or {}))
         
         # Get workflow - use selected workflow_id or fall back to default
         from chorus_engine.repositories import WorkflowRepository

@@ -486,8 +486,7 @@ class ENSDispatcher:
         self.response_finalizer = ResponseFinalizer()
 
     def _slice7_enabled(self) -> bool:
-        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-        return bool(ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice7_unified_llm_invocation", False))
+        return True
 
     @staticmethod
     def _assistant_result_from_invocation(raw_content: str, invocation: Dict[str, Any]) -> AssistantResult:
@@ -1675,6 +1674,16 @@ class ENSDispatcher:
         )
         stream_callback = params.get("stream_callback")
         streaming_enabled = bool(params.get("streaming"))
+        requested_media_type = str(media_gate_snapshot.get("requested_media_type") or "none").strip().lower()
+        requires_explicit_media_payload = bool(
+            media_gate_snapshot.get("media_tool_calls_allowed")
+            and (
+                bool(media_gate_snapshot.get("explicit_allowed"))
+                or bool(media_gate_snapshot.get("is_iteration_request"))
+                or requested_media_type != "none"
+            )
+        )
+        suppress_live_streaming_for_media = bool(streaming_enabled and requires_explicit_media_payload)
         reasoning_visibility_mode = _get_effective_reasoning_visibility_mode(
             character,
             self.app_state.get("system_config"),
@@ -1707,7 +1716,11 @@ class ENSDispatcher:
         if streaming_enabled:
             invocation = await self.llm_invoker.invoke_stream(
                 request,
-                on_event=lambda ev: _emit_visible_delta(ev.get("content_delta", "")) if isinstance(ev, dict) else None,
+                on_event=(
+                    None
+                    if suppress_live_streaming_for_media
+                    else (lambda ev: _emit_visible_delta(ev.get("content_delta", "")) if isinstance(ev, dict) else None)
+                ),
             )
             trailing_visible = ""
             if thinking_processor is not None:
@@ -1716,7 +1729,7 @@ class ENSDispatcher:
                 trailing_visible = payload_suppressor.process(trailing_visible) + payload_suppressor.finalize()
             if markdown_terminator is not None:
                 trailing_visible = markdown_terminator.process(trailing_visible) + markdown_terminator.finalize()
-            if trailing_visible and stream_callback:
+            if trailing_visible and stream_callback and not suppress_live_streaming_for_media:
                 out = stream_callback({"type": "content", "content": trailing_visible})
                 if hasattr(out, "__await__"):
                     await out
@@ -2036,7 +2049,7 @@ class ENSDispatcher:
         pending_tool_calls: List[Dict[str, Any]] = []
         tool_names: List[str] = []
         tool_call_count = 0
-        if bool(params.get("slice2_tool_parsing_ownership")) and not media_gate_snapshot:
+        if not media_gate_snapshot:
             legacy_calls = validated_tool_calls
             if isinstance(payload_obj, dict):
                 raw_calls = payload_obj.get("tool_calls") or []
@@ -2458,7 +2471,7 @@ class ENSDispatcher:
 
     def _compression_enabled(self) -> bool:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-        return bool(ens_cfg and getattr(ens_cfg, "v3_context_compression_enabled", False))
+        return bool(ens_cfg and getattr(ens_cfg, "context_compression_enabled", False))
 
     def _build_loop_prompt_context(self, db: Session, *, session: ENSLoopSession) -> Dict[str, Any]:
         policy = self._compression_policy()
@@ -2835,12 +2848,6 @@ class ENSDispatcher:
         plan = plugin.build_step_plan(split_enabled=False, tool_transport_mode="sentinel")
         return dict(plan.loop_policy or {})
 
-    def _narrative_v11_split_enabled(self) -> bool:
-        ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-        if not ens_cfg:
-            return False
-        return bool(getattr(ens_cfg, "native_tool_transport_narrative_v11_split_enabled", False))
-
     def _set_loop_progress_status(
         self,
         *,
@@ -3059,7 +3066,7 @@ class ENSDispatcher:
         )
         loop_plugin = get_loop_plugin(str(session.loop_kind or ""))
         loop_plan = loop_plugin.build_step_plan(
-            split_enabled=self._narrative_v11_split_enabled(),
+            split_enabled=True,
             tool_transport_mode=tool_transport_mode,
         )
         outcome_pass_enabled = bool(loop_plan.enable_outcome_pass)

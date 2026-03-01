@@ -254,6 +254,8 @@ class BaseLLMClient(ABC):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[str]:
         """
         Stream completion tokens with conversation history.
@@ -269,6 +271,8 @@ class BaseLLMClient(ABC):
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
             model=model,
+            tools=tools,
+            tool_choice=tool_choice,
         ):
             chunk = str(getattr(event, "content_delta", "") or "")
             if chunk:
@@ -285,6 +289,8 @@ class BaseLLMClient(ABC):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[LLMStreamEvent]:
         """
         Stream structured events with conversation history.

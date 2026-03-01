@@ -24,13 +24,7 @@ from .mock_llm_provider import DeterministicMockLLMProvider
 
 def _build_app_state(*, provider: Optional[Any] = None, system_config: Optional[SystemConfig] = None) -> Dict[str, Any]:
     cfg = system_config or SystemConfig()
-    cfg.ens.enabled = True
-    cfg.ens.v3_scheduler_enabled = True
-    cfg.ens.v3_arbitration_enabled = True
-    cfg.ens.v3_loop_sessions_enabled = True
-    cfg.ens.v3_structured_control_enabled = True
-    cfg.ens.v3_assistant_result_enabled = True
-    cfg.ens.v3_context_compression_enabled = True
+    cfg.ens.context_compression_enabled = True
     llm_client = provider or DeterministicMockLLMProvider()
     character = CharacterConfig(
         id="test_char",

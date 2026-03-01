@@ -179,8 +179,6 @@ class LLMInvocationService:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         if not ens_cfg:
             return False
-        if not bool(getattr(ens_cfg, "enabled", False)):
-            return False
         if not bool(getattr(ens_cfg, "native_tool_transport_enabled", False)):
             return False
         if bool(getattr(ens_cfg, "native_tool_transport_force_sentinel", False)):
@@ -209,9 +207,7 @@ class LLMInvocationService:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
         if not ens_cfg:
             return True
-        new_flag = bool(getattr(ens_cfg, "native_tool_transport_sentinel_fallback_enabled", True))
-        legacy_flag = bool(getattr(ens_cfg, "v3_sentinel_fallback_enabled", False))
-        return bool(new_flag and legacy_flag)
+        return bool(getattr(ens_cfg, "native_tool_transport_sentinel_fallback_enabled", True))
 
     def _native_tool_transport_debug_mode(self) -> str:
         ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
@@ -531,6 +527,21 @@ class LLMInvocationService:
 
         return provider_control, provider_tool_requests, counters
 
+    @staticmethod
+    def _should_attempt_stream_native_recovery(request: InvocationRequest) -> bool:
+        if not bool(request.tools):
+            return False
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        media_gate = metadata.get("media_gate_snapshot") if isinstance(metadata.get("media_gate_snapshot"), dict) else {}
+        requested_media_type = str(media_gate.get("requested_media_type") or "none").strip().lower()
+        if requested_media_type != "none":
+            return True
+        if bool(media_gate.get("is_iteration_request")):
+            return True
+        if bool(media_gate.get("explicit_allowed")):
+            return True
+        return False
+
     def request_fingerprint(self, request: InvocationRequest) -> str:
         fingerprint_payload = {
             "invocation_kind": request.invocation_kind,
@@ -638,11 +649,45 @@ class LLMInvocationService:
                         "native_tool_parse_failures": 0,
                     }
                     native_attempted = bool(native_plan.get("attempted"))
+                    native_recovery: Optional[Dict[str, Any]] = None
                     if native_attempted:
                         provider_control, mapped_tool_requests, native_counts = self._map_native_tool_calls(
                             tool_calls=provider_tool_calls,
                         )
                         has_native_content = bool(provider_control) or bool(mapped_tool_requests)
+                        if (not has_native_content) and self._should_attempt_stream_native_recovery(request):
+                            try:
+                                recovery_response = await self._call_provider(request)
+                                recovery_tool_calls = recovery_response.get("provider_tool_calls")
+                                (
+                                    recovery_control,
+                                    recovery_tool_requests,
+                                    recovery_counts,
+                                ) = self._map_native_tool_calls(tool_calls=recovery_tool_calls)
+                                recovered = bool(recovery_control) or bool(recovery_tool_requests)
+                                native_recovery = {
+                                    "attempted": True,
+                                    "recovered": recovered,
+                                }
+                                if recovered:
+                                    provider_control = recovery_control or provider_control
+                                    mapped_tool_requests = recovery_tool_requests
+                                    provider_tool_calls = recovery_tool_calls
+                                    provider_raw_message = recovery_response.get("provider_raw_message")
+                                    # Keep streaming visible output, but use recovered native payload channel.
+                                    native_counts = {
+                                        "native_tool_calls_total": int(recovery_counts.get("native_tool_calls_total", 0)),
+                                        "native_control_calls": int(recovery_counts.get("native_control_calls", 0)),
+                                        "native_tool_requests": int(recovery_counts.get("native_tool_requests", 0)),
+                                        "native_tool_parse_failures": int(recovery_counts.get("native_tool_parse_failures", 0)),
+                                    }
+                                    has_native_content = True
+                            except Exception as recovery_exc:
+                                native_recovery = {
+                                    "attempted": True,
+                                    "recovered": False,
+                                    "error": str(recovery_exc),
+                                }
                         if has_native_content:
                             provider_tool_requests = mapped_tool_requests
                         elif not self._sentinel_fallback_enabled():
@@ -676,6 +721,7 @@ class LLMInvocationService:
                             "native_control_calls": native_counts["native_control_calls"],
                             "native_tool_requests": native_counts["native_tool_requests"],
                             "native_tool_parse_failures": native_counts["native_tool_parse_failures"],
+                            "native_stream_recovery": native_recovery,
                             "native_tools_requested": bool(req_tools),
                             "requested_tool_choice": req_tool_choice,
                             "requested_tool_names": [
@@ -731,6 +777,7 @@ class LLMInvocationService:
                             "requested_tool_choice": req_tool_choice,
                             "provider_tool_calls_raw": provider_tool_calls,
                             "provider_raw_message": provider_raw_message,
+                            "stream_native_recovery": native_recovery,
                         },
                         "error": None,
                     }
@@ -850,6 +897,7 @@ class LLMInvocationService:
                     async def _stream_once() -> Dict[str, Any]:
                         accumulated = ""
                         provider_tool_calls: List[Dict[str, Any]] = []
+                        provider_tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
                         finish_reason = None
                         usage = None
                         stream_fn = getattr(llm_client, "stream_with_history_events", None)
@@ -864,7 +912,58 @@ class LLMInvocationService:
                             presence_penalty=request.presence_penalty,
                             frequency_penalty=request.frequency_penalty,
                             model=request.model_id,
+                            tools=request.tools,
+                            tool_choice=request.tool_choice,
                         )
+
+                        def _merge_tool_delta(delta_items: Any) -> None:
+                            if not isinstance(delta_items, list):
+                                return
+                            for raw_item in delta_items:
+                                if not isinstance(raw_item, dict):
+                                    continue
+                                idx_raw = raw_item.get("index")
+                                try:
+                                    idx = int(idx_raw) if idx_raw is not None else None
+                                except (TypeError, ValueError):
+                                    idx = None
+                                if idx is None:
+                                    provider_tool_calls.append(dict(raw_item))
+                                    continue
+
+                                base = provider_tool_calls_by_index.get(idx)
+                                if not isinstance(base, dict):
+                                    base = {"type": "function", "function": {"name": "", "arguments": ""}}
+                                    provider_tool_calls_by_index[idx] = base
+
+                                raw_id = raw_item.get("id")
+                                if isinstance(raw_id, str) and raw_id.strip():
+                                    base["id"] = raw_id
+
+                                raw_type = raw_item.get("type")
+                                if isinstance(raw_type, str) and raw_type.strip():
+                                    base["type"] = raw_type
+
+                                # Some providers send top-level name/arguments; normalize into function object.
+                                fn = base.get("function")
+                                if not isinstance(fn, dict):
+                                    fn = {}
+                                    base["function"] = fn
+                                fn_delta = raw_item.get("function") if isinstance(raw_item.get("function"), dict) else {}
+                                name_delta = fn_delta.get("name") if isinstance(fn_delta.get("name"), str) else raw_item.get("name")
+                                if isinstance(name_delta, str) and name_delta.strip():
+                                    fn["name"] = name_delta
+                                args_delta = fn_delta.get("arguments", raw_item.get("arguments"))
+                                if isinstance(args_delta, str):
+                                    existing = fn.get("arguments")
+                                    if not isinstance(existing, str):
+                                        existing = ""
+                                    fn["arguments"] = existing + args_delta
+                                elif args_delta is not None:
+                                    try:
+                                        fn["arguments"] = json.dumps(args_delta, ensure_ascii=False)
+                                    except Exception:
+                                        fn["arguments"] = str(args_delta)
                         async def _iterate_events():
                             if callable(stream_fn):
                                 async for event in stream_fn(**kwargs):
@@ -900,10 +999,7 @@ class LLMInvocationService:
                                     if not isinstance(event, dict)
                                     else event.get("provider_tool_calls_delta")
                                 )
-                                if isinstance(tool_delta, list):
-                                    for item in tool_delta:
-                                        if isinstance(item, dict):
-                                            provider_tool_calls.append(dict(item))
+                                _merge_tool_delta(tool_delta)
                                 event_finish = (
                                     getattr(event, "finish_reason", None)
                                     if not isinstance(event, dict)
@@ -921,6 +1017,8 @@ class LLMInvocationService:
                         except TypeError:
                             # Backward compatibility for test doubles/providers without event stream kwargs support.
                             fallback_keys = [
+                                "tools",
+                                "tool_choice",
                                 "top_p",
                                 "top_k",
                                 "repeat_penalty",
@@ -954,10 +1052,7 @@ class LLMInvocationService:
                                     if not isinstance(event, str) and not isinstance(event, dict)
                                     else (event.get("provider_tool_calls_delta") if isinstance(event, dict) else None)
                                 )
-                                if isinstance(tool_delta, list):
-                                    for item in tool_delta:
-                                        if isinstance(item, dict):
-                                            provider_tool_calls.append(dict(item))
+                                _merge_tool_delta(tool_delta)
                                 if not isinstance(event, str):
                                     event_finish = (
                                         getattr(event, "finish_reason", None)
@@ -973,6 +1068,12 @@ class LLMInvocationService:
                                         finish_reason = event_finish
                                     if event_usage:
                                         usage = event_usage
+
+                        if provider_tool_calls_by_index:
+                            for idx in sorted(provider_tool_calls_by_index.keys()):
+                                merged = provider_tool_calls_by_index.get(idx)
+                                if isinstance(merged, dict):
+                                    provider_tool_calls.append(dict(merged))
 
                         return {
                             "output_text": accumulated,

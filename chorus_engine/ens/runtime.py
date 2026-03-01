@@ -51,22 +51,11 @@ class ENSRuntime:
         cfg = self.app_state.get("system_config")
         return getattr(cfg, "ens", None) if cfg else None
 
-    def _v3_scheduler_enabled(self) -> bool:
-        ens_cfg = self._ens_cfg()
-        return bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "v3_scheduler_enabled", False)
-        )
+    def _scheduler_enabled(self) -> bool:
+        return True
 
-    def _v3_loop_sessions_enabled(self) -> bool:
-        ens_cfg = self._ens_cfg()
-        return bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "v3_scheduler_enabled", False)
-            and getattr(ens_cfg, "v3_loop_sessions_enabled", False)
-        )
+    def _loop_sessions_enabled(self) -> bool:
+        return True
 
     async def enqueue_signal(self, signal: Signal) -> Dict[str, Any]:
         """Queue a signal for v3 scheduler processing."""
@@ -130,12 +119,7 @@ class ENSRuntime:
         if ctx is None:
             ctx = ENSContext(app_state=self.app_state)
         ens_cfg = self._ens_cfg()
-        arbitration_enabled = bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "v3_scheduler_enabled", False)
-            and getattr(ens_cfg, "v3_arbitration_enabled", False)
-        )
+        arbitration_enabled = True
         surface_rate_cap_per_minute = int(
             getattr(ens_cfg, "scheduler_surface_rate_cap_per_minute", 0) if ens_cfg else 0
         )
@@ -253,7 +237,7 @@ class ENSRuntime:
         if ctx is None:
             ctx = ENSContext(app_state=self.app_state)
 
-        if not _force_legacy_execute and self._v3_scheduler_enabled():
+        if not _force_legacy_execute and self._scheduler_enabled():
             queued = await self.enqueue_signal(signal)
             target_signal_id = str(queued.get("signal_id") or signal.signal_id)
             queued_status = str(queued.get("status") or "").lower()
@@ -707,12 +691,7 @@ class ENSRuntime:
 
     def _resolve_signal_session(self, db, signal: Signal, ctx: ENSContext) -> Signal:
         if signal.scope == "SESSION" and not signal.session_id:
-            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-            slice6_enabled = bool(
-                ens_cfg
-                and getattr(ens_cfg, "enabled", False)
-                and getattr(ens_cfg, "slice6_surface_routing_ownership", False)
-            )
+            slice6_enabled = True
             thread_id = signal.payload.get("thread_id")
             if signal.type == "message.mutation_requested" and not thread_id:
                 nested_payload = signal.payload.get("payload") or {}
@@ -773,7 +752,7 @@ class ENSRuntime:
 
     def _propose_actions(self, db, signal: Signal, ctx: ENSContext) -> List[ENSAction]:
         if signal.type in ("loop.create_requested", "loop.session.create_requested"):
-            if not self._v3_loop_sessions_enabled():
+            if not self._loop_sessions_enabled():
                 return []
             payload = dict(signal.payload or {})
             payload.setdefault("loop_id", str(payload.get("loop_id") or str(uuid.uuid4())))
@@ -791,7 +770,7 @@ class ENSRuntime:
             ]
 
         if signal.type == "loop.session.pause_requested":
-            if not self._v3_loop_sessions_enabled():
+            if not self._loop_sessions_enabled():
                 return []
             payload = dict(signal.payload or {})
             payload.setdefault("loop_id", str(payload.get("loop_id") or ""))
@@ -804,7 +783,7 @@ class ENSRuntime:
             ]
 
         if signal.type == "loop.session.resume_requested":
-            if not self._v3_loop_sessions_enabled():
+            if not self._loop_sessions_enabled():
                 return []
             payload = dict(signal.payload or {})
             payload.setdefault("loop_id", str(payload.get("loop_id") or ""))
@@ -818,7 +797,7 @@ class ENSRuntime:
             ]
 
         if signal.type == "loop_progression":
-            if not self._v3_loop_sessions_enabled():
+            if not self._loop_sessions_enabled():
                 return []
             payload = dict(signal.payload or {})
             payload.setdefault("signal_id", signal.signal_id)
@@ -832,13 +811,6 @@ class ENSRuntime:
             ]
 
         if signal.type in ("user.message", "user.message.stream"):
-            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-            slice2_tool_parsing_ownership = bool(
-                ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)
-            )
-            slice25_media_gating_ownership = bool(
-                ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice25_media_gating_ownership", False)
-            )
             thread_id = signal.payload["thread_id"]
             content = signal.payload["content"]
             metadata = signal.payload.get("metadata")
@@ -888,19 +860,18 @@ class ENSRuntime:
                     },
                 ),
             ]
-            if slice2_tool_parsing_ownership and slice25_media_gating_ownership:
-                actions.append(
-                    ENSAction(
-                        kind="media.gating.evaluate",
-                        params={
-                            "thread_id": thread_id,
-                            "character_id": signal.assistant_id,
-                            "user_id": signal.user_id,
-                            "user_content": content,
-                            "conversation_source": signal.payload.get("conversation_source"),
-                        },
-                    )
+            actions.append(
+                ENSAction(
+                    kind="media.gating.evaluate",
+                    params={
+                        "thread_id": thread_id,
+                        "character_id": signal.assistant_id,
+                        "user_id": signal.user_id,
+                        "user_content": content,
+                        "conversation_source": signal.payload.get("conversation_source"),
+                    },
                 )
+            )
             actions.extend(
                 [
                 ENSAction(
@@ -914,7 +885,7 @@ class ENSRuntime:
                         "surface_id": signal.payload.get("surface_id"),
                         "surface_instance_id": signal.payload.get("surface_instance_id"),
                         "target_hint": signal.payload.get("target_hint"),
-                        "slice2_tool_parsing_ownership": slice2_tool_parsing_ownership,
+                        "slice2_tool_parsing_ownership": True,
                         "streaming": signal.type == "user.message.stream",
                     },
                 ),
@@ -931,20 +902,18 @@ class ENSRuntime:
                 ),
                 ]
             )
-            if slice2_tool_parsing_ownership and slice25_media_gating_ownership:
-                actions.append(
-                    ENSAction(
-                        kind="tool_payload.adjudicate",
-                        params={},
-                    )
+            actions.append(
+                ENSAction(
+                    kind="tool_payload.adjudicate",
+                    params={},
                 )
-            if slice2_tool_parsing_ownership:
-                actions.append(
-                    ENSAction(
-                        kind="tool_call.persist_pending",
-                        params={},
-                    )
+            )
+            actions.append(
+                ENSAction(
+                    kind="tool_call.persist_pending",
+                    params={},
                 )
+            )
             actions.append(
                 ENSAction(
                     kind="conversation.title.maybe_update",
@@ -1390,9 +1359,6 @@ class ENSRuntime:
             ]
 
         if signal.type == "surface.send_message_requested":
-            ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
-            if not bool(ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice65_egress_outbox_ownership", False)):
-                return []
             return [
                 ENSAction(
                     kind="surface.egress.persist_intent",

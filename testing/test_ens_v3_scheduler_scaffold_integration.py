@@ -52,7 +52,7 @@ def test_v3_scheduler_scaffold_enqueue_and_tick_executes_selected_signal(helpers
         .first()
     )
     assert tick_row is not None
-    assert tick_row.reason_trace_json.get("selection") == "priority_then_created_at_then_signal_id"
+    assert tick_row.reason_trace_json.get("selection") == "arbitration_v3"
     assert int(tick_row.reason_trace_json.get("candidate_count") or 0) >= 1
     assert tick_row.reason_trace_json.get("selected_signal_id") == signal.signal_id
 
@@ -185,8 +185,6 @@ def test_v3_scheduler_non_user_fairness_rotates_by_surface(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
 
     runtime = helpers.app_module.app_state["ens_runtime"]
     created_at_us = 5_000_000
@@ -246,8 +244,6 @@ def test_v33_attention_lock_weights_non_user_selection_without_gating(helpers, d
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_attention_lock_seconds = 120
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -325,8 +321,6 @@ def test_v33_expired_attention_lock_does_not_apply_weighting(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_attention_lock_seconds = 120
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -486,8 +480,6 @@ def test_v34_budget_exhausted_sets_explicit_stop_reason_and_tick_trace(helpers, 
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_surface_rate_cap_per_minute = 1
     ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
     ens_cfg.scheduler_surface_cooldown_ms = 0
@@ -594,7 +586,6 @@ def test_v3_scheduler_flag_path_processes_enqueued_signal_when_sync_tick_enabled
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -617,7 +608,6 @@ def test_v3_scheduler_flag_path_returns_queued_when_sync_ticks_zero(helpers):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 0
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -664,7 +654,6 @@ def test_v3_scheduler_no_double_emit_on_replay(client, db, helpers):
         slice25_media_gating_ownership=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     conversation_id, thread_id = helpers.create_conversation_thread()
@@ -738,7 +727,6 @@ def test_v3_scheduler_tool_call_sentinel_fallback_still_works(client, db, helper
         slice25_media_gating_ownership=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     _conversation_id, thread_id = helpers.create_conversation_thread()
@@ -764,7 +752,6 @@ def test_v3_scheduler_ingress_tick_and_parallel_tick_do_not_double_execute(helpe
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -833,8 +820,6 @@ def test_v34_thread_messages_returns_429_with_stop_reason_when_policy_blocked(cl
         slice25_media_gating_ownership=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
     ens_cfg.scheduler_surface_rate_cap_per_minute = 1
     ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
@@ -875,8 +860,6 @@ def test_v34_surface_rate_cap_ignores_stale_completions_outside_rolling_window(h
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_surface_rate_cap_per_minute = 1
     ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
     ens_cfg.scheduler_surface_cooldown_ms = 0
@@ -926,8 +909,6 @@ def test_v34_surface_rate_cap_counts_inflight_running_claims(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
     ens_cfg.scheduler_surface_rate_cap_per_minute = 1
     ens_cfg.scheduler_assistant_rate_cap_per_minute = 0
     ens_cfg.scheduler_surface_cooldown_ms = 0
@@ -965,8 +946,6 @@ def test_v35_loop_create_enqueues_progression_without_direct_step_execution(help
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
     ens_cfg.scheduler_sync_ticks_per_ingress = 1
 
     runtime = helpers.app_module.app_state["ens_runtime"]
@@ -1015,8 +994,6 @@ def test_v35_loop_progression_coalescing_is_concurrency_safe(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1079,8 +1056,6 @@ def test_v35_loop_progression_state_gating_non_runnable_no_followup(helpers, db,
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1170,8 +1145,6 @@ def test_v35_loop_progression_continue_enqueues_exactly_one_followup(helpers, db
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1250,8 +1223,6 @@ def test_v36_freeform_yield_text_without_structured_control_does_not_change_loop
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1347,8 +1318,6 @@ def test_v37_visible_mode_continue_emits_once_and_enqueues_one_followup(helpers,
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1430,8 +1399,6 @@ def test_v37_hidden_mode_auto_continues_without_per_step_emission(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1518,8 +1485,6 @@ def test_v37_visible_mode_preempt_pauses_after_step_without_followup(helpers, db
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     # Simulate user arrival during visible step execution.
     monkeypatch.setattr(
@@ -1602,8 +1567,6 @@ def test_v37_hidden_mode_complete_emits_once_and_stops(helpers, db):
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     loop_id = str(uuid.uuid4())
     session = ENSLoopSession(
@@ -1686,8 +1649,6 @@ def test_v37_hidden_mode_preempt_stops_without_emission(helpers, db, monkeypatch
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
 
     monkeypatch.setattr(
         helpers.app_module.app_state["ens_runtime"].dispatcher,

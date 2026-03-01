@@ -134,9 +134,6 @@ class ENSV3Harness:
         }
         # Dev harness forces scheduler + loop sessions on in-memory to exercise v3.
         ens_cfg = system_config.ens
-        ens_cfg.enabled = True
-        ens_cfg.v3_scheduler_enabled = True
-        ens_cfg.v3_loop_sessions_enabled = True
         app_state["ens_runtime"] = ENSRuntime(app_state)
         self.app_state = app_state
         self.runtime: ENSRuntime = app_state["ens_runtime"]
@@ -1625,7 +1622,7 @@ class ENSV3Harness:
             db.close()
 
         ens_cfg = self.app_state["system_config"].ens
-        ens_cfg.v3_context_compression_enabled = True
+        ens_cfg.context_compression_enabled = True
         ens_cfg.loop_memory_compress_every_n_steps = 4
         ens_cfg.loop_memory_keep_last_k_steps = 2
 

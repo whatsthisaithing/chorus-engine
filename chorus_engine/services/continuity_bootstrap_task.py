@@ -36,22 +36,7 @@ class ContinuityBootstrapTaskHandler(BackgroundTaskHandler):
             )
 
         characters = app_state.get("characters", {})
-        continuity_service = app_state.get("continuity_service")
         ens_runtime = app_state.get("ens_runtime")
-        ens_cfg = getattr(app_state.get("system_config"), "ens", None)
-        slice3_owned = bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
-        )
-        if not slice3_owned and not continuity_service:
-            return TaskResult(
-                success=False,
-                task_id=task.id,
-                task_type=self.task_type,
-                duration_seconds=0,
-                error="Continuity service not available"
-            )
 
         character = characters.get(character_id)
         if not character:
@@ -64,41 +49,34 @@ class ContinuityBootstrapTaskHandler(BackgroundTaskHandler):
             )
 
         try:
-            if slice3_owned:
-                if not ens_runtime:
-                    return TaskResult(
-                        success=False,
-                        task_id=task.id,
-                        task_type=self.task_type,
-                        duration_seconds=0,
-                        error="ENS runtime not available",
-                    )
-                signal = Signal(
-                    type="continuity.bootstrap_requested",
-                    scope="ASSISTANT",
-                    source="external",
-                    assistant_id=character_id,
-                    payload={
-                        "character_id": character_id,
-                        "conversation_id": None,
-                        "force": False,
-                    },
+            if not ens_runtime:
+                return TaskResult(
+                    success=False,
+                    task_id=task.id,
+                    task_type=self.task_type,
+                    duration_seconds=0,
+                    error="ENS runtime not available",
                 )
-                outcome = await ens_runtime.ingest(
-                    signal,
-                    ENSContext(app_state=app_state, surface="web", source="web"),
-                )
-                output = dict(outcome.response_payload or {})
-                result = {
-                    "skipped": bool(output.get("skipped")),
-                    "via_ens": True,
-                }
-            else:
-                result = await continuity_service.generate_and_save(
-                    character=character,
-                    conversation_id=None,
-                    force=False
-                )
+            signal = Signal(
+                type="continuity.bootstrap_requested",
+                scope="ASSISTANT",
+                source="external",
+                assistant_id=character_id,
+                payload={
+                    "character_id": character_id,
+                    "conversation_id": None,
+                    "force": False,
+                },
+            )
+            outcome = await ens_runtime.ingest(
+                signal,
+                ENSContext(app_state=app_state, surface="web", source="web"),
+            )
+            output = dict(outcome.response_payload or {})
+            result = {
+                "skipped": bool(output.get("skipped")),
+                "via_ens": True,
+            }
             duration = (datetime.utcnow() - start_time).total_seconds()
             if result:
                 return TaskResult(

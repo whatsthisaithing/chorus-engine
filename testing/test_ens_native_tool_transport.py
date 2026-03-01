@@ -7,12 +7,10 @@ from chorus_engine.llm.base import LLMResponse
 
 def _enable_native_transport(helpers, *, fallback_enabled: bool = True):
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.enabled = True
     ens_cfg.native_tool_transport_enabled = True
     ens_cfg.native_tool_transport_force_sentinel = False
     ens_cfg.native_tool_transport_sentinel_fallback_enabled = fallback_enabled
     ens_cfg.native_tool_transport_debug_override_mode = "off"
-    ens_cfg.v3_sentinel_fallback_enabled = fallback_enabled
 
 
 def test_narrative_v1_loop_step_forces_control_only_auto_tool_choice(helpers):

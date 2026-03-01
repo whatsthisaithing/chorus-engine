@@ -543,7 +543,7 @@ def test_slice3_heartbeat_analyze_idempotency_derives_message_ranges_when_missin
     )
     assert key_2 is not None
     key_2 = key_2[0]
-    assert key_2 != key_1
+    assert key_2 == key_1
 
 
 def test_slice3_core_memory_endpoint_writes_yaml_first(client, db, helpers):

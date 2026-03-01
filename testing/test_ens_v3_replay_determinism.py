@@ -38,12 +38,7 @@ def _configure_replay_flags(helpers) -> None:
         streaming_intake_only=True,
     )
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
-    ens_cfg.v3_structured_control_enabled = True
-    ens_cfg.v3_assistant_result_enabled = True
-    ens_cfg.v3_context_compression_enabled = True
+    ens_cfg.context_compression_enabled = True
     ens_cfg.loop_memory_compress_every_n_steps = 4
     ens_cfg.loop_memory_keep_last_k_steps = 2
     ens_cfg.scheduler_sync_ticks_per_ingress = 0

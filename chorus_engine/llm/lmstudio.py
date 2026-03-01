@@ -492,6 +492,8 @@ class LMStudioLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a completion with full conversation history.
@@ -524,6 +526,10 @@ class LMStudioLLMClient(BaseLLMClient):
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
             )
+            if tools:
+                payload["tools"] = tools
+                if tool_choice is not None:
+                    payload["tool_choice"] = tool_choice
             
             async with self.client.stream(
                 "POST",
@@ -570,19 +576,75 @@ class LMStudioLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[LLMStreamEvent]:
-        async for chunk in self.stream_with_history(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            top_k=top_k,
-            repeat_penalty=repeat_penalty,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            model=model,
-        ):
-            yield LLMStreamEvent(content_delta=str(chunk or ""))
+        try:
+            payload = {
+                "model": model if model is not None else self.model,
+                "messages": messages,
+                "stream": True,
+                "temperature": temperature if temperature is not None else self.temperature,
+                "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            }
+            self._apply_sampling_fields(
+                payload,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+            )
+            if tools:
+                payload["tools"] = tools
+                if tool_choice is not None:
+                    payload["tool_choice"] = tool_choice
+
+            async with self.client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=payload
+            ) as response:
+                response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = data.get("choices", [])
+                    if not choices:
+                        continue
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    delta = choice.get("delta", {}) if isinstance(choice.get("delta", {}), dict) else {}
+                    content = normalize_mojibake(delta.get("content", ""))
+                    tool_delta = delta.get("tool_calls")
+                    provider_tool_calls_delta = tool_delta if isinstance(tool_delta, list) else None
+                    finish_reason = choice.get("finish_reason")
+                    usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+
+                    if content or provider_tool_calls_delta is not None or finish_reason or usage is not None:
+                        yield LLMStreamEvent(
+                            content_delta=content,
+                            provider_tool_calls_delta=provider_tool_calls_delta,
+                            provider_raw_event=data if isinstance(data, dict) else None,
+                            finish_reason=finish_reason,
+                            usage=usage,
+                        )
+
+        except httpx.HTTPError as e:
+            raise LLMError(f"HTTP error during LLM streaming: {e}")
+        except Exception as e:
+            raise LLMError(f"Failed to stream LLM response: {e}")
     
     # LM Studio model management (optional, uses native REST API)
     

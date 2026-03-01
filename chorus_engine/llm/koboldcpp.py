@@ -502,6 +502,8 @@ class KoboldCppLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[LLMStreamEvent]:
         async for chunk in self.stream_with_history(
             messages=messages,
@@ -513,6 +515,8 @@ class KoboldCppLLMClient(BaseLLMClient):
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
             model=model,
+            tools=tools,
+            tool_choice=tool_choice,
         ):
             yield LLMStreamEvent(content_delta=str(chunk or ""))
     
@@ -527,6 +531,8 @@ class KoboldCppLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[str]:
         """
         Stream with conversation history.
@@ -544,6 +550,7 @@ class KoboldCppLLMClient(BaseLLMClient):
             LLMError: If streaming fails
         """
         try:
+            _ = (tools, tool_choice)  # KoboldCpp native tools unsupported in streaming v1.
             payload = {
                 "model": self.model,
                 "messages": messages,

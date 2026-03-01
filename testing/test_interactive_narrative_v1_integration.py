@@ -76,13 +76,6 @@ def _enable_v3_loop_flags(helpers):
         streaming_intake_only=True,
         slice7_unified_llm_invocation=True,
     )
-    ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.v3_scheduler_enabled = True
-    ens_cfg.v3_arbitration_enabled = True
-    ens_cfg.v3_loop_sessions_enabled = True
-    ens_cfg.v3_structured_control_enabled = True
-    ens_cfg.v3_assistant_result_enabled = True
-    ens_cfg.v3_sentinel_fallback_enabled = True
 
 
 def _prepare_conversation_relationship(db, conversation_id: str, relationship_id: str = "rel-intn-1"):
@@ -278,11 +271,9 @@ def test_interactive_narrative_loop_step_debug_capture_writes_prompt_payload(cli
 def test_interactive_narrative_outcome_pass_uses_ladder_for_koboldcpp(client, db, helpers):
     _enable_v3_loop_flags(helpers)
     ens_cfg = helpers.app_module.app_state["system_config"].ens
-    ens_cfg.native_tool_transport_narrative_v11_split_enabled = True
     ens_cfg.native_tool_transport_enabled = True
     ens_cfg.native_tool_transport_force_sentinel = False
     ens_cfg.native_tool_transport_sentinel_fallback_enabled = True
-    ens_cfg.v3_sentinel_fallback_enabled = True
 
     helpers.app_module.app_state["llm_client"] = _KoboldLoopControlLLMClient(["CONTINUE", "CONTINUE"])
     character = helpers.app_module.app_state["characters"]["test_char"]

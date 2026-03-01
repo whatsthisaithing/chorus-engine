@@ -595,6 +595,8 @@ class OllamaLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[str]:
         """
         Stream a completion with full conversation history.
@@ -645,6 +647,10 @@ class OllamaLLMClient(BaseLLMClient):
                     presence_penalty=presence_penalty,
                     frequency_penalty=frequency_penalty,
                 )
+                if tools:
+                    payload["tools"] = tools
+                    if tool_choice is not None:
+                        payload["tool_choice"] = tool_choice
                 endpoint = f"{self.base_url}/v1/chat/completions"
                 logger.debug(
                     "Ollama(OpenAI) stream: model=%s temp=%s messages=%s",
@@ -714,19 +720,102 @@ class OllamaLLMClient(BaseLLMClient):
         presence_penalty: Optional[float] = None,
         frequency_penalty: Optional[float] = None,
         model: Optional[str] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[object] = None,
     ) -> AsyncIterator[LLMStreamEvent]:
-        async for chunk in self.stream_with_history(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=top_p,
-            top_k=top_k,
-            repeat_penalty=repeat_penalty,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            model=model,
-        ):
-            yield LLMStreamEvent(content_delta=str(chunk or ""))
+        try:
+            if self.use_legacy_chat_api:
+                if any(x is not None for x in (top_p, top_k, repeat_penalty, presence_penalty, frequency_penalty)):
+                    logger.info("[OLLAMA] Advanced sampling controls ignored for legacy /api/chat transport.")
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": True,
+                }
+                if temperature is not None or max_tokens is not None:
+                    payload["options"] = {}
+                    payload["options"]["temperature"] = self.temperature if temperature is None else temperature
+                    payload["options"]["num_predict"] = self.max_tokens if max_tokens is None else max_tokens
+                endpoint = f"{self.base_url}/api/chat"
+            else:
+                payload = {
+                    "model": model if model is not None else self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": self.temperature if temperature is None else temperature,
+                    "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+                }
+                self._apply_openai_sampling_fields(
+                    payload,
+                    top_p=top_p,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                )
+                if tools:
+                    payload["tools"] = tools
+                    if tool_choice is not None:
+                        payload["tool_choice"] = tool_choice
+                endpoint = f"{self.base_url}/v1/chat/completions"
+
+            async with self.client.stream(
+                "POST",
+                endpoint,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+
+                if response.encoding is None or response.encoding.lower() != "utf-8":
+                    response.encoding = "utf-8"
+
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        if self.use_legacy_chat_api:
+                            data = json.loads(line)
+                            message = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+                            content = normalize_mojibake(message.get("content", ""))
+                            finish_reason = data.get("done_reason")
+                            if content or finish_reason:
+                                yield LLMStreamEvent(
+                                    content_delta=content,
+                                    provider_raw_event=data if isinstance(data, dict) else None,
+                                    finish_reason=finish_reason,
+                                )
+                            continue
+
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+                        choice = choices[0] if isinstance(choices[0], dict) else {}
+                        delta = choice.get("delta", {}) if isinstance(choice.get("delta", {}), dict) else {}
+                        content = normalize_mojibake(delta.get("content", ""))
+                        tool_delta = delta.get("tool_calls")
+                        provider_tool_calls_delta = tool_delta if isinstance(tool_delta, list) else None
+                        finish_reason = choice.get("finish_reason")
+                        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+
+                        if content or provider_tool_calls_delta is not None or finish_reason or usage is not None:
+                            yield LLMStreamEvent(
+                                content_delta=content,
+                                provider_tool_calls_delta=provider_tool_calls_delta,
+                                provider_raw_event=data if isinstance(data, dict) else None,
+                                finish_reason=finish_reason,
+                                usage=usage,
+                            )
+                    except json.JSONDecodeError:
+                        continue
+
+        except httpx.HTTPError as e:
+            raise LLMError(f"HTTP error during LLM streaming: {e}")
+        except Exception as e:
+            raise LLMError(f"Failed to stream LLM response: {e}")
     
     # Ollama-specific model management methods (override base implementations)
     

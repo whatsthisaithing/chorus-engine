@@ -154,23 +154,24 @@ class AppHelper:
         slice75_llm_control_plane_ownership: bool = False,
         debug_capture_full_prompt: bool = False,
     ):
+        _ = (
+            enabled,
+            slice1_chat_ownership,
+            nonstream_intake_only,
+            streaming_intake_only,
+            slice2_tool_parsing_ownership,
+            slice2_tool_dispatch_ownership,
+            slice2_scene_capture_ownership,
+            slice2_scene_capture_legacy_confirm_without_tool_call,
+            slice25_media_gating_ownership,
+            slice3_continuity_writes_ownership,
+            slice4_config_ownership,
+            slice6_surface_routing_ownership,
+            slice65_egress_outbox_ownership,
+            slice7_unified_llm_invocation,
+            slice75_llm_control_plane_ownership,
+        )
         self.app_module.app_state["system_config"].ens = ENSConfig(
-            enabled=enabled,
-            slice1_chat_ownership=slice1_chat_ownership,
-            nonstream_intake_only=nonstream_intake_only,
-            streaming_intake_only=streaming_intake_only,
-            slice1_compat_postprocessing_enabled=False,
-            slice2_tool_parsing_ownership=slice2_tool_parsing_ownership,
-            slice2_tool_dispatch_ownership=slice2_tool_dispatch_ownership,
-            slice2_scene_capture_ownership=slice2_scene_capture_ownership,
-            slice2_scene_capture_legacy_confirm_without_tool_call=slice2_scene_capture_legacy_confirm_without_tool_call,
-            slice25_media_gating_ownership=slice25_media_gating_ownership,
-            slice3_continuity_writes_ownership=slice3_continuity_writes_ownership,
-            slice4_config_ownership=slice4_config_ownership,
-            slice6_surface_routing_ownership=slice6_surface_routing_ownership,
-            slice65_egress_outbox_ownership=slice65_egress_outbox_ownership,
-            slice7_unified_llm_invocation=slice7_unified_llm_invocation,
-            slice75_llm_control_plane_ownership=slice75_llm_control_plane_ownership,
             debug_capture_full_prompt=debug_capture_full_prompt,
         )
 
@@ -304,11 +305,7 @@ def _slice7_strict_direct_generate_guard(monkeypatch, app):
     def _slice7_guard_enabled() -> bool:
         cfg = helper.app_module.app_state.get("system_config")
         ens_cfg = getattr(cfg, "ens", None) if cfg else None
-        return bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "slice7_unified_llm_invocation", False)
-        )
+        return bool(ens_cfg)
 
     orig_generate = llm_client.generate
     orig_generate_with_history = llm_client.generate_with_history
@@ -353,11 +350,7 @@ def _slice75_strict_direct_control_guard(monkeypatch, app):
     def _slice75_guard_enabled() -> bool:
         cfg = helper.app_module.app_state.get("system_config")
         ens_cfg = getattr(cfg, "ens", None) if cfg else None
-        return bool(
-            ens_cfg
-            and getattr(ens_cfg, "enabled", False)
-            and getattr(ens_cfg, "slice75_llm_control_plane_ownership", False)
-        )
+        return bool(ens_cfg)
 
     for method_name in (
         "health_check",

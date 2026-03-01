@@ -64,24 +64,8 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
         
         try:
             # Get required services from app_state
-            analysis_service = app_state.get("analysis_service")
             characters = app_state.get("characters", {})
             ens_runtime = app_state.get("ens_runtime")
-            ens_cfg = getattr(app_state.get("system_config"), "ens", None)
-            slice3_owned = bool(
-                ens_cfg
-                and getattr(ens_cfg, "enabled", False)
-                and getattr(ens_cfg, "slice3_continuity_writes_ownership", False)
-            )
-            
-            if not analysis_service and not slice3_owned:
-                return TaskResult(
-                    success=False,
-                    task_id=task.id,
-                    task_type=self.task_type,
-                    duration_seconds=0,
-                    error="ConversationAnalysisService not available"
-                )
             
             character = characters.get(character_id)
             if not character:
@@ -98,77 +82,32 @@ class ConversationAnalysisTaskHandler(BackgroundTaskHandler):
                 f"for character {character.name} (kind={analysis_kind})"
             )
 
-            if slice3_owned:
-                if not ens_runtime:
-                    return TaskResult(
-                        success=False,
-                        task_id=task.id,
-                        task_type=self.task_type,
-                        duration_seconds=0,
-                        error="ENS runtime not available",
-                    )
-                signal = Signal(
-                    type="analysis.heartbeat_requested",
-                    scope="SESSION",
-                    source="external",
-                    assistant_id=character_id,
-                    payload={
-                        "conversation_id": conversation_id,
-                        "character_id": character_id,
-                        "analysis_kind": analysis_kind,
-                    },
+            if not ens_runtime:
+                return TaskResult(
+                    success=False,
+                    task_id=task.id,
+                    task_type=self.task_type,
+                    duration_seconds=0,
+                    error="ENS runtime not available",
                 )
-                outcome = await ens_runtime.ingest(
-                    signal,
-                    ENSContext(app_state=app_state, surface="web", source="web"),
-                )
-                output = dict(outcome.response_payload or {})
-                analysis = output if output.get("status") == "success" else None
-                save_success = bool(output.get("saved", output.get("status") == "success"))
-            elif analysis_kind == "summary":
-                analysis = await analysis_service.analyze_summary_only(
-                    conversation_id=conversation_id,
-                    character=character,
-                    manual=False
-                )
-                if analysis:
-                    save_success = await analysis_service.save_summary_only(
-                        conversation_id=conversation_id,
-                        character_id=character_id,
-                        analysis=analysis,
-                        manual=False
-                    )
-                else:
-                    save_success = False
-            elif analysis_kind == "memories":
-                analysis = await analysis_service.analyze_memories_only(
-                    conversation_id=conversation_id,
-                    character=character,
-                    manual=False
-                )
-                if analysis:
-                    save_success = await analysis_service.save_memories_only(
-                        conversation_id=conversation_id,
-                        character_id=character_id,
-                        analysis=analysis
-                    )
-                else:
-                    save_success = False
-            else:
-                analysis = await analysis_service.analyze_conversation(
-                    conversation_id=conversation_id,
-                    character=character,
-                    manual=False
-                )
-                if analysis:
-                    save_success = await analysis_service.save_analysis(
-                        conversation_id=conversation_id,
-                        character_id=character_id,
-                        analysis=analysis,
-                        manual=False
-                    )
-                else:
-                    save_success = False
+            signal = Signal(
+                type="analysis.heartbeat_requested",
+                scope="SESSION",
+                source="external",
+                assistant_id=character_id,
+                payload={
+                    "conversation_id": conversation_id,
+                    "character_id": character_id,
+                    "analysis_kind": analysis_kind,
+                },
+            )
+            outcome = await ens_runtime.ingest(
+                signal,
+                ENSContext(app_state=app_state, surface="web", source="web"),
+            )
+            output = dict(outcome.response_payload or {})
+            analysis = output if output.get("status") == "success" else None
+            save_success = bool(output.get("saved", output.get("status") == "success"))
             
             duration = (datetime.utcnow() - start_time).total_seconds()
             
