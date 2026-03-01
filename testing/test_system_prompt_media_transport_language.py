@@ -14,7 +14,7 @@ def _character() -> CharacterConfig:
 
 
 def _media_guidance_block(prompt: str) -> str:
-    start = prompt.find("**Character Capabilities:**")
+    start = prompt.find("## Character Capabilities")
     assert start != -1
     end = prompt.find("**Control / Tool Payload Contract", start)
     if end == -1:
@@ -52,7 +52,7 @@ def test_sentinel_mode_keeps_sentinel_contract_block():
         tool_transport_mode="sentinel",
         allowed_media_tools={"image.generate"},
     )
-    assert "**Control / Tool Payload Contract (Mandatory When Requested):**" in prompt
+    assert "## Control / Tool Payload Contract (Mandatory When Requested)" in prompt
     assert "---CHORUS_TOOL_PAYLOAD_BEGIN---" in prompt
 
 
@@ -64,8 +64,8 @@ def test_no_contract_tools_omits_all_contract_sections():
         allowed_media_tools=set(),
         contract_tools=set(),
     )
-    assert "**Native Tool Call Contract (Provider Transport):**" not in prompt
-    assert "**Control / Tool Payload Contract (Mandatory When Requested):**" not in prompt
+    assert "## Native Tool Call Contract (Provider Transport)" not in prompt
+    assert "## Control / Tool Payload Contract (Mandatory When Requested)" not in prompt
     assert "Available tools:" not in prompt
     assert "Supported tools:" not in prompt
 

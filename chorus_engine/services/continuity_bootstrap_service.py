@@ -916,7 +916,7 @@ class ContinuityBootstrapService:
         active_arcs: List[ContinuityArc]
     ) -> str:
         lines = [
-            "[Conversation Bootstrap]",
+            "## Conversation Bootstrap",
             "",
             "Relationship State:",
             f"- Familiarity: {relationship_state.familiarity_level}",
@@ -943,8 +943,6 @@ class ContinuityBootstrapService:
                 "Use this information to restore continuity and stance at the start of the conversation.",
                 "Use subtly and naturally—only when relevant.",
                 "Do not quote, paraphrase, or summarize this content to the user.",
-                "",
-                "[/Conversation Bootstrap]"
             ]
         )
         return normalize_mojibake("\n".join(lines)).strip()

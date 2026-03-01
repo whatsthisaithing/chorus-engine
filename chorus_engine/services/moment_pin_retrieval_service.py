@@ -129,7 +129,7 @@ class MomentPinRetrievalService:
             return ""
         _ = tool_transport_mode
         lines = [
-            "MOMENT PIN INSTRUCTIONS",
+            "## Moment Pin Instructions",
             "",
             "The following Moment Pins are summaries of past conversational events.",
             "They are NOT full transcripts.",

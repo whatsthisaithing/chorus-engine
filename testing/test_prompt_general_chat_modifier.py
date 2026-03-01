@@ -18,6 +18,5 @@ def test_general_chat_modifier_only_for_general_chat_kind():
     general_prompt = generator.generate(character, conversation_kind="general_chat")
     standard_prompt = generator.generate(character, conversation_kind="standard")
 
-    assert "**General Chat Conversation Stance:**" in general_prompt
-    assert "**General Chat Conversation Stance:**" not in standard_prompt
-
+    assert "## General Chat Conversation Stance" in general_prompt
+    assert "## General Chat Conversation Stance" not in standard_prompt

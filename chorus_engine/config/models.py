@@ -1141,7 +1141,7 @@ class PreferredLLMConfig(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
+    max_tokens: Optional[int] = Field(default=None, gt=0)
     context_window: Optional[int] = Field(default=None, gt=0, description="Override context window for different model capabilities")
     top_p: Optional[float] = Field(default=None, description="Override top_p (0.0-1.0)")
     top_k: Optional[int] = Field(default=None, description="Override top_k (integer >= 0)")
@@ -1212,6 +1212,7 @@ class CharacterConfig(BaseModel):
     
     # Structured response configuration (Phase 11)
     response_template: Optional[Literal["A", "B", "C", "D"]] = None
+    output_mode: Optional[Literal["markdown_v1", "framelines_v2", "legacy_xml_v1"]] = "markdown_v1"
     expressiveness: Optional[Literal["minimal", "balanced", "rich"]] = None
     
     # Memory profile (Phase 8)

@@ -4,7 +4,7 @@ import json
 from typing import List
 import logging
 from typing import Optional, AsyncIterator
-from .base import BaseLLMClient, LLMResponse, LLMError
+from .base import BaseLLMClient, LLMResponse, LLMError, LLMStreamEvent
 from .text_normalization import normalize_mojibake
 import httpx
 
@@ -558,6 +558,31 @@ class LMStudioLLMClient(BaseLLMClient):
             raise LLMError(f"HTTP error during LLM streaming: {e}")
         except Exception as e:
             raise LLMError(f"Failed to stream LLM response: {e}")
+
+    async def stream_with_history_events(
+        self,
+        messages: list,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        model: Optional[str] = None,
+    ) -> AsyncIterator[LLMStreamEvent]:
+        async for chunk in self.stream_with_history(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            top_k=top_k,
+            repeat_penalty=repeat_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            model=model,
+        ):
+            yield LLMStreamEvent(content_delta=str(chunk or ""))
     
     # LM Studio model management (optional, uses native REST API)
     

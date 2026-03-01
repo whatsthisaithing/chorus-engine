@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from chorus_engine.services.assistant_content import capture_and_strip_thinking
 from chorus_engine.services.tool_payload import extract_tool_payload, parse_tool_payload
 
 
@@ -158,7 +159,8 @@ def normalize_assistant_result(
     1. provider structured fields (`provider_control`, `provider_tool_requests`)
     2. sentinel fallback JSON payload in `raw_content`
     """
-    extraction = extract_tool_payload(raw_content or "")
+    visible_input, reasoning_text, thinking_diag = capture_and_strip_thinking(raw_content or "")
+    extraction = extract_tool_payload(visible_input or "")
     payload_obj = parse_tool_payload(extraction.payload_text)
 
     sentinel_control = _normalize_control((payload_obj or {}).get("control"))
@@ -174,6 +176,9 @@ def normalize_assistant_result(
 
     provider_raw_doc = _normalize_provider_raw(provider_raw) or {}
     provider_raw_doc.setdefault("assistant_result_tier", tier_used)
+    provider_raw_doc["thinking_capture"] = thinking_diag
+    if reasoning_text:
+        provider_raw_doc["reasoning_chars"] = len(reasoning_text)
     return AssistantResult(
         raw_content=raw_content or "",
         display_text=extraction.display_text,

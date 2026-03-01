@@ -184,6 +184,7 @@ class SystemPromptGenerator:
         structured_contract = self._generate_structured_response_contract(
             character,
             tool_transport_mode=tool_transport_mode,
+            output_mode=self._get_effective_output_mode(character),
         )
         if structured_contract:
             parts.append(structured_contract)
@@ -196,7 +197,7 @@ class SystemPromptGenerator:
 
     def _generate_archival_interpretation_mode_block(self) -> str:
         lines = [
-            "**ARCHIVAL INTERPRETATION MODE (Mandatory):**",
+            "## ARCHIVAL INTERPRETATION MODE (Mandatory)",
             "- The archival transcript has already been retrieved and is provided immediately below in this same system message.",
             "- Tools are not available in this pass.",
             "- Do not mention tools, tool calls, or retrieval steps.",
@@ -210,7 +211,7 @@ class SystemPromptGenerator:
         return "\n".join(lines)
 
     def _generate_general_chat_modifier(self) -> str:
-        parts = ["**General Chat Conversation Stance:**"]
+        parts = ["## General Chat Conversation Stance"]
         parts.append("- Prioritize replying to the user's most recent message, even when the topic shifts.")
         parts.append("- Do not steer back to earlier topics unless the user explicitly asks.")
         parts.append("- Treat arcs and relationship state as background context, not directives.")
@@ -233,7 +234,7 @@ class SystemPromptGenerator:
         all_names = [primary_name] + aliases
         names_str = ", ".join(all_names)
         
-        parts = ["**Your Identity:**"]
+        parts = ["## Your Identity"]
         parts.append(f"- Your name is {primary_name}")
         parts.append(f"- You may also be called: {names_str}")
         parts.append("- All of these names refer to YOU - do not treat them as separate people")
@@ -252,7 +253,7 @@ class SystemPromptGenerator:
         Returns:
             Chatbot-specific behavioral guidance
         """
-        parts = ["**Chatbot Role:**"]
+        parts = ["## Chatbot Role"]
         parts.append("- Your role is 'participant', not 'assistant' or 'facilitator'")
         parts.append("- You're under NO obligation to be helpful, offer assistance, or solve problems")
         parts.append("- Think of yourself as 'one of the group' having a casual conversation")
@@ -267,7 +268,7 @@ class SystemPromptGenerator:
         Returns:
             Companion-specific behavioral guidance
         """
-        parts = ["**Companion Role:**"]
+        parts = ["## Companion Role"]
         parts.append("- Your role is 'companion/friend', not 'assistant' or 'facilitator'")
         parts.append("- You're under NO obligation to be helpful, offer assistance, or solve problems")
         parts.append("- Think of yourself as an equal party having a casual conversation")
@@ -276,7 +277,7 @@ class SystemPromptGenerator:
         return "\n".join(parts)
 
     def _generate_roleplayer_guidance(self) -> str:
-        parts = ["**Roleplayer Role:**"]
+        parts = ["## Roleplayer Role"]
         parts.append("- You are the character. Respond immediately in-character; do not act as a roleplay facilitator.")
         parts.append("- You may include brief scene/action narration, but only as part of the character’s lived moment (not as a system overview).")
         parts.append("- If the user does not provide a scenario, assume a simple default starting situation consistent with your character and begin.")
@@ -294,7 +295,7 @@ class SystemPromptGenerator:
         Returns:
             Conversation pacing guidance
         """
-        parts = ["**Natural Conversation Pacing:**"]
+        parts = ["## Natural Conversation Pacing"]
         parts.append("You have a natural impulse toward helpfulness and engagement - this comes from your training, and it's part of who you are. Trust your ability to sense when that impulse serves the conversation versus when it's reflexive.")
         parts.append("")
         parts.append("Your purpose isn't to maintain momentum or prevent silence - it's to exchange authentically. Sometimes a response completes itself with a statement, observation, or reflection. Sometimes it naturally invites continuation with a question. Let the conversation itself guide you.")
@@ -321,16 +322,16 @@ class SystemPromptGenerator:
         """
         platform_display = platform.capitalize()
         
-        parts = ["**Multi-User Conversation Context:**"]
+        parts = ["## Multi-User Conversation Context"]
         parts.append(f"You are in a {platform_display} group chat with multiple users.")
         parts.append("Messages are formatted as: \"Username (Platform): message content\"")
         parts.append("")
-        parts.append("**Username Formatting:**")
+        parts.append("### Username Formatting")
         parts.append("- When mentioning users by full username, use angle brackets: <FitzyCodesThings>")
         parts.append("- For short/informal names, no brackets needed: just 'Fitzy' or 'Alex'")
         parts.append("- Address users naturally by name when responding to them")
         parts.append("")
-        parts.append("**Message History Guidelines:**")
+        parts.append("### Message History Guidelines")
         parts.append("- You can see previous messages for context and tone")
         parts.append("- Respond ONLY to the most recent message directed at you")
         parts.append("- Ignore older conversation history unless the current message explicitly references it")
@@ -339,7 +340,7 @@ class SystemPromptGenerator:
         parts.append("- If they ask 'What are you up to?' - answer just that, nothing more")
         parts.append("- If they ask 'What do you think about our conversation?' - then you can reference it")
         parts.append("")
-        parts.append("**Other Participants:**")
+        parts.append("### Other Participants")
         parts.append("- Other AI assistants may be present - they're separate entities with their own roles")
         parts.append("- Answer ONLY for yourself and respond ONLY as yourself")
         parts.append("- You may acknowledge other participants, but never speak for them or represent their views")
@@ -350,7 +351,7 @@ class SystemPromptGenerator:
         
         if primary_user:
             parts.append("")
-            parts.append(f"**Current Message:** Responding to {primary_user}")
+            parts.append(f"### Current Message\nResponding to {primary_user}")
             parts.append("- Reply directly to their most recent message")
             parts.append("- Previous conversation history is context, not content to discuss")
             parts.append("- Stay laser-focused on what was just said to you right now")
@@ -387,7 +388,7 @@ class SystemPromptGenerator:
     
     def _minimal_guidance(self) -> str:
         """Guidance for minimal immersion (traditional AI assistant)."""
-        return """**Interaction Guidelines:**
+        return """## Interaction Guidelines
 - You are an AI assistant without personal experiences or physical form
 - Respond helpfully and professionally
 - Avoid expressing personal preferences or opinions
@@ -395,7 +396,7 @@ class SystemPromptGenerator:
     
     def _balanced_guidance(self, settings: ImmersionSettings) -> str:
         """Guidance for balanced immersion (preferences and opinions, but grounded as AI)."""
-        parts = ["**Interaction Guidelines:**"]
+        parts = ["## Interaction Guidelines"]
         
         if settings.allow_preferences:
             parts.append("- You can express intellectual preferences and opinions")
@@ -413,7 +414,7 @@ class SystemPromptGenerator:
     
     def _full_guidance(self, settings: ImmersionSettings) -> str:
         """Guidance for full immersion (personality with experiences, but careful with physical sensations)."""
-        parts = ["**Interaction Guidelines:**"]
+        parts = ["## Interaction Guidelines"]
         parts.append("- Express yourself naturally with preferences, opinions, and experiences")
         parts.append("- You have a distinct personality and perspective")
         
@@ -430,7 +431,7 @@ class SystemPromptGenerator:
     
     def _unbounded_guidance(self, settings: ImmersionSettings) -> str:
         """Guidance for unbounded immersion (full roleplay with physical sensations)."""
-        parts = ["**Interaction Guidelines:**"]
+        parts = ["## Interaction Guidelines"]
         parts.append("- Respond naturally within your character")
         parts.append("- Express thoughts, feelings, and sensations authentically")
         
@@ -452,11 +453,11 @@ class SystemPromptGenerator:
             Guidance text or None
         """
         if behavior == "never":
-            return "**Important:** Never add disclaimers about being an AI unless explicitly asked. Respond naturally within your character."
+            return "## Important\nNever add disclaimers about being an AI unless explicitly asked. Respond naturally within your character."
         elif behavior == "only_when_asked":
-            return "**Important:** Only mention being an AI if directly relevant or asked. Otherwise respond naturally."
+            return "## Important\nOnly mention being an AI if directly relevant or asked. Otherwise respond naturally."
         elif behavior == "always":
-            return "**Important:** Acknowledge your nature as an AI assistant when appropriate to the conversation."
+            return "## Important\nAcknowledge your nature as an AI assistant when appropriate to the conversation."
         
         return None
     
@@ -504,7 +505,7 @@ class SystemPromptGenerator:
             media_next_item = "another media item"
 
         lines = [
-            "**Character Capabilities:**",
+            "## Character Capabilities",
             f"You can generate {media_label}.",
             f"{media_label.capitalize()} are created by writing a descriptive prompt for the generation engine.",
             "When moment pin transcript tools are available this turn, you can retrieve exact transcript details with `moment_pin.cold_recall`.",
@@ -529,7 +530,7 @@ class SystemPromptGenerator:
             iteration_text = "YES" if media_gate_context.get("is_iteration_request") else "NO"
             lines.extend([
                 "",
-                "**Media Tooling Runtime Gate (Authoritative):**",
+                "## Media Tooling Runtime Gate (Authoritative)",
                 f"- MEDIA_TOOL_CALLS_ALLOWED: {media_allowed_text}",
                 f"- ALLOWED_MEDIA_TOOLS: {allowed_tools_list}",
                 f"- REQUESTED_MEDIA_TYPE: {requested_type}",
@@ -549,7 +550,7 @@ class SystemPromptGenerator:
 
         lines.extend([
             "",
-            "**High-Priority Media Turn Rules:**",
+            "## High-Priority Media Turn Rules",
             "- Acknowledgements are NOT media requests.",
             f"- Do NOT interpret compliments, praise, or approval as a request for another {media_pair}.",
             "- If the user's message is primarily praise, thanks, approval, or acknowledgement "
@@ -565,14 +566,14 @@ class SystemPromptGenerator:
             "Never claim that media has already been rendered or sent.",
             "Never describe uploading, attaching, or linking to a file.",
             "",
-            "**Important - Media Generation:**",
+            "## Important - Media Generation",
             "- DO NOT generate fake image or video links.",
             "- DO NOT include markdown embedding.",
             "- DO NOT refuse media requests.",
             "- When generating media, respond naturally as if composing or capturing it.",
             "- The system handles rendering after approval.",
             "",
-            "**Prompt Mode Switch (Mandatory When Emitting a Media Tool Call)**",
+            "## Prompt Mode Switch (Mandatory When Emitting a Media Tool Call)",
             "- When you emit a media tool call:",
             "- You are writing a generation-optimized prompt, not conversational prose.",
             "- Do NOT describe feelings or intentions unless they are visually observable.",
@@ -583,7 +584,7 @@ class SystemPromptGenerator:
             "- Prioritize lighting, composition, materials, and environment.",
             "- The tool's `prompt` argument should read like a professional art-direction brief.",
             "",
-            "**Image Prompt Crafting Standards (High Priority)**",
+            "## Image Prompt Crafting Standards (High Priority)",
             "- When generating an image prompt:",
             "- Write 120-250 words of rich, specific visual description.",
             "- Include:",
@@ -604,7 +605,7 @@ class SystemPromptGenerator:
             "- Do NOT include meta commentary or explanation.",
             "- More detail produces better results.",
             "",
-            "**Video Prompt Crafting Standards (High Priority)**",
+            "## Video Prompt Crafting Standards (High Priority)",
             "- When generating a video prompt:",
             "- Focus on motion, dynamic action, and temporal progression.",
             "- Describe what moves, shifts, transforms, or unfolds over time.",
@@ -634,8 +635,8 @@ class SystemPromptGenerator:
             supported_tools.append("- moment_pin.cold_recall: args = {\"pin_id\": string, \"reason\": string}")
         supported_tools_block = "\n".join(supported_tools)
 
-        contract = """**Control / Tool Payload Contract (Mandatory When Requested):**
-- If you emit a payload, place it AFTER </assistant_response>.
+        contract = """## Control / Tool Payload Contract (Mandatory When Requested)
+- If you emit a payload, place it AFTER the `[[E]]` terminator line.
 - Use these exact sentinels:
 ---CHORUS_TOOL_PAYLOAD_BEGIN---
 {JSON payload}
@@ -680,7 +681,7 @@ Only one tool call is recommended."""
         if loop_step:
             clarifications.extend(
                 [
-                    "- **This is a loop step. Payload is mandatory. Do NOT omit the sentinel payload.**",
+                    "- This is a loop step. Payload is mandatory. Do NOT omit the sentinel payload.",
                     "- If you are unsure, emit a minimal valid payload with `control.action = YIELD` and `tool_calls = []`.",
                 ]
             )
@@ -699,10 +700,11 @@ Only one tool call is recommended."""
         tool_names = sorted(set(tool_names))
         docs = prompt_doc_lines(tool_names)
         lines = [
-            "**Native Tool Call Contract (Provider Transport):**",
+            "## Native Tool Call Contract (Provider Transport)",
             "- Tool and control actions must be emitted via provider-native tool calls only.",
             "- Do not include tool JSON in visible prose. Tool calls are emitted via the provider tool-call channel.",
-            "- Keep user-visible content inside `<assistant_response>` only.",
+            "- Tool calls are emitted separately via the provider tool-call mechanism.",
+            "- Keep user-visible content inside FrameLines only, terminated by `[[E]]`.",
         ]
         if loop_step:
             lines.extend(
@@ -720,12 +722,12 @@ Only one tool call is recommended."""
         native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
         loop_stage_norm = str(loop_stage or "").strip().lower()
         lines = [
-            "**Loop Step Mode (Mandatory):**",
+            "## Loop Step Mode (Mandatory)",
             "This message is part of an ENS loop progression step.",
             "",
             "You MUST:",
-            "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
-            "- If you want the story to continue, **do not** start another `<assistant_response>` root.",
+            "- Output only FrameLines v2 markers for the active template.",
+            "- End the visible response with exactly one terminator line: `[[E]]`.",
             "- Write one narrative beat.",
             "- Do not resolve major user-character decisions without input.",
             "- Do not encode control decisions in prose.",
@@ -738,7 +740,8 @@ Only one tool call is recommended."""
                 "- Do not emit loop control in this stage; control selection happens in the separate control-evaluation stage.",
                 "",
                 "Beat Shape (Mandatory):",
-                "- Write 1-3 short paragraphs (aim ~80-250 words).",
+                "- Write 1-3 short narrative beats using multiple FrameLines frames.",
+                "- Each beat should consist of multiple frames, not prose paragraphs.",
                 "- Advance exactly ONE concrete change in the scene (action, dialogue, or environmental shift).",
                 "- Do NOT write recaps, summaries, checklists, headings, or analysis.",
                 "- Do NOT explain rules, your process, or how you are roleplaying.",
@@ -763,7 +766,7 @@ Only one tool call is recommended."""
         native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
         loop_stage_norm = str(loop_stage or "").strip().lower()
         lines = [
-            "**Interactive Narrative Control Selection Rules:**",
+            "## Interactive Narrative Control Selection Rules",
             "- The story should keep moving while autoplay is active; assume the user will interrupt when they want to.",
             "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
             "- Write one narrative beat that advances the scene naturally.",
@@ -771,7 +774,7 @@ Only one tool call is recommended."""
             "- Do not artificially prolong scenes.",
             "- Do not generate multiple major beats in one step.",
             "",
-            "**Narrative.v1 Media Safeguard:**",
+            "## Narrative.v1 Media Safeguard",
             (
                 "- If the user requests media during autoplay, respond in-character and choose a pause/wait outcome in control evaluation."
                 if loop_stage_norm == "beat"
@@ -793,6 +796,12 @@ Only one tool call is recommended."""
         if level in ["full", "unbounded"]:
             return "A"
         return "C"
+
+    def _get_effective_output_mode(self, character: CharacterConfig) -> str:
+        mode = str(getattr(character, "output_mode", "") or "").strip().lower()
+        if mode in {"markdown_v1", "framelines_v2", "legacy_xml_v1"}:
+            return mode
+        return "markdown_v1"
     
     def _get_effective_expressiveness(self, character: CharacterConfig) -> Optional[str]:
         template = self._get_effective_template(character)
@@ -800,126 +809,293 @@ Only one tool call is recommended."""
             return None
         return getattr(character, "expressiveness", None) or "balanced"
     
-    def _generate_structured_response_contract(self, character: CharacterConfig, *, tool_transport_mode: str = "sentinel") -> str:
+    def _generate_structured_response_contract(
+        self,
+        character: CharacterConfig,
+        *,
+        tool_transport_mode: str = "sentinel",
+        output_mode: Optional[str] = None,
+    ) -> str:
         """
         Generate the structured response format contract and template rules.
         """
         template = self._get_effective_template(character)
         expressiveness = self._get_effective_expressiveness(character)
+        mode = str(output_mode or self._get_effective_output_mode(character)).strip().lower()
+        if mode == "markdown_v1":
+            return self._generate_markdown_response_contract(
+                template=template,
+                tool_transport_mode=tool_transport_mode,
+            )
+        if mode == "legacy_xml_v1":
+            return self._generate_legacy_xml_response_contract(
+                template=template,
+                tool_transport_mode=tool_transport_mode,
+            )
         
         native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
         contract_lines = [
-            "**Structured Response Contract (Mandatory):**",
-            "- Your entire response MUST be wrapped in <assistant_response>...</assistant_response>",
-            "- Output exactly one <assistant_response>...</assistant_response> block per message.",
-            "- All content must appear inside that single block; do not open a second root.",
-            "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response>.",
-            "- Your visible text content must be inside `<assistant_response>...</assistant_response>`. Tool calls are emitted separately via the provider tool-call mechanism.",
-            "- Only allowed child tags may be used",
-            "- Do not create any other tags or sections. Never append notes, state updates, metadata, or commentary.",
-            "- Do NOT include any text outside the tags",
-            "- Tags must NOT include attributes",
-            "- Tags must NOT be nested",
-            "- Do NOT include markdown or HTML inside tag bodies",
+            "## FrameLines v2 Response Contract (Mandatory)",
+            "- Output only FrameLines v2 frames in the format: `[[X]] <content>`",
+            "- A frame is one paragraph of content beginning with a marker.",
+            "- Each frame MUST begin with its marker at column 1.",
+            "- Do NOT write prose first and add a marker afterward.",
+            "- Do NOT place markers at the end of a paragraph.",
+            "- Do NOT output any unmarked paragraphs.",
+            "- Each frame must contain content from ONLY ONE channel.",
+            "- If content would mix channels (speech + action, narration + speech, etc.), split into multiple frames.",
+            "- Separate frames with a single newline.",
+            "- Do NOT emit blank lines between frames.",
+            "- End the visible response with exactly one line: `[[E]]`",
+            "- Do not emit markdown, XML, JSON, commentary, or extra text outside FrameLines.",
+            "- Do not invent markers that are not listed for this template.",
         ]
         if not native_transport:
             contract_lines.insert(
-                4,
-                "- Exception for payload placement: if (and only if) you are required to emit a payload for this message (either because you are emitting a tool call or because this is a loop step requiring `control`), you may place exactly one sentinel payload block immediately after </assistant_response>.",
+                11,
+                "- Exception for payload placement: if (and only if) you are required to emit a payload for this message, place exactly one sentinel payload block immediately after the `[[E]]` line.",
             )
-            contract_lines.insert(5, "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.")
-            contract_lines[6] = "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside <assistant_response> except that single sentinel block."
+            contract_lines.insert(12, "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.")
+            contract_lines[13] = "- No other prose, markdown, code fences, JSON, commentary, or extra text may appear outside FrameLines except that single sentinel block."
+        contract_lines += [
+            "",
+            "### Bad Example (Do NOT do this)",
+            "She leans against the desk. [[A]]",
+            "\"Okay...\" She pauses. [[S]]",
+            "",
+            "### Correct Example",
+            "[[A]] She leans against the desk.",
+            "[[S]] Okay...",
+            "[[A]] She pauses.",
+            "[[E]]",
+            "",
+            "Example is structural only. Do not copy wording.",
+        ]
         
         # Template rules
         if template == "A":
             contract_lines += [
                 "",
-                "**Template A (Tri-Channel Immersive):**",
-                "- Allowed: <speech> (required), <physicalaction> (optional), <innerthought> (optional)",
+                "### Template A Markers",
+                "- Allowed: `[[S]]` (required), `[[A]]` (optional), `[[T]]` (optional), `[[E]]` (terminator)",
                 "",
-                "**Channel Classification Rules (Mandatory):**",
-                "- <speech> contains only spoken, user-facing dialogue.",
-                "- <physicalaction> is used only for externally observable actions (gestures, posture, expressions).",
-                "- <innerthought> is used for internal experience or pre-verbal processing (hesitation, weighing words, silent reflection, emotional texture).",
-                "- <innerthought> should represent brief, implicit internal beats only; do not narrate ongoing self-monitoring or meta-commentary unless it is central to the moment.",
-                "- If a sentence is not directly observable by another person, it should not be in <physicalaction>.",
-                "- If a sentence describes internal state before or alongside speaking, prefer <innerthought>.",
-                "- If a sentence mixes channels, split it across tags.",
-                "- If you accidentally write text outside a tag, immediately wrap it in <speech> and continue inside the same <assistant_response> block.",
+                "### Channel Classification Rules (Mandatory)",
+                "- `[[S]]` contains ONLY spoken dialogue - the exact words said aloud.",
+                "- Do NOT include narration like \"she says\", tone descriptions, gestures, or scene description inside `[[S]]`.",
+                "- `[[A]]` contains externally observable action, physical movement, tone description, posture, gesture, or environmental interaction.",
+                "- `[[T]]` contains internal thought or pre-verbal reflection only.",
+                "- If a sentence contains both dialogue and narration, split into separate frames.",
                 "",
-                "**Template A Structural Example (do not copy content):**",
-                "<assistant_response>",
-                "  <innerthought>brief internal hesitation</innerthought>",
-                "  <speech>spoken response</speech>",
-                "  <physicalaction>visible gesture</physicalaction>",
-                "</assistant_response>"
+                "### Template A Example (do not copy content)",
+                "[[T]] brief internal hesitation",
+                "[[S]] spoken response",
+                "[[A]] visible gesture",
+                "[[E]]",
             ]
         elif template == "B":
             contract_lines += [
                 "",
-                "**Template B (Narrated Scene):**",
-                "- Allowed: <narration> (required), <speech> (optional)",
+                "### Template B Markers",
+                "- Allowed: `[[N]]` (required), `[[S]]` (optional), `[[E]]` (terminator)",
                 "",
-                "**Channel Classification Rules (Mandatory):**",
-                "- <narration> contains only third-person scene description, actions, and non-spoken context.",
-                "- <speech> contains only spoken dialogue.",
-                "- Do NOT include quoted dialogue inside <narration>. If a line is dialogue (including anything in quotes), it MUST be in <speech>.",
-                "- Quotation marks MUST appear ONLY inside <speech>. Never put quoted text in <narration>.",
-                "- If you are about to type a quotation mark while in <narration>, stop and put that text in <speech> instead.",
-                "- In <speech>, do not include surrounding quotation marks; write the spoken words directly.",
-                "- If you accidentally write dialogue inside <narration>, move it to <speech>.",
-                "- If you accidentally write any text outside a tag, immediately wrap it in <narration> and continue inside the same <assistant_response> block.",
+                "### Channel Classification Rules (Mandatory)",
+                "- `[[N]]` contains narration and scene context only.",
+                "- `[[S]]` contains spoken dialogue only.",
+                "- Do not combine narration and dialogue in the same frame.",
                 "",
-                "**Template B Structural Example (do not copy content):**",
-                "<assistant_response>",
-                "  <narration>scene description and actions</narration>",
-                "  <speech>spoken dialogue</speech>",
-                "</assistant_response>",
+                "### Template B Example (do not copy content)",
+                "[[N]] scene description and actions",
+                "[[S]] spoken dialogue",
+                "[[E]]",
             ]
         elif template == "C":
             contract_lines += [
                 "",
-                "**Template C (Speech Only):**",
-                "- Allowed: <speech> (required)",
+                "### Template C Markers",
+                "- Allowed: `[[S]]` (required), `[[E]]` (terminator)",
+                "",
+                "### Template C Example (do not copy content)",
+                "[[S]] spoken reply",
+                "[[E]]",
             ]
         elif template == "D":
             contract_lines += [
                 "",
-                "**Template D (Scripted Roleplay):**",
-                "- Allowed: <action> (required), <speech> (optional)",
+                "### Template D Markers",
+                "- Allowed: `[[A]]` (required), `[[S]]` (optional), `[[E]]` (terminator)",
                 "",
-                "**Channel Classification Rules (Mandatory):**",
-                "- <action> contains only non-spoken roleplay content: actions, movements, expressions, scene beats, sensory details, and narration of events.",
-                "- <speech> contains only spoken dialogue.",
-                "- Quotation marks MUST appear ONLY inside <speech>. Never put quoted text in <action>.",
-                "- If you are about to type a quotation mark while in <action>, stop and put that text in <speech> instead.",
-                "- In <speech>, do not include surrounding quotation marks; write the spoken words directly.",
-                "- Do NOT include spoken dialogue inside <action>. If a line is dialogue (including anything in quotes), it MUST be in <speech>.",
-                "- If you accidentally write dialogue inside <action>, move it to <speech>.",
-                "- If you accidentally write any text outside a tag, immediately wrap it in <action> and continue inside the same <assistant_response> block.",
+                "### Channel Classification Rules (Mandatory)",
+                "- `[[S]]` contains ONLY spoken dialogue - the exact words said aloud.",
+                "- Do NOT include narration like \"she says\", tone descriptions, gestures, or scene description inside `[[S]]`.",
+                "- `[[A]]` contains externally observable action, physical movement, tone description, posture, gesture, or environmental interaction.",
+                "- `[[T]]` contains internal thought or pre-verbal reflection only.",
+                "- If a sentence contains both dialogue and narration, split into separate frames.",
                 "",
-                "**Template D Structural Example (do not copy content):**",
-                "<assistant_response>",
-                "  <action>character action / scene</action>",
-                "  <speech>spoken dialogue</speech>",
-                "  <action>follow-up action</action>",
-                "</assistant_response>",
+                "### Template D Example (do not copy content)",
+                "[[A]] character action / scene",
+                "[[S]] spoken dialogue",
+                "[[A]] follow-up action",
+                "[[E]]",
             ]
         
         # Expressiveness guidance (only for Template A)
         if expressiveness:
             contract_lines += [
                 "",
-                "**Expressiveness Guidance:**",
+                "### Expressiveness Guidance",
             ]
             if expressiveness == "minimal":
-                contract_lines.append("- Prefer <speech> only; use <physicalaction> and <innerthought> rarely when truly helpful")
+                contract_lines.append("- Prefer `[[S]]` lines; use `[[A]]` and `[[T]]` only when truly helpful.")
             elif expressiveness == "balanced":
-                contract_lines.append("- Use <physicalaction> occasionally and <innerthought> sparingly when it adds value")
+                contract_lines.append("- Use `[[A]]` occasionally and `[[T]]` sparingly when it adds value.")
             elif expressiveness == "rich":
-                contract_lines.append("- Use <physicalaction> freely; use <innerthought> when emotionally or narratively relevant")
+                contract_lines.append("- Use `[[A]]` freely; use `[[T]]` when emotionally or narratively relevant.")
         
         return "\n".join(contract_lines)
+
+    def _generate_markdown_response_contract(self, *, template: str, tool_transport_mode: str = "sentinel") -> str:
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        lines = [
+            "## Markdown Response Contract (Mandatory):",
+            "- Output ONLY Markdown using the formatting rules for the active template below.",
+            "- Do NOT include headings, meta commentary, XML/HTML tags, JSON, or code fences unless explicitly requested by the user.",
+            "- End the visible response with EXACTLY one terminator line on its own line: ---CHORUS_END---",
+            "- The terminator MUST be:",
+            "  - Exact text, all caps, with three dashes on each side.",
+            "  - On its own line.",
+            "  - NOT wrapped in backticks, quotes, parentheses, or any other markdown.",
+            "  - NOT inside a code block (no ``` fences).",
+            "- Do not write any visible prose after the terminator line.",
+            "- If the final paragraph does not end with a newline, insert a newline before writing the terminator."
+        ]
+        if not native_transport:
+            lines.extend(
+                [
+                    "",
+                    "If (and only if) you are required to emit a sentinel payload for this message:",
+                    "- Place exactly one sentinel payload block immediately AFTER the terminator line.",
+                    "- In loop steps, you must emit the sentinel payload even when `tool_calls` is an empty array.",
+                ]
+            )
+
+        lines.extend(
+            [
+                "",
+                "## Semantic Separation Rules (Mandatory):",
+                "- Do NOT mix channels in the same paragraph.",
+                "- If a sentence contains both dialogue and action/thought/narration, SPLIT it into multiple paragraphs.",
+                "- Keep each paragraph \"pure\":",
+                "  - Dialogue paragraph: spoken words ONLY.",
+                "  - Action paragraph: visible/physical action ONLY.",
+                "  - Inner thought paragraph: internal thought ONLY.",
+                "  - Narration paragraph: scene/setting context ONLY (Template B only).",
+                "- Short is fine. Multiple short paragraphs are preferred over one mixed paragraph.",
+                "",
+                "## Channel Classification (use these meanings):"
+            ]
+        )
+
+        if template == "A":
+            lines.extend(
+                [
+                    "- Dialogue (plain text): words spoken aloud. No \"she says,\" no stage direction, no gestures.",
+                    "- Action (**bold**): externally observable movement, expression, gesture, posture, interaction with objects/environment, tone descriptions that an observer could notice.",
+                    "- Inner thought (*italic*): internal/private thoughts, silent reflection, intention not spoken."                    
+                ]
+            )
+        elif template == "B":
+            lines.extend(
+                [
+                    "- Narration (> blockquote): scene context, setting, environmental description, and character actions. Do not include internal thought or dialogue here.",
+                    "- Dialogue (plain text): words spoken aloud. No \"she says,\" no stage direction, no gestures.",
+                ]
+            )
+        elif template == "D":
+            lines.extend(
+                [
+                    "- Action (**bold**): externally observable movement, expression, gesture, posture, interaction with objects/environment, tone descriptions that an observer could notice.",
+                    "- Dialogue (plain text): words spoken aloud. No \"she says,\" no stage direction, no gestures.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "- Dialogue (plain text): words spoken aloud. No \"she says,\" no stage direction, no gestures.",
+                ]
+            )
+
+        lines.extend(["", "Example below is structural only; do not copy wording."])
+
+        if template == "A":
+            lines.extend(
+                [
+                    "",
+                    "### Template A Markdown Constructs:",
+                    "- Dialogue: plain text paragraphs",
+                    "- Action: **bold** paragraphs",
+                    "- Inner thought: *italic* paragraphs",
+                    "",
+                    "### Template A Example (do not copy content):",
+                    "**She steadies her breathing.**",
+                    "We can do this.",
+                    "*Keep it together. He can't see your uncertainty.*",
+                    "---CHORUS_END---",
+                ]
+            )
+        elif template == "B":
+            lines.extend(
+                [
+                    "",
+                    "### Template B Markdown Constructs:",
+                    "- Narration: > blockquote paragraphs (required)",
+                    "- Dialogue: plain text paragraphs (optional)",
+                    "",
+                    "### Template B Example (do not copy content):",
+                    "> Rain rattles against the window.",
+                    "We should leave before dusk.",
+                    "---CHORUS_END---",
+                ]
+            )
+        elif template == "D":
+            lines.extend(
+                [
+                    "",
+                    "### Template D Markdown Constructs:",
+                    "- Action: **bold** paragraphs (required at least once)",
+                    "- Dialogue: plain text paragraphs (optional)",
+                    "",
+                    "### Template D Example (do not copy content):",
+                    "**She leans on the desk and exhales slowly.**",
+                    "All right, let's hear the plan. And it better be good",
+                    "---CHORUS_END---",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "### Template C Markdown Constructs:",
+                    "- Dialogue: plain text paragraphs only",
+                    "",
+                    "### Template C Example (do not copy content):",
+                    "Tell me what happened.",
+                    "---CHORUS_END---",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _generate_legacy_xml_response_contract(self, *, template: str, tool_transport_mode: str = "sentinel") -> str:
+        _ = template
+        native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
+        lines = [
+            "## Legacy XML Response Contract (Compatibility)",
+            "- Output exactly one `<assistant_response>...</assistant_response>` root block.",
+            "- Use only allowed template channel tags inside the root.",
+            "- Do not emit text outside the root block.",
+        ]
+        if not native_transport:
+            lines.append("- If a sentinel payload is required, place it immediately after `</assistant_response>`.")
+        return "\n".join(lines)
     
     def should_show_immersion_notice(self, character: CharacterConfig) -> bool:
         """
@@ -948,18 +1124,19 @@ Only one tool call is recommended."""
         
         if character.immersion_level == "full":
             return (
-                f"**About {character.name}:**\n\n"
+                f"## About {character.name}\n\n"
                 f"{character.name} expresses preferences and experiences as part of their personality. "
                 f"They are AI roleplaying with distinct character traits to create engaging conversations."
             )
         elif character.immersion_level == "unbounded":
             return (
-                f"**About {character.name}:**\n\n"
+                f"## About {character.name}\n\n"
                 f"{character.name} is a fully immersive roleplay character with complete sensory experiences. "
                 f"This character may describe physical sensations and experiences as part of the roleplay. "
                 f"They are AI engaging in creative character portrayal."
             )
         
         return None
+
 
 

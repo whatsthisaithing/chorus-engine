@@ -9,6 +9,7 @@ class ProviderModelPicker {
         this.installerModal = null;
         this.targetInputId = null;
         this.currentProvider = null;
+        this.currentBaseUrl = '';
         this.models = [];
         this.installJob = null;
         this.installPollTimer = null;
@@ -49,18 +50,43 @@ class ProviderModelPicker {
     }
 
     async resolveProvider() {
+        const cfg = await this.resolveLlmRuntimeConfig();
+        return String(cfg.provider || 'ollama').toLowerCase();
+    }
+
+    isSystemSettingsModalOpen() {
+        const modalEl = document.getElementById('systemSettingsModal');
+        return !!(modalEl && modalEl.classList.contains('show'));
+    }
+
+    async resolveLlmRuntimeConfig() {
         const providerFromForm = document.getElementById('llm_provider')?.value;
-        if (providerFromForm) return String(providerFromForm).toLowerCase();
+        const baseUrlFromForm = (document.getElementById('llm_base_url')?.value || '').trim();
+
+        if (this.isSystemSettingsModalOpen() && providerFromForm) {
+            return {
+                provider: String(providerFromForm || 'ollama').toLowerCase(),
+                base_url: baseUrlFromForm,
+            };
+        }
+
         try {
             const resp = await fetch('/system/config');
             if (resp.ok) {
                 const cfg = await resp.json();
-                return String(cfg?.llm?.provider || 'ollama').toLowerCase();
+                return {
+                    provider: String(cfg?.llm?.provider || 'ollama').toLowerCase(),
+                    base_url: String(cfg?.llm?.base_url || '').trim(),
+                };
             }
         } catch (e) {
             console.warn('Failed loading provider from system config:', e);
         }
-        return 'ollama';
+
+        return {
+            provider: String(providerFromForm || 'ollama').toLowerCase(),
+            base_url: baseUrlFromForm,
+        };
     }
 
     updateEntryPointVisibility(provider) {
@@ -73,7 +99,9 @@ class ProviderModelPicker {
 
     async openPicker(targetInputId) {
         this.targetInputId = targetInputId;
-        this.currentProvider = await this.resolveProvider();
+        const cfg = await this.resolveLlmRuntimeConfig();
+        this.currentProvider = String(cfg.provider || 'ollama').toLowerCase();
+        this.currentBaseUrl = String(cfg.base_url || '').trim();
         document.getElementById('providerModelPickerMeta').textContent = `Provider: ${this.currentProvider}`;
         document.getElementById('providerModelSearchInput').value = '';
         this.pickerModal.show();
@@ -100,8 +128,15 @@ class ProviderModelPicker {
         const listEl = document.getElementById('providerModelList');
         listEl.innerHTML = '<div class="text-secondary">Loading installed models...</div>';
         try {
-            const rawBaseUrl = (document.getElementById('llm_base_url')?.value || '').trim();
-            const baseUrl = this.normalizeBaseUrl(this.currentProvider, rawBaseUrl);
+            if (this.isSystemSettingsModalOpen()) {
+                const providerFromForm = document.getElementById('llm_provider')?.value;
+                if (providerFromForm) {
+                    this.currentProvider = String(providerFromForm).toLowerCase();
+                    document.getElementById('providerModelPickerMeta').textContent = `Provider: ${this.currentProvider}`;
+                }
+                this.currentBaseUrl = (document.getElementById('llm_base_url')?.value || '').trim();
+            }
+            const baseUrl = this.normalizeBaseUrl(this.currentProvider, this.currentBaseUrl);
             const params = new URLSearchParams({
                 provider: this.currentProvider || '',
             });
@@ -173,7 +208,9 @@ class ProviderModelPicker {
 
     async openInstaller(targetInputId) {
         this.targetInputId = targetInputId;
-        this.currentProvider = await this.resolveProvider();
+        const cfg = await this.resolveLlmRuntimeConfig();
+        this.currentProvider = String(cfg.provider || 'ollama').toLowerCase();
+        this.currentBaseUrl = String(cfg.base_url || '').trim();
         document.getElementById('providerInstallerProvider').value = this.currentProvider;
         const hfUrlInput = document.getElementById('providerInstallerHfUrl');
         const modelIdInput = document.getElementById('providerInstallerModelId');

@@ -1161,23 +1161,6 @@ button:disabled {
     opacity: 0.5;
 }
 
-/* Streaming Message Indicator */
-.message.streaming .message-content {
-    position: relative;
-}
-
-.message.streaming .message-content::after {
-    content: '▊';
-    animation: blink 1s infinite;
-    margin-left: 2px;
-    color: var(--accent-primary);
-}
-
-@keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
-}
-
 /* Markdown Styling in Assistant Messages */
 .assistant-message .message-content {
     white-space: normal;
@@ -2658,3 +2641,4 @@ audio::-webkit-media-controls-time-remaining-display {
 .segment-separator-label {
     white-space: nowrap;
 }
+

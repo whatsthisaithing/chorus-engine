@@ -13,7 +13,8 @@ from chorus_engine.llm.client import LLMClient
 from chorus_engine.models.conversation import Message, MessageRole, Thread
 from chorus_engine.repositories.message_repository import MessageRepository
 from chorus_engine.services.json_extraction import extract_json_block
-from chorus_engine.services.structured_response import parse_structured_response, to_plain_text
+from chorus_engine.services.structured_response import to_plain_text
+from chorus_engine.services.assistant_content import framelines_to_segments, normalize_to_framelines_v2
 from chorus_engine.services.tool_payload import extract_tool_payload
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,11 @@ class MomentPinExtractionService:
         content = message.content or ""
         if message.role == MessageRole.ASSISTANT:
             extracted = extract_tool_payload(content)
-            parsed = parse_structured_response(extracted.display_text)
-            content = to_plain_text(parsed.segments, include_physicalaction=True) or extracted.display_text
+            meta = message.meta_data if isinstance(message.meta_data, dict) else {}
+            template_id = str(((meta.get("structured_response") or {}).get("template") or "C")).strip().upper() or "C"
+            normalized = normalize_to_framelines_v2(extracted.display_text, template_id=template_id, metadata=meta)
+            segments = framelines_to_segments(normalized.canonical_text, template_id=template_id)
+            content = to_plain_text(segments, include_physicalaction=True) or extracted.display_text
         return _strip_pseudo_html(content)
 
     def _fetch_selected_messages(self, selected_message_ids: List[str]) -> List[Message]:

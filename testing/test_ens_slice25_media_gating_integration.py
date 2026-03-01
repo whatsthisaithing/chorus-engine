@@ -131,9 +131,10 @@ def test_ens_normalizes_speech_only_response_to_structured_content(client, db, h
     )
     assert assistant_row is not None
     content = assistant_row.content or ""
-    assert "<assistant_response>" in content
-    assert "<speech>" in content
-    assert content.strip().endswith("</assistant_response>")
+    assert "Of course! What kind of tests are we diving into today?" in content
+    metadata = assistant_row.meta_data or {}
+    assert metadata.get("assistant_output_format") == "markdown_v1"
+    assert "Of course! What kind of tests are we diving into today?" in str(metadata.get("render_content") or "")
 
 
 def test_ens_drops_unknown_structured_tags_and_trailing_text(client, db, helpers):
@@ -168,17 +169,17 @@ def test_ens_drops_unknown_structured_tags_and_trailing_text(client, db, helpers
     )
     assert assistant_row is not None
     content = assistant_row.content or ""
-    assert "<assistant_response>" in content
-    assert "<speech>Hello there.</speech>" in content
-    assert "<system_notes>" not in content
-    assert "drop this too" not in content
+    assert content.strip() == "Hello there."
 
     metadata = assistant_row.meta_data or {}
+    assert metadata.get("assistant_output_format") == "markdown_v1"
+    render_content = str(metadata.get("render_content") or "")
+    assert "Hello there." in render_content
+    assert "<system_notes>" not in render_content
     structured = metadata.get("structured_response") or {}
-    invalid_output = structured.get("invalid_output") or {}
-    assert invalid_output.get("action") == "dropped"
-    assert invalid_output.get("trailing_text") is True
-    assert "system_notes" in (invalid_output.get("unknown_tags") or [])
+    diag = structured.get("adapter_diagnostics") or {}
+    parse_diag = diag.get("parse") or {}
+    assert parse_diag.get("missing_end_marker") is True or parse_diag.get("had_end_marker") is True
 
 
 def test_slice25_explicit_image_request_respects_disable_confirmation_setting(client, db, helpers):

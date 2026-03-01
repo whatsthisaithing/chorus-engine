@@ -1,7 +1,8 @@
 """Base abstract class for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, AsyncIterator, List
+from dataclasses import dataclass
+from typing import Optional, AsyncIterator, List, Dict, Any
 import base64
 import json
 import logging
@@ -21,6 +22,17 @@ class LLMResponse(BaseModel):
     usage: Optional[dict] = None
     tool_calls: Optional[list[dict]] = None
     raw_message: Optional[dict] = None
+
+
+@dataclass
+class LLMStreamEvent:
+    """Structured streaming event emitted by provider clients."""
+
+    content_delta: str = ""
+    provider_tool_calls_delta: Optional[List[Dict[str, Any]]] = None
+    provider_raw_event: Optional[Dict[str, Any]] = None
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
 
 
 class LLMError(Exception):
@@ -231,7 +243,6 @@ class BaseLLMClient(ABC):
         """
         pass
     
-    @abstractmethod
     async def stream_with_history(
         self,
         messages: list,
@@ -246,20 +257,42 @@ class BaseLLMClient(ABC):
     ) -> AsyncIterator[str]:
         """
         Stream completion tokens with conversation history.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            temperature: Override default temperature
-            max_tokens: Override default max tokens
-            model: Override default model
-            
-        Yields:
-            Content chunks as they are generated
-            
-        Raises:
-            LLMError: If generation fails
+        Compatibility wrapper over `stream_with_history_events`.
         """
-        pass
+        async for event in self.stream_with_history_events(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            top_k=top_k,
+            repeat_penalty=repeat_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            model=model,
+        ):
+            chunk = str(getattr(event, "content_delta", "") or "")
+            if chunk:
+                yield chunk
+
+    async def stream_with_history_events(
+        self,
+        messages: list,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        repeat_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        model: Optional[str] = None,
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """
+        Stream structured events with conversation history.
+        Providers should override for richer tool/raw event support.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement stream_with_history_events()"
+        )
 
     async def generate_vision(
         self,

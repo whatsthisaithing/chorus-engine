@@ -10,7 +10,7 @@ import yaml
 import time
 import os
 from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncGenerator
 from datetime import datetime
 from pathlib import Path
 
@@ -82,8 +82,15 @@ from chorus_engine.services.memory_profile_service import MemoryProfileService
 from chorus_engine.repositories.audio_repository import AudioRepository
 from chorus_engine.services.continuity_bootstrap_service import ContinuityBootstrapService
 from chorus_engine.services.structured_response import (
-    template_rules,
     StructuredSegment,
+)
+from chorus_engine.services.assistant_content import (
+    FORMAT_FRAMELINES_V2,
+    FORMAT_LEGACY_XML_V1,
+    FORMAT_MARKDOWN_V1,
+    render_for_ui,
+    normalize_to_mode,
+    segments_to_framelines_v2,
 )
 from chorus_engine.services.response_finalizer import ResponseFinalizer
 from chorus_engine.services.tool_payload import (
@@ -180,6 +187,34 @@ def _get_effective_template(character) -> str:
     if level in ("full", "unbounded"):
         return "A"
     return "C"
+
+
+def _get_effective_output_mode(character) -> str:
+    mode = str(getattr(character, "output_mode", "") or "").strip().lower()
+    if mode in {FORMAT_MARKDOWN_V1, FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1}:
+        return mode
+    return FORMAT_MARKDOWN_V1
+
+
+def _render_interactive_display_content(display_text: Optional[str], conversation: Optional[Conversation]) -> Optional[str]:
+    text = str(display_text or "").strip()
+    if not text:
+        return None
+    template_id = "C"
+    output_mode = FORMAT_MARKDOWN_V1
+    try:
+        if conversation is not None and getattr(conversation, "character_id", None):
+            config_loader = app_state.get("config_loader") or ConfigLoader()
+            character = config_loader.load_character(str(conversation.character_id))
+            template_id = _get_effective_template(character)
+            output_mode = _get_effective_output_mode(character)
+    except Exception:
+        template_id = "C"
+        output_mode = FORMAT_MARKDOWN_V1
+    try:
+        return render_for_ui(text, format_id=output_mode, template_id=template_id)
+    except Exception:
+        return None
 
 
 def _build_plain_citations(doc_context) -> str:
@@ -1867,6 +1902,7 @@ class MessageResponse(BaseModel):
     thread_id: str
     role: str
     content: str
+    render_content: Optional[str] = None
     created_at: datetime
     is_private: str = "false"  # "true" or "false" as string
     metadata: Optional[dict] = None
@@ -1911,14 +1947,44 @@ class MessageResponse(BaseModel):
             ).all()
             attachments = [ImageAttachmentResponse.from_orm(att) for att in image_attachments]
         
+        role_value = obj.role.value if hasattr(obj.role, 'value') else obj.role
+        meta_data = obj.meta_data if isinstance(obj.meta_data, dict) else None
+        render_content = (meta_data or {}).get("render_content")
+        if str(role_value).lower() == "assistant":
+            fmt = str((meta_data or {}).get("assistant_output_format") or "").strip().lower()
+            if fmt == "tagxml_v1":
+                fmt = FORMAT_LEGACY_XML_V1
+            looks_like_framelines = ("[[E]]" in str(obj.content or "")) and ("[[" in str(obj.content or ""))
+            looks_like_xml = "<assistant_response>" in str(obj.content or "")
+            looks_like_markdown = "---CHORUS_END---" in str(obj.content or "")
+            inferred_fmt = fmt
+            if inferred_fmt not in {FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1, FORMAT_MARKDOWN_V1}:
+                if looks_like_framelines:
+                    inferred_fmt = FORMAT_FRAMELINES_V2
+                elif looks_like_xml:
+                    inferred_fmt = FORMAT_LEGACY_XML_V1
+                elif looks_like_markdown:
+                    inferred_fmt = FORMAT_MARKDOWN_V1
+            template_id = (
+                ((meta_data or {}).get("structured_response") or {}).get("template")
+                if isinstance((meta_data or {}).get("structured_response"), dict)
+                else None
+            ) or "C"
+            try:
+                if inferred_fmt:
+                    render_content = render_for_ui(str(obj.content or ""), format_id=str(inferred_fmt), template_id=str(template_id))
+            except Exception:
+                pass
+
         return cls(
             id=obj.id,
             thread_id=obj.thread_id,
-            role=obj.role.value if hasattr(obj.role, 'value') else obj.role,
+            role=role_value,
             content=obj.content,
+            render_content=render_content,
             created_at=obj.created_at,
             is_private=obj.is_private,
-            metadata=obj.meta_data,
+            metadata=meta_data,
             has_audio=has_audio,
             audio_url=audio_url,
             audio_emotion=None,  # Reserved for future use
@@ -2032,6 +2098,7 @@ class InteractiveNarrativeSessionResponse(BaseModel):
     last_step_control_action: Optional[str] = None
     assistant_message_id: Optional[str] = None
     display_text: Optional[str] = None
+    render_content: Optional[str] = None
     in_flight: Optional[bool] = None
     queue_status: Optional[str] = None
 
@@ -4324,6 +4391,21 @@ async def _ens_config_change(
             source=source,
         ),
     )
+    failed_action = next(
+        (
+            result
+            for result in (outcome.action_results or [])
+            if result.get("status") == "failure"
+        ),
+        None,
+    )
+    if failed_action:
+        detail = (
+            failed_action.get("error_message")
+            or failed_action.get("error_code")
+            or f"ENS action failed: {failed_action.get('kind', 'unknown')}"
+        )
+        raise HTTPException(status_code=400, detail=detail)
     return dict(outcome.response_payload or {})
 
 
@@ -5873,6 +5955,19 @@ async def get_interactive_narrative_session(
             if last_event and isinstance(last_event.output_json, dict) and (last_event.output_json or {}).get("assistant_message_id")
             else None
         ),
+        display_text=(
+            str(((last_event.output_json or {}).get("display_text")))
+            if last_event and isinstance(last_event.output_json, dict) and (last_event.output_json or {}).get("display_text")
+            else None
+        ),
+        render_content=_render_interactive_display_content(
+            (
+                str(((last_event.output_json or {}).get("display_text")))
+                if last_event and isinstance(last_event.output_json, dict) and (last_event.output_json or {}).get("display_text")
+                else None
+            ),
+            conversation,
+        ),
     )
 
 
@@ -6131,6 +6226,7 @@ async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)
             ),
             assistant_message_id=latest_output.get("assistant_message_id"),
             display_text=latest_output.get("display_text"),
+            render_content=_render_interactive_display_content(latest_output.get("display_text"), conversation),
             in_flight=False,
             queue_status="idle",
         )
@@ -6190,6 +6286,7 @@ async def tick_interactive_narrative(loop_id: str, db: Session = Depends(get_db)
         last_step_control_action=payload.get("last_step_control_action") or payload.get("control_action"),
         assistant_message_id=payload.get("assistant_message_id"),
         display_text=payload.get("display_text"),
+        render_content=_render_interactive_display_content(payload.get("display_text"), conversation),
         in_flight=in_flight,
         queue_status=queue_status,
     )
@@ -6256,6 +6353,7 @@ async def advance_interactive_narrative(
             ),
             assistant_message_id=latest_output.get("assistant_message_id"),
             display_text=latest_output.get("display_text"),
+            render_content=_render_interactive_display_content(latest_output.get("display_text"), conversation),
             in_flight=False,
             queue_status="idle",
         )
@@ -6311,6 +6409,7 @@ async def advance_interactive_narrative(
                 last_step_control_action=payload.get("last_step_control_action") or payload.get("control_action"),
                 assistant_message_id=payload.get("assistant_message_id"),
                 display_text=payload.get("display_text"),
+                render_content=_render_interactive_display_content(payload.get("display_text"), conversation),
                 in_flight=False,
                 queue_status=queue_status,
             )
@@ -6354,6 +6453,7 @@ async def advance_interactive_narrative(
                 last_step_control_action=(latest_control or None),
                 assistant_message_id=(latest_message_id or None),
                 display_text=latest_output.get("display_text"),
+                render_content=_render_interactive_display_content(latest_output.get("display_text"), conversation),
                 in_flight=False,
                 queue_status="done",
             )
@@ -6407,6 +6507,173 @@ async def get_interactive_narrative_progress(loop_id: str, db: Session = Depends
         error=row.get("error"),
         updated_at=row.get("updated_at"),
     )
+
+
+@app.post("/interactive-narrative/{loop_id}/advance/stream")
+async def advance_interactive_narrative_stream(
+    loop_id: str,
+    timeout_ms: int = Query(default=90000, ge=1000, le=180000),
+    poll_interval_ms: int = Query(default=100, ge=50, le=1000),
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import StreamingResponse
+
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    session = (
+        db.query(ENSLoopSession)
+        .filter(ENSLoopSession.loop_id == loop_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Interactive narrative session not found")
+    if str(session.loop_kind or "") != "narrative.v1":
+        raise HTTPException(status_code=400, detail="Loop is not interactive narrative v1")
+
+    conversation = ConversationRepository(db).get_by_id(str(session.conversation_id or "")) if session.conversation_id else None
+    character = app_state["characters"].get(str(conversation.character_id)) if conversation and conversation.character_id else None
+    output_mode = _get_effective_output_mode(character)
+
+    async def _emit_nonstream_fallback() -> AsyncGenerator[str, None]:
+        try:
+            response = await advance_interactive_narrative(
+                loop_id=loop_id,
+                timeout_ms=timeout_ms,
+                poll_interval_ms=poll_interval_ms,
+                db=db,
+            )
+            content = response.render_content or response.display_text or ""
+            if content:
+                yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+            payload = dict(response.model_dump())
+            yield f"data: {json.dumps({'type': 'done', **payload})}\n\n"
+        except Exception as e:
+            logger.error("Interactive narrative streaming fallback failed: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    if output_mode != "markdown_v1":
+        return StreamingResponse(_emit_nonstream_fallback(), media_type="text/event-stream")
+
+    async def _event_stream() -> AsyncGenerator[str, None]:
+        try:
+            if str(session.state or "") not in ("running",):
+                response = await advance_interactive_narrative(
+                    loop_id=loop_id,
+                    timeout_ms=timeout_ms,
+                    poll_interval_ms=poll_interval_ms,
+                    db=db,
+                )
+                content = response.render_content or response.display_text or ""
+                if content:
+                    yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', **dict(response.model_dump())})}\n\n"
+                return
+
+            progress_store = app_state.get("loop_progress_status") or {}
+            if isinstance(progress_store.get(loop_id), dict):
+                payload = {
+                    "loop_id": session.loop_id,
+                    "state": str(session.state or "running"),
+                    "progression_enqueued": True,
+                    "created": False,
+                    "loop_kind": str(session.loop_kind),
+                    "loop_mode": str(session.loop_mode),
+                    "last_step_control_action": None,
+                    "assistant_message_id": None,
+                    "display_text": None,
+                    "render_content": None,
+                    "in_flight": True,
+                    "queue_status": "running",
+                }
+                yield f"data: {json.dumps({'type': 'done', **payload})}\n\n"
+                return
+
+            stream_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+            emitted_visible = False
+
+            async def _stream_callback(event: Dict[str, Any]) -> None:
+                await stream_queue.put(dict(event or {}))
+
+            signal = Signal(
+                type="loop_progression",
+                scope="SESSION",
+                source="external",
+                assistant_id=(str(conversation.character_id) if conversation and conversation.character_id else None),
+                payload={
+                    "loop_id": session.loop_id,
+                    "loop_kind": session.loop_kind,
+                    "relationship_id": session.relationship_id,
+                    "conversation_id": session.conversation_id,
+                    "surface_id": session.surface_id,
+                    "character_id": (str(conversation.character_id) if conversation and conversation.character_id else None),
+                },
+                relationship_hint=session.relationship_id,
+                surface_id=session.surface_id,
+            )
+
+            ingest_task = asyncio.create_task(
+                runtime.ingest(
+                    signal,
+                    ENSContext(
+                        app_state=app_state,
+                        surface=session.surface_id or "web",
+                        source=session.surface_id or "web",
+                        data={"stream_callback": _stream_callback, "streaming": True},
+                    ),
+                )
+            )
+
+            while True:
+                if ingest_task.done() and stream_queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(stream_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "content":
+                    chunk = str(event.get("content") or "")
+                    if chunk:
+                        emitted_visible = True
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+            outcome = await ingest_task
+            payload = dict(outcome.response_payload or {})
+            queue_status = str(payload.get("status") or "").strip().lower() or None
+            in_flight = bool(payload.get("queued")) or (queue_status in ("pending", "running"))
+            effective_state = str(payload.get("state") or session.state or ("running" if in_flight else "paused"))
+            progression_enqueued = bool(payload.get("next_progression_enqueued"))
+            if in_flight:
+                progression_enqueued = True
+            display_text = payload.get("display_text")
+            render_content = _render_interactive_display_content(display_text, conversation)
+
+            if not emitted_visible and render_content:
+                yield f"data: {json.dumps({'type': 'content', 'content': render_content})}\n\n"
+
+            done_payload = {
+                "loop_id": str(payload.get("loop_id") or loop_id),
+                "state": effective_state,
+                "progression_enqueued": progression_enqueued,
+                "created": False,
+                "loop_kind": str(payload.get("loop_kind") or session.loop_kind),
+                "loop_mode": str(payload.get("loop_mode") or session.loop_mode),
+                "last_step_control_action": payload.get("last_step_control_action") or payload.get("control_action"),
+                "assistant_message_id": payload.get("assistant_message_id"),
+                "display_text": display_text,
+                "render_content": render_content,
+                "in_flight": in_flight,
+                "queue_status": queue_status,
+            }
+            yield f"data: {json.dumps({'type': 'done', **done_payload})}\n\n"
+        except Exception as e:
+            logger.error("Interactive narrative stream error: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
 @app.get("/conversations/{conversation_id}/segments", response_model=List[ConversationSegmentResponse])
@@ -7573,30 +7840,13 @@ async def send_message(
     
     character = app_state["characters"][character_id]
 
-    flags = _ens_flags()
-    if flags["enabled"] and flags["slice7_unified_llm_invocation"] and (flags["nonstream_intake_only"] or not flags["slice1_chat_ownership"]):
-        raise HTTPException(
-            status_code=409,
-            detail="Legacy non-stream generation path is disabled when ens.slice7_unified_llm_invocation=true. Enable ens.slice1_chat_ownership=true.",
-        )
-    if flags["enabled"] and (flags["nonstream_intake_only"] or not flags["slice1_chat_ownership"]):
-        try:
-            await _ens_nonstream_intake_only(
-                thread_id=thread_id,
-                request=request,
-                conversation=conversation,
-                character_id=character_id,
-            )
-        except Exception as e:
-            logger.error(f"ENS non-stream intake failed: {e}", exc_info=True)
-    elif flags["enabled"]:
-        return await _ens_thread_chat(
-            thread_id=thread_id,
-            request=request,
-            db=db,
-            conversation=conversation,
-            character_id=character_id,
-        )
+    return await _ens_thread_chat(
+        thread_id=thread_id,
+        request=request,
+        db=db,
+        conversation=conversation,
+        character_id=character_id,
+    )
     
     # Check LLM availability
     llm_client = app_state["llm_client"]
@@ -8536,38 +8786,56 @@ async def send_message(
         )
         
         template = _get_effective_template(character)
-        allowed_channels, required_channels = template_rules(template)
+        output_mode = _get_effective_output_mode(character)
         finalized = response_finalizer.finalize(
             response_content,
-            adapter_name="xml",
-            allowed_channels=allowed_channels,
-            required_channels=required_channels,
+            output_mode=output_mode,
+            template_id=template,
         )
-        
-        segments = finalized.segments
-        if finalized.had_untagged:
-            logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation.id}")
-        segments = _apply_media_prefix(segments, media_prefix)
-        
-        citations_text = _build_plain_citations(doc_context)
-        if citations_text:
-            logger.info(f"Appended {len(doc_context.citations)} citations to response")
-        segments = _append_citations_to_segments(segments, citations_text)
-        
-        response_content = "".join(
-            ["<assistant_response>"]
-            + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments]
-            + ["</assistant_response>"]
+        canonical = normalize_to_mode(
+            finalized.text,
+            target_mode=output_mode,
+            template_id=template,
+            metadata={"assistant_output_format": output_mode},
         )
+        response_content = str(canonical.get("canonical_text") or "").strip()
+        if output_mode == FORMAT_MARKDOWN_V1:
+            if media_prefix:
+                response_content = f"{media_prefix}{response_content}".strip() if response_content else media_prefix.strip()
+            citations_text = _build_plain_citations(doc_context)
+            if citations_text:
+                logger.info(f"Appended {len(doc_context.citations)} citations to response")
+                response_content = f"{response_content}{citations_text}".strip()
+        else:
+            segments = finalized.segments
+            if finalized.had_untagged:
+                logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation.id}")
+            segments = _apply_media_prefix(segments, media_prefix)
+            citations_text = _build_plain_citations(doc_context)
+            if citations_text:
+                logger.info(f"Appended {len(doc_context.citations)} citations to response")
+            segments = _append_citations_to_segments(segments, citations_text)
+            if output_mode == FORMAT_LEGACY_XML_V1:
+                response_content = normalize_to_mode(
+                    "".join(["<assistant_response>"] + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments] + ["</assistant_response>"]),
+                    target_mode=FORMAT_LEGACY_XML_V1,
+                    template_id=template,
+                    metadata={"assistant_output_format": FORMAT_LEGACY_XML_V1},
+                )["canonical_text"]
+            else:
+                response_content = segments_to_framelines_v2(segments, template_id=template)
+        response_render_content = render_for_ui(response_content, format_id=output_mode, template_id=template)
         
         # Save assistant message
         assistant_message = msg_repo.create(
             thread_id=thread_id,
             role=MessageRole.ASSISTANT,
-            content=response_content,  # Use response with citations
+            content=response_content,
             metadata={
                 "model": app_state["system_config"].llm.model,
                 "character": character.name,
+                "assistant_output_format": output_mode,
+                "render_content": response_render_content,
                 "used_moment_pin_ids": injected_moment_pin_ids,
                 "structured_response": {
                     "is_fallback": finalized.is_fallback,
@@ -8578,7 +8846,8 @@ async def send_message(
                     "adapter": finalized.adapter_name,
                     "adapter_diagnostics": finalized.diagnostics,
                     "template": template,
-                    "raw_response": raw_response_content
+                    "raw_response": raw_response_content,
+                    "post_end_tail": finalized.post_end_tail,
                 }
             }
         )
@@ -9073,64 +9342,183 @@ async def send_message_stream(
     
     character = app_state["characters"][character_id]
 
-    flags = _ens_flags()
-    if flags["enabled"] and flags["streaming_intake_only"]:
-        try:
-            conversation_source = request.conversation_source or conversation.source or "web"
-            surface_fields = _build_surface_envelope_fields(
-                thread_id=thread_id,
-                conversation_source=conversation_source,
-                metadata=request.metadata,
-                speaker_role="user",
-                target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
-            )
-            intake_signal = Signal(
-                type="user.message.stream_intake",
-                scope="SESSION",
-                source="external",
-                assistant_id=character_id,
-                surface_id=surface_fields["surface_id"],
-                surface_instance_id=surface_fields["surface_instance_id"],
-                external_thread_id=surface_fields["external_thread_id"],
-                speaker_external_id=surface_fields["speaker_external_id"],
-                speaker_role=surface_fields["speaker_role"],
-                relationship_hint=surface_fields["relationship_hint"],
-                target_hint=surface_fields["target_hint"],
-                message_external_id=surface_fields["message_external_id"],
-                payload={
-                    "thread_id": thread_id,
-                    "conversation_id": conversation.id,
-                    "content": request.message,
-                    "metadata": request.metadata,
-                    "is_private": conversation.is_private == "true",
-                    "client_message_id": (request.metadata or {}).get("client_message_id"),
-                    "speaker_external_id": surface_fields["speaker_external_id"],
-                    "speaker_role": surface_fields["speaker_role"],
-                    "surface_id": surface_fields["surface_id"],
-                    "surface_instance_id": surface_fields["surface_instance_id"],
-                    "external_thread_id": surface_fields["external_thread_id"],
-                    "relationship_hint": surface_fields["relationship_hint"],
-                    "target_hint": surface_fields["target_hint"],
-                    "message_external_id": surface_fields["message_external_id"],
-                    "latency_sensitive": True,
-                },
-            )
-            await app_state["ens_runtime"].ingest(
-                intake_signal,
+    runtime = app_state.get("ens_runtime")
+    if not runtime:
+        raise HTTPException(status_code=503, detail="ENS runtime not initialized")
+
+    output_mode = _get_effective_output_mode(character)
+
+    async def _emit_nonstream_fallback() -> AsyncGenerator[str, None]:
+        result = await _ens_thread_chat(
+            thread_id=thread_id,
+            request=request,
+            db=db,
+            conversation=conversation,
+            character_id=character_id,
+        )
+        user_payload = {
+            "type": "user_message",
+            "content": result.user_message.content,
+            "id": result.user_message.id,
+        }
+        yield f"data: {json.dumps(user_payload)}\n\n"
+        display_content = (
+            result.assistant_message.render_content
+            or result.assistant_message.content
+            or ""
+        )
+        yield f"data: {json.dumps({'type': 'content', 'content': display_content})}\n\n"
+        tool_calls = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in (result.pending_tool_calls or [])]
+        if tool_calls:
+            yield f"data: {json.dumps({'type': 'tool_calls', 'tool_calls': tool_calls})}\n\n"
+        done_payload = {
+            "type": "done",
+            "message_id": result.assistant_message.id,
+            "normalized_content": result.assistant_message.content,
+            "assistant_message": (
+                result.assistant_message.model_dump(mode="json")
+                if hasattr(result.assistant_message, "model_dump")
+                else {}
+            ),
+            "pending_tool_calls": tool_calls,
+            "conversation_title_updated": result.conversation_title_updated,
+        }
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    if output_mode in {FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1}:
+        return StreamingResponse(
+            _emit_nonstream_fallback(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    async def generate_stream_ens():
+        queue: asyncio.Queue = asyncio.Queue()
+        conversation_source = request.conversation_source or conversation.source or "web"
+        surface_fields = _build_surface_envelope_fields(
+            thread_id=thread_id,
+            conversation_source=conversation_source,
+            metadata=request.metadata,
+            speaker_role="user",
+            target_hint_default="general_chat" if conversation.conversation_kind == "general_chat" else None,
+        )
+
+        async def _stream_callback(event: Dict[str, Any]) -> None:
+            await queue.put(dict(event or {}))
+
+        signal = Signal(
+            type="user.message.stream",
+            scope="SESSION",
+            source="external",
+            assistant_id=character_id,
+            idempotency_key=(
+                f"signal:user.message.stream:{conversation.id}:{thread_id}:{((request.metadata or {}).get('client_message_id') or (surface_fields['message_external_id'] or ''))}"
+                if ((request.metadata or {}).get("client_message_id") or surface_fields["message_external_id"])
+                else None
+            ),
+            surface_id=surface_fields["surface_id"],
+            surface_instance_id=surface_fields["surface_instance_id"],
+            external_thread_id=surface_fields["external_thread_id"],
+            speaker_external_id=surface_fields["speaker_external_id"],
+            speaker_role=surface_fields["speaker_role"],
+            relationship_hint=surface_fields["relationship_hint"],
+            target_hint=surface_fields["target_hint"],
+            message_external_id=surface_fields["message_external_id"],
+            payload={
+                "thread_id": thread_id,
+                "conversation_id": conversation.id,
+                "content": request.message,
+                "metadata": request.metadata,
+                "is_private": conversation.is_private == "true",
+                "client_message_id": (request.metadata or {}).get("client_message_id"),
+                "conversation_source": conversation_source,
+                "image_attachment_ids": request.image_attachment_ids or [],
+                "surface_id": surface_fields["surface_id"],
+                "surface_instance_id": surface_fields["surface_instance_id"],
+                "external_thread_id": surface_fields["external_thread_id"],
+                "speaker_external_id": surface_fields["speaker_external_id"],
+                "speaker_role": surface_fields["speaker_role"],
+                "relationship_hint": surface_fields["relationship_hint"],
+                "target_hint": surface_fields["target_hint"],
+                "message_external_id": surface_fields["message_external_id"],
+                "latency_sensitive": True,
+            },
+            tags=["latency_sensitive"] if conversation_source == "voice" else [],
+        )
+
+        ingest_task = asyncio.create_task(
+            runtime.ingest(
+                signal,
                 ENSContext(
                     app_state=app_state,
                     surface=conversation_source,
                     source=conversation_source,
+                    data={"stream_callback": _stream_callback},
                 ),
             )
-        except Exception as e:
-            logger.error(f"ENS stream intake failed: {e}", exc_info=True)
-    if flags["enabled"] and flags["slice7_unified_llm_invocation"]:
-        raise HTTPException(
-            status_code=409,
-            detail="Legacy streaming generation path is disabled when ens.slice7_unified_llm_invocation=true",
         )
-    
+        try:
+            while True:
+                if ingest_task.done() and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                evt_type = str(event.get("type") or "")
+                if evt_type in {"user_message", "content", "tool_calls", "title_updated"}:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+            outcome = await ingest_task
+            payload = dict(outcome.response_payload or {})
+            user_message_id = payload.get("user_message_id")
+            assistant_message_id = payload.get("assistant_message_id")
+            pending_tool_calls = payload.get("pending_tool_calls") or []
+            if pending_tool_calls:
+                yield f"data: {json.dumps({'type': 'tool_calls', 'tool_calls': pending_tool_calls})}\n\n"
+
+            msg_repo = MessageRepository(db)
+            assistant_msg_obj = msg_repo.get_by_id(assistant_message_id) if assistant_message_id else None
+            assistant_msg = (
+                MessageResponse.from_orm(assistant_msg_obj, db_session=db)
+                if assistant_msg_obj is not None
+                else None
+            )
+
+            done_payload = {
+                "type": "done",
+                "message_id": assistant_message_id,
+                "normalized_content": (assistant_msg.content if assistant_msg else ""),
+                "assistant_message": (
+                    assistant_msg.model_dump(mode="json")
+                    if (assistant_msg is not None and hasattr(assistant_msg, "model_dump"))
+                    else None
+                ),
+                "pending_tool_calls": pending_tool_calls,
+                "conversation_title_updated": payload.get("conversation_title_updated"),
+            }
+            yield f"data: {json.dumps(done_payload)}\n\n"
+        except Exception as e:
+            logger.error("ENS streaming error: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        finally:
+            if not ingest_task.done():
+                ingest_task.cancel()
+
+    return StreamingResponse(
+        generate_stream_ens(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
     # Check LLM availability
     llm_client = app_state["llm_client"]
     if not llm_client:
@@ -9905,29 +10293,50 @@ async def send_message_stream(
             )
             
             template = _get_effective_template(character_config_for_stream)
-            allowed_channels, required_channels = template_rules(template)
+            output_mode = _get_effective_output_mode(character_config_for_stream)
             finalized = response_finalizer.finalize(
                 extracted.display_text,
-                adapter_name="xml",
-                allowed_channels=allowed_channels,
-                required_channels=required_channels,
+                output_mode=output_mode,
+                template_id=template,
             )
-            
-            segments = finalized.segments
-            if finalized.had_untagged:
-                logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation_id_for_stream}")
-            segments = _apply_media_prefix(segments, media_prefix)
-            
-            citations_text = _build_plain_citations(doc_context)
-            if citations_text:
-                logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
-            segments = _append_citations_to_segments(segments, citations_text)
-            
-            normalized_content = "".join(
-                ["<assistant_response>"]
-                + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments]
-                + ["</assistant_response>"]
-            )
+
+            normalized_content = normalize_to_mode(
+                finalized.text,
+                target_mode=output_mode,
+                template_id=template,
+                metadata={"assistant_output_format": output_mode},
+            )["canonical_text"]
+            if output_mode == FORMAT_MARKDOWN_V1:
+                if media_prefix:
+                    normalized_content = f"{media_prefix}{normalized_content}".strip() if normalized_content else media_prefix.strip()
+                citations_text = _build_plain_citations(doc_context)
+                if citations_text:
+                    logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
+                    normalized_content = f"{normalized_content}{citations_text}".strip()
+            elif output_mode == FORMAT_LEGACY_XML_V1:
+                segments = finalized.segments
+                if finalized.had_untagged:
+                    logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation_id_for_stream}")
+                segments = _apply_media_prefix(segments, media_prefix)
+                citations_text = _build_plain_citations(doc_context)
+                if citations_text:
+                    logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
+                segments = _append_citations_to_segments(segments, citations_text)
+                normalized_content = "".join(
+                    ["<assistant_response>"]
+                    + [f"<{seg.channel}>{seg.text}</{seg.channel}>" for seg in segments]
+                    + ["</assistant_response>"]
+                )
+            else:
+                segments = finalized.segments
+                if finalized.had_untagged:
+                    logger.warning(f"[STRUCTURED RESPONSE] Normalized untagged text for conversation {conversation_id_for_stream}")
+                segments = _apply_media_prefix(segments, media_prefix)
+                citations_text = _build_plain_citations(doc_context)
+                if citations_text:
+                    logger.info(f"Appended {len(doc_context.citations)} citations to response (stream)")
+                segments = _append_citations_to_segments(segments, citations_text)
+                normalized_content = segments_to_framelines_v2(segments, template_id=template)
             yield f"data: {json.dumps({'type': 'content', 'content': normalized_content})}\n\n"
             
             # Log the full interaction to debug file
@@ -9960,6 +10369,8 @@ async def send_message_stream(
                     metadata={
                         "model": app_state["system_config"].llm.model,
                         "character": character_name,
+                        "assistant_output_format": output_mode,
+                        "render_content": render_for_ui(normalized_content, format_id=output_mode, template_id=template),
                         "used_moment_pin_ids": injected_moment_pin_ids_for_stream,
                         "structured_response": {
                             "is_fallback": finalized.is_fallback,

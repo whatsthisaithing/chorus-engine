@@ -43,6 +43,12 @@ from chorus_engine.db.conversation_summary_vector_store import ConversationSumma
 from chorus_engine.db.moment_pin_vector_store import MomentPinVectorStore
 from chorus_engine.services.moment_pin_retrieval_service import MomentPinRetrievalService
 from chorus_engine.ens.tool_registry import TOOL_MOMENT_PIN_COLD_RECALL
+from chorus_engine.services.assistant_content import (
+    FORMAT_MARKDOWN_V1,
+    normalize_to_framelines_v2,
+    normalize_to_markdown_v1,
+    normalize_to_legacy_xml_v1,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -652,18 +658,18 @@ class PromptAssemblyService:
                     is_first_message=True
                 )
                 greeting_instructions = self.greeting_service.format_greeting_instructions(greeting_context)
-                system_prompt += f"\n\n**CONVERSATION CONTEXT:**\n{greeting_instructions}"
+                system_prompt += f"\n\n## Conversation Context\n{greeting_instructions}"
             except Exception as e:
                 # Greeting context is optional - don't fail if it errors
                 logger.warning(f"Failed to add greeting context: {e}")
         
         # If an image is being generated, add context about it to the system prompt
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n## Image Being Generated\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\n### Critical\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send images/photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # If a video is being generated, add context about it to the system prompt
         if video_prompt_context:
-            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n## Video Being Generated\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\n### Critical\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS actively being generated and will be attached to your message. DO NOT refuse, apologize, or say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -985,11 +991,11 @@ class PromptAssemblyService:
         
         # Add image context if present
         if image_prompt_context:
-            system_prompt += f"\n\n**IMAGE BEING GENERATED:**\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\nCRITICAL:\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n## Image Being Generated\nYou are creating/sending an image for the user. The image being generated shows EXACTLY this:\n\n{image_prompt_context}\n\n### Critical\n- You MUST describe the image in 2–5 sentences.\n- Include at least 5 concrete visual details from the prompt (subjects, setting, lighting, composition, mood, colors, clothing, props).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the image right now.\n- Do NOT evaluate or comment on the image quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe image IS being generated and will be attached to your message. DO NOT say you can't send photos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Add video context if present
         if video_prompt_context:
-            system_prompt += f"\n\n**VIDEO BEING GENERATED:**\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\nCRITICAL:\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS being generated and will be attached to your message. DO NOT say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
+            system_prompt += f"\n\n## Video Being Generated\nYou are creating/sending a video for the user. The video being generated shows EXACTLY this:\n\n{video_prompt_context}\n\n### Critical\n- You MUST describe the video in 2–5 sentences, in FIRST-PERSON.\n- Include at least 5 concrete visual or motion details from the prompt (setting, action, camera movement, lighting, mood).\n- Do NOT add new elements or change the scene.\n- Speak as if you are sharing the video right now.\n- Do NOT evaluate or comment on the video quality or whether it \"captures\" someone well; just describe what is visible.\n- Return only the description. Do not include preambles, lead-ins, or questions.\n\nThe video IS being generated and will be attached to your message. DO NOT say you can't send videos. Do NOT respond with only a short opener. Your reply must include the descriptive summary above."
         
         # Count base system prompt tokens (before document injection)
         base_system_tokens = self.token_counter.count_tokens(system_prompt)
@@ -1214,11 +1220,11 @@ class PromptAssemblyService:
         if time_header:
             user_info_lines.append(f"- {time_header}")
         
-        user_info_section = "User Info (authoritative):"
+        user_info_section = "## User Info (authoritative)"
         if user_info_lines:
             user_info_section = "\n".join([user_info_section] + user_info_lines)
         
-        character_section = "Your Character Context:\n" + system_prompt
+        character_section = "## Your Character Context\n" + system_prompt
         
         return "\n\n".join([user_info_section, character_section])
 
@@ -1308,6 +1314,29 @@ class PromptAssemblyService:
         weekday = now.strftime("%A")
         
         return f"Current local time (server): {timestamp} {tz_label} ({weekday})"
+
+    def _assistant_template_id(self) -> str:
+        try:
+            loader = ConfigLoader()
+            character = loader.load_character(self.character_id)
+            template = str(getattr(character, "response_template", "") or "").strip().upper()
+            if template in {"A", "B", "C", "D"}:
+                return template
+            level = str(getattr(character, "immersion_level", "balanced") or "balanced").strip().lower()
+            return "A" if level in {"full", "unbounded"} else "C"
+        except Exception:
+            return "C"
+
+    def _assistant_output_mode(self) -> str:
+        try:
+            loader = ConfigLoader()
+            character = loader.load_character(self.character_id)
+            mode = str(getattr(character, "output_mode", "") or "").strip().lower()
+            if mode in {"markdown_v1", "framelines_v2", "legacy_xml_v1"}:
+                return mode
+            return FORMAT_MARKDOWN_V1
+        except Exception:
+            return FORMAT_MARKDOWN_V1
     
     def format_for_api(
         self,
@@ -1424,6 +1453,37 @@ class PromptAssemblyService:
                         content = content.split(pattern)[0].strip()
                         if content:  # Only log if there's actual content remaining
                             logger.debug(f"Removed error suffix from response, keeping: {content[:100]}...")
+                if content.strip():
+                    template_id = self._assistant_template_id()
+                    output_mode = self._assistant_output_mode()
+                    meta = (msg.meta_data if isinstance(msg.meta_data, dict) else None)
+                    if output_mode == "framelines_v2":
+                        content = normalize_to_framelines_v2(
+                            content,
+                            template_id=template_id,
+                            metadata=meta,
+                        ).canonical_text
+                    elif output_mode == "legacy_xml_v1":
+                        content = "".join([
+                            "<assistant_response>",
+                            "".join(
+                                [
+                                    f"<{seg.channel}>{seg.text}</{seg.channel}>"
+                                    for seg in normalize_to_legacy_xml_v1(
+                                        content,
+                                        template_id=template_id,
+                                        metadata=meta,
+                                    ).segments
+                                ]
+                            ),
+                            "</assistant_response>",
+                        ])
+                    else:
+                        content = normalize_to_markdown_v1(
+                            content,
+                            template_id=template_id,
+                            metadata=meta,
+                        ).canonical_text
             
             # For multi-user contexts, prepend username to user messages
             if is_multi_user and msg.role == MessageRole.USER:
@@ -1656,3 +1716,4 @@ def get_prompt_assembler(
         )
     
     return _prompt_assembler_cache[cache_key]
+

@@ -29,12 +29,12 @@ def test_slice0_non_stream_creates_session_decision_and_jsonl(client, db, helper
     session_rows = db.query(ENSSession).filter(ENSSession.thread_id == thread_id).all()
     assert len(session_rows) == 1
 
-    decisions = db.query(ENSDecision).filter(ENSDecision.signal_type == "user.message.nonstream_intake").all()
+    decisions = db.query(ENSDecision).filter(ENSDecision.signal_type == "user.message").all()
     assert len(decisions) >= 1
 
     jsonl = Path("data/debug_logs/ens/decisions.jsonl")
     assert jsonl.exists()
-    assert "user.message.nonstream_intake" in jsonl.read_text(encoding="utf-8")
+    assert "user.message" in jsonl.read_text(encoding="utf-8")
 
 
 def test_slice1_idempotent_replay_no_duplicate_assistant(client, db, helpers):
@@ -167,7 +167,7 @@ def test_streaming_intake_creates_decision_record(client, db, helpers):
 
     decisions = (
         db.query(ENSDecision)
-        .filter(ENSDecision.signal_type == "user.message.stream_intake")
+        .filter(ENSDecision.signal_type == "user.message.stream")
         .count()
     )
     assert decisions >= 1

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from chorus_engine.config import ConfigLoader
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import (
     ENSActionResult,
@@ -75,8 +76,14 @@ from chorus_engine.ens.loop_memory_compression import (
     canonical_hash,
     fold_memory_payloads,
 )
-from chorus_engine.services.structured_response import (
-    template_rules,
+from chorus_engine.services.assistant_content import (
+    FORMAT_FRAMELINES_V2,
+    FORMAT_LEGACY_XML_V1,
+    FORMAT_MARKDOWN_V1,
+    ThinkingCaptureProcessor,
+    normalize_to_mode,
+    render_for_ui,
+    segments_to_framelines_v2,
 )
 from chorus_engine.services.response_finalizer import ResponseFinalizer
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
@@ -106,6 +113,94 @@ _VALID_LOOP_MODES = {"visible", "hidden"}
 _LOOP_COMPRESSION_ALGO_VERSION = "fold_v1"
 
 
+class _ToolPayloadDeltaSuppressor:
+    """Suppress sentinel tool payload blocks across arbitrary stream chunk boundaries."""
+
+    _BEGIN = "---CHORUS_TOOL_PAYLOAD_BEGIN---"
+    _END = "---CHORUS_TOOL_PAYLOAD_END---"
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_payload = False
+
+    def process(self, delta: str) -> str:
+        text = self._buffer + str(delta or "")
+        self._buffer = ""
+        if not text:
+            return ""
+        out: List[str] = []
+        i = 0
+        while i < len(text):
+            if not self._in_payload:
+                begin_idx = text.find(self._BEGIN, i)
+                if begin_idx == -1:
+                    # Keep small tail to tolerate split BEGIN marker.
+                    keep = min(len(self._BEGIN) - 1, len(text) - i)
+                    emit_end = len(text) - keep
+                    if emit_end > i:
+                        out.append(text[i:emit_end])
+                    self._buffer = text[emit_end:]
+                    i = len(text)
+                else:
+                    out.append(text[i:begin_idx])
+                    i = begin_idx + len(self._BEGIN)
+                    self._in_payload = True
+            else:
+                end_idx = text.find(self._END, i)
+                if end_idx == -1:
+                    # Keep small tail to tolerate split END marker.
+                    keep = min(len(self._END) - 1, len(text) - i)
+                    self._buffer = text[len(text) - keep :]
+                    i = len(text)
+                else:
+                    i = end_idx + len(self._END)
+                    self._in_payload = False
+        return "".join(out)
+
+    def finalize(self) -> str:
+        if self._in_payload:
+            return ""
+        tail = self._buffer
+        self._buffer = ""
+        return tail
+
+
+class _MarkdownTerminatorSuppressor:
+    """Stops visible stream output at first standalone ---CHORUS_END--- line."""
+
+    _END = "---CHORUS_END---"
+
+    def __init__(self) -> None:
+        self._line_buffer = ""
+        self._done = False
+
+    def process(self, delta: str) -> str:
+        if self._done:
+            return ""
+        self._line_buffer += str(delta or "")
+        out: List[str] = []
+        while "\n" in self._line_buffer:
+            line, rest = self._line_buffer.split("\n", 1)
+            self._line_buffer = rest
+            if line.strip() == self._END:
+                self._done = True
+                self._line_buffer = ""
+                break
+            out.append(line + "\n")
+        return "".join(out)
+
+    def finalize(self) -> str:
+        if self._done:
+            self._line_buffer = ""
+            return ""
+        tail = self._line_buffer
+        if tail.strip() == self._END:
+            self._done = True
+            tail = ""
+        self._line_buffer = ""
+        return tail
+
+
 def _get_effective_template(character) -> str:
     if getattr(character, "response_template", None):
         return character.response_template
@@ -115,18 +210,12 @@ def _get_effective_template(character) -> str:
     return "C"
 
 
-def _looks_like_structured_content(text: str) -> bool:
-    if not text:
-        return False
-    markers = (
-        "<assistant_response",
-        "<speech>",
-        "<physicalaction>",
-        "<innerthought>",
-        "<narration>",
-        "<action>",
-    )
-    return any(marker in text for marker in markers)
+def _get_effective_output_mode(character) -> str:
+    mode = str(getattr(character, "output_mode", "") or "").strip().lower()
+    if mode in {FORMAT_MARKDOWN_V1, FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1}:
+        return mode
+    return FORMAT_MARKDOWN_V1
+
 
 def _attempt_media_payload_repair_prompt(
     *,
@@ -647,6 +736,10 @@ class ENSDispatcher:
                 output = self._evaluate_media_gating(db, action.params)
             elif action.kind == "llm.invoke.chat":
                 output = await self._invoke_llm_chat(db, action.params)
+            elif action.kind == "llm.invoke.chat_stream":
+                params = dict(action.params or {})
+                params["streaming"] = True
+                output = await self._invoke_llm_chat(db, params)
             elif action.kind == "tool_payload.adjudicate":
                 output = self._adjudicate_tool_payload(db, action.params)
             elif action.kind == "tool_call.persist_pending":
@@ -1562,7 +1655,46 @@ class ENSDispatcher:
                 "used_moment_pin_ids": prompt_used_pin_ids,
             },
         )
-        invocation = await self.llm_invoker.invoke(request)
+        stream_callback = params.get("stream_callback")
+        streaming_enabled = bool(params.get("streaming"))
+        thinking_processor = ThinkingCaptureProcessor() if streaming_enabled else None
+        payload_suppressor = _ToolPayloadDeltaSuppressor() if streaming_enabled else None
+        markdown_terminator = _MarkdownTerminatorSuppressor() if streaming_enabled else None
+
+        async def _emit_visible_delta(delta: str) -> None:
+            if not stream_callback:
+                return
+            visible = str(delta or "")
+            if thinking_processor is not None:
+                thinking_step = thinking_processor.process_delta(visible)
+                visible = str(thinking_step.visible_delta or "")
+            if payload_suppressor is not None:
+                visible = payload_suppressor.process(visible)
+            if markdown_terminator is not None:
+                visible = markdown_terminator.process(visible)
+            if visible:
+                out = stream_callback({"type": "content", "content": visible})
+                if hasattr(out, "__await__"):
+                    await out
+
+        if streaming_enabled:
+            invocation = await self.llm_invoker.invoke_stream(
+                request,
+                on_event=lambda ev: _emit_visible_delta(ev.get("content_delta", "")) if isinstance(ev, dict) else None,
+            )
+            trailing_visible = ""
+            if thinking_processor is not None:
+                trailing_visible += str(thinking_processor.finalize().visible_delta or "")
+            if payload_suppressor is not None:
+                trailing_visible = payload_suppressor.process(trailing_visible) + payload_suppressor.finalize()
+            if markdown_terminator is not None:
+                trailing_visible = markdown_terminator.process(trailing_visible) + markdown_terminator.finalize()
+            if trailing_visible and stream_callback:
+                out = stream_callback({"type": "content", "content": trailing_visible})
+                if hasattr(out, "__await__"):
+                    await out
+        else:
+            invocation = await self.llm_invoker.invoke(request)
         if invocation.get("status") != "success":
             error = (invocation.get("error") or {}).get("message") or "LLM invocation failed"
             raise RuntimeError(error)
@@ -1794,37 +1926,42 @@ class ENSDispatcher:
                     payload_type,
                     thread_id,
                 )
-        if _looks_like_structured_content(display_text):
-            template = _get_effective_template(character)
-            allowed_channels, required_channels = template_rules(template)
-            finalized = self.response_finalizer.finalize(
-                display_text,
-                adapter_name="xml",
-                allowed_channels=allowed_channels,
-                required_channels=required_channels,
-            )
-            display_text = finalized.text
-            assistant_metadata["structured_response"] = {
-                "is_fallback": finalized.is_fallback,
-                "parse_error": finalized.parse_error,
-                "had_untagged": finalized.had_untagged,
-                "template": template,
-                "raw_response": raw_content,
-                "adapter": finalized.adapter_name,
-                "adapter_diagnostics": dict(finalized.diagnostics or {}),
-            }
-            if finalized.unknown_tags or finalized.trailing_text_dropped:
-                assistant_metadata["structured_response"]["invalid_output"] = {
-                    "unknown_tags": finalized.unknown_tags,
-                    "trailing_text": bool(finalized.trailing_text_dropped),
-                    "action": "dropped",
-                }
-                logger.warning(
-                    "structured_response.invalid_output: unknown_tags=%s trailing_text=%s action=dropped thread_id=%s",
-                    finalized.unknown_tags,
-                    bool(finalized.trailing_text_dropped),
-                    thread_id,
-                )
+        template = _get_effective_template(character)
+        output_mode = _get_effective_output_mode(character)
+        finalized = self.response_finalizer.finalize(
+            display_text,
+            output_mode=output_mode,
+            template_id=template,
+        )
+        display_segments = list(finalized.segments or [])
+        if output_mode == FORMAT_FRAMELINES_V2:
+            display_text = segments_to_framelines_v2(display_segments, template_id=template)
+        elif output_mode == FORMAT_LEGACY_XML_V1:
+            display_text = normalize_to_mode(
+                finalized.text,
+                target_mode=FORMAT_LEGACY_XML_V1,
+                template_id=template,
+                metadata={"assistant_output_format": FORMAT_LEGACY_XML_V1},
+            )["canonical_text"]
+        else:
+            display_text = normalize_to_mode(
+                finalized.text,
+                target_mode=FORMAT_MARKDOWN_V1,
+                template_id=template,
+                metadata={"assistant_output_format": FORMAT_MARKDOWN_V1},
+            )["canonical_text"]
+        assistant_metadata["assistant_output_format"] = output_mode
+        assistant_metadata["render_content"] = render_for_ui(display_text, format_id=output_mode, template_id=template)
+        assistant_metadata["structured_response"] = {
+            "is_fallback": finalized.is_fallback,
+            "parse_error": finalized.parse_error,
+            "had_untagged": finalized.had_untagged,
+            "template": template,
+            "raw_response": raw_content,
+            "adapter": finalized.adapter_name,
+            "adapter_diagnostics": dict(finalized.diagnostics or {}),
+            "post_end_tail": finalized.post_end_tail,
+        }
         detected_raw_malformed, detected_raw_payload_type = detect_malformed_tool_payload_block(raw_content)
         if detected_raw_malformed and not malformed_tool_payload_non_sentinel:
             malformed_tool_payload_non_sentinel = True
@@ -2497,18 +2634,36 @@ class ENSDispatcher:
         threads = thread_repo.list_by_conversation(conversation_id)
         if not threads:
             return None
+        template_id = "C"
+        output_mode = FORMAT_MARKDOWN_V1
+        try:
+            conversation = ConversationRepository(db).get_by_id(conversation_id)
+            character_id = getattr(conversation, "character_id", None) if conversation is not None else None
+            if character_id:
+                loader = self.app_state.get("config_loader")
+                if loader is None:
+                    loader = ConfigLoader()
+                character = loader.load_character(str(character_id))
+                template_id = _get_effective_template(character)
+                output_mode = _get_effective_output_mode(character)
+        except Exception:
+            template_id = "C"
+            output_mode = FORMAT_MARKDOWN_V1
         msg_repo = MessageRepository(db)
+        metadata = {
+            "assistant_output_format": output_mode,
+            "render_content": render_for_ui(text, format_id=output_mode, template_id=template_id),
+            "loop": {
+                "loop_id": session.loop_id,
+                "control_action": control_action,
+                "step_index": step_index,
+            },
+        }
         created = msg_repo.create(
             thread_id=threads[0].id,
             role=MessageRole.ASSISTANT,
             content=text,
-            metadata={
-                "loop": {
-                    "loop_id": session.loop_id,
-                    "control_action": control_action,
-                    "step_index": step_index,
-                }
-            },
+            metadata=metadata,
             is_private=False,
         )
         return str(created.id)
@@ -3086,6 +3241,11 @@ class ENSDispatcher:
         outcome_rung3_json_schema: Dict[str, Any] = {"attempted": False, "success": False, "reason": "not_invoked", "action": None}
         primary_pass_assistant_result: Optional[AssistantResult] = None
         primary_pass_raw_content = ""
+        stream_callback = params.get("stream_callback")
+        streaming_requested = bool(params.get("streaming")) and callable(stream_callback)
+        loop_template = _get_effective_template(character)
+        loop_output_mode = _get_effective_output_mode(character)
+        enable_primary_streaming = bool(streaming_requested and loop_output_mode == FORMAT_MARKDOWN_V1)
 
         async def _run_pass(pass_plan: StepPassPlan, loopback_payload: Optional[Dict[str, Any]]) -> PassExecutionResult:
             _ = loopback_payload
@@ -3122,7 +3282,51 @@ class ENSDispatcher:
                     stage_a_request_kwargs["prompt"] = step_prompt
                     stage_a_request_kwargs["system_prompt"] = loop_system_prompt
 
-                stage_invocation = await self.llm_invoker.invoke(InvocationRequest(**stage_a_request_kwargs))
+                if enable_primary_streaming and callable(stream_callback):
+                    thinking_processor = ThinkingCaptureProcessor()
+                    payload_suppressor = _ToolPayloadDeltaSuppressor()
+                    markdown_terminator = _MarkdownTerminatorSuppressor()
+
+                    async def _emit_stream_content(text: str) -> None:
+                        payload = {"type": "content", "content": text}
+                        out = stream_callback(payload)
+                        if hasattr(out, "__await__"):
+                            await out
+
+                    async def _on_stage_stream_event(event: Dict[str, Any]) -> None:
+                        if not isinstance(event, dict) or event.get("type") != "content_delta":
+                            return
+                        delta = str(event.get("content_delta") or "")
+                        if not delta:
+                            return
+                        visible = delta
+                        think_result = thinking_processor.process_delta(visible)
+                        visible = think_result.visible_delta
+                        if payload_suppressor:
+                            visible = payload_suppressor.process_delta(visible)
+                        if markdown_terminator:
+                            visible = markdown_terminator.process_delta(visible)
+                        if visible:
+                            await _emit_stream_content(visible)
+
+                    stage_invocation = await self.llm_invoker.invoke_stream(
+                        InvocationRequest(**stage_a_request_kwargs),
+                        on_event=_on_stage_stream_event,
+                    )
+
+                    trailing_visible = ""
+                    think_flush = thinking_processor.finalize()
+                    trailing_visible += think_flush.visible_delta
+                    if payload_suppressor:
+                        trailing_visible = payload_suppressor.process_delta(trailing_visible)
+                        trailing_visible += payload_suppressor.finalize()
+                    if markdown_terminator:
+                        trailing_visible = markdown_terminator.process_delta(trailing_visible)
+                        trailing_visible += markdown_terminator.finalize()
+                    if trailing_visible:
+                        await _emit_stream_content(trailing_visible)
+                else:
+                    stage_invocation = await self.llm_invoker.invoke(InvocationRequest(**stage_a_request_kwargs))
                 if stage_invocation.get("status") != "success":
                     return PassExecutionResult(
                         pass_id=pass_plan.pass_id,
@@ -3136,16 +3340,20 @@ class ENSDispatcher:
                     )
                 stage_raw = stage_invocation.get("output_text") or ""
                 stage_result = self._assistant_result_from_invocation(stage_raw, stage_invocation)
-                if _looks_like_structured_content(stage_result.display_text):
-                    loop_template = _get_effective_template(character)
-                    loop_allowed_channels, loop_required_channels = template_rules(loop_template)
-                    loop_finalized = self.response_finalizer.finalize(
-                        stage_result.display_text,
-                        adapter_name="xml",
-                        allowed_channels=loop_allowed_channels,
-                        required_channels=loop_required_channels,
-                    )
-                    stage_result.display_text = loop_finalized.text
+                loop_finalized = self.response_finalizer.finalize(
+                    stage_result.display_text,
+                    output_mode=loop_output_mode,
+                    template_id=loop_template,
+                )
+                stage_result.display_text = str(
+                    normalize_to_mode(
+                        loop_finalized.text,
+                        target_mode=loop_output_mode,
+                        template_id=loop_template,
+                        metadata={"assistant_output_format": loop_output_mode},
+                    ).get("canonical_text")
+                    or ""
+                )
                 nonlocal primary_pass_assistant_result, primary_pass_raw_content
                 primary_pass_assistant_result = stage_result
                 primary_pass_raw_content = stage_raw

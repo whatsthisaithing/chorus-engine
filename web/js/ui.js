@@ -314,7 +314,10 @@ const UI = {
         // Phase 6: Auto-generation enabled - no manual button needed
         
         // Add text content if present
-        const content = this.stripVisualContextBlocks((message.content || '').trim());
+        const assistantRenderableContent = message.role === 'assistant'
+            ? (message.render_content || (message.metadata && message.metadata.render_content) || message.content || '')
+            : (message.content || '');
+        const content = this.stripVisualContextBlocks(assistantRenderableContent.trim());
         if (content) {
             // For assistant messages, convert username references to @ format
             // LLM generates <username> which gets treated as HTML tags
@@ -682,7 +685,7 @@ const UI = {
             <div class="message-content"></div>
         `;
         
-        container.appendChild(messageDiv);
+        this._appendMessageRow(container, { role: 'assistant' }, messageDiv);
         this.scrollToBottom();
         
         return messageDiv;
@@ -716,6 +719,64 @@ const UI = {
         timestamp.className = 'message-timestamp';
         timestamp.textContent = this.formatTime(new Date().toISOString());
         messageDiv.appendChild(timestamp);
+    },
+
+    finalizeStreamingAssistantMessage(messageDiv, message) {
+        if (!messageDiv || !message) return;
+        messageDiv.classList.remove('streaming');
+        messageDiv.id = '';
+        if (message.id) {
+            messageDiv.setAttribute('data-message-id', message.id);
+        }
+
+        const assistantRenderableContent = message.render_content
+            || (message.metadata && message.metadata.render_content)
+            || message.content
+            || '';
+        const content = this.stripVisualContextBlocks((assistantRenderableContent || '').trim());
+        let contentHtml = '';
+
+        if (content) {
+            let processedContent = content;
+            const hasStructuredRoot = processedContent.includes('<assistant_response>');
+            if (!hasStructuredRoot) {
+                processedContent = processedContent.replace(/<@(\d+)>/g, '@$1');
+                processedContent = processedContent.replace(/<([A-Za-z0-9_ ]+)>/g, '@$1');
+            }
+            const structuredSegments = this.parseStructuredResponse(processedContent);
+            const formattedContent = structuredSegments
+                ? this.renderStructuredSegments(structuredSegments)
+                : this.renderMarkdown(processedContent);
+            contentHtml += `<div class="message-content">${formattedContent}</div>`;
+        } else {
+            contentHtml += `<div class="message-content"></div>`;
+        }
+
+        const usedPinIds = Array.isArray(message.metadata?.used_moment_pin_ids)
+            ? message.metadata.used_moment_pin_ids.filter((id) => typeof id === 'string' && id.trim().length > 0)
+            : [];
+        const pinIndicatorHtml = (usedPinIds.length > 0)
+            ? `<button type="button" class="moment-pin-indicator" data-pin-ids="${this.escapeHtml(usedPinIds.join(','))}" title="View recalled moment pins">
+                    <i class="bi bi-pin-angle-fill"></i><span>${usedPinIds.length}</span>
+               </button>`
+            : '';
+        contentHtml += `
+            <div class="message-meta">
+                <div class="message-timestamp">${this.formatTime(message.created_at || new Date().toISOString())}</div>
+                ${pinIndicatorHtml}
+            </div>`;
+
+        messageDiv.innerHTML = contentHtml;
+
+        messageDiv.querySelectorAll('pre code').forEach((block) => {
+            hljs.highlightElement(block);
+        });
+
+        if (message.id) {
+            this.attachMessageId(messageDiv, message.id, 'assistant');
+        }
+
+        this.scrollToBottom();
     },
     
     /**

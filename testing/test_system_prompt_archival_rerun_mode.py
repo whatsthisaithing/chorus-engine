@@ -29,10 +29,10 @@ def test_archival_rerun_prompt_excludes_tool_and_media_affordances():
         prompt_mode="archival_rerun",
     )
 
-    assert "**Native Tool Call Contract (Provider Transport):**" not in prompt
+    assert "## Native Tool Call Contract (Provider Transport)" not in prompt
     assert "Available tools:" not in prompt
-    assert "**Media Tooling Runtime Gate (Authoritative):**" not in prompt
-    assert "**Prompt Mode Switch (Mandatory When Emitting a Media Tool Call)**" not in prompt
+    assert "## Media Tooling Runtime Gate (Authoritative)" not in prompt
+    assert "## Prompt Mode Switch (Mandatory When Emitting a Media Tool Call)" not in prompt
     assert "moment_pin.cold_recall" not in prompt
     assert "image.generate" not in prompt
     assert "video.generate" not in prompt
@@ -47,8 +47,8 @@ def test_archival_rerun_prompt_includes_interpretation_mode_rules():
         prompt_mode="archival_rerun",
     )
 
-    assert "**ARCHIVAL INTERPRETATION MODE (Mandatory):**" in prompt
+    assert "## ARCHIVAL INTERPRETATION MODE (Mandatory)" in prompt
     assert "Tools are not available in this pass." in prompt
     assert "Do not say you are retrieving the transcript." in prompt
-    assert "<assistant_response>" in prompt
-    assert prompt.rfind("**ARCHIVAL INTERPRETATION MODE (Mandatory):**") > prompt.rfind("<assistant_response>")
+    assert "---CHORUS_END---" in prompt
+    assert prompt.rfind("## ARCHIVAL INTERPRETATION MODE (Mandatory)") > prompt.rfind("---CHORUS_END---")

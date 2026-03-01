@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from .provider_factory import TTSProviderFactory
 from .base_provider import TTSRequest, TTSResult
 from ..audio_preprocessing import AudioPreprocessingService
-from ..structured_response import parse_structured_response, to_plain_text
+from ..structured_response import to_plain_text
+from ..assistant_content import framelines_to_segments, normalize_to_framelines_v2
 from ..tool_payload import extract_tool_payload
 from ...config.models import CharacterConfig
 from ...repositories.voice_sample_repository import VoiceSampleRepository
@@ -65,12 +66,13 @@ class TTSService:
         include_physical = False
         if self.system_config and hasattr(self.system_config, "tts"):
             include_physical = getattr(self.system_config.tts, "include_physicalaction", False)
-        
-        if "<assistant_response>" in text_for_tts:
-            parsed = parse_structured_response(text_for_tts)
-            extracted = to_plain_text(parsed.segments, include_physicalaction=include_physical)
-            if extracted:
-                text_for_tts = extracted
+        template_id = "A" if str(getattr(character, "immersion_level", "balanced") or "").lower() in {"full", "unbounded"} else "C"
+        if getattr(character, "response_template", None):
+            template_id = str(character.response_template).strip().upper()
+        normalized = normalize_to_framelines_v2(text_for_tts, template_id=template_id)
+        extracted = to_plain_text(framelines_to_segments(normalized.canonical_text, template_id=template_id), include_physicalaction=include_physical)
+        if extracted:
+            text_for_tts = extracted
         
         # Step 2: Validate text
         is_valid, reason = self.preprocessor.validate_text_for_tts(text_for_tts)

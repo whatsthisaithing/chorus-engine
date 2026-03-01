@@ -120,6 +120,25 @@ user_identity:
 # OPTIONAL FIELDS
 # ===============
 
+# OUTPUT FORMAT MODE
+# ------------------
+# Controls which assistant output contract/parser is used for this character.
+# Options:
+#   - markdown_v1   (default; simple markdown + <<END>> terminator)
+#   - framelines_v2 (FrameLines markers + [[E]])
+#   - legacy_xml_v1 (XML-like <assistant_response> tags)
+#
+# If omitted, runtime defaults to markdown_v1.
+output_mode: markdown_v1
+
+# RESPONSE TEMPLATE (A/B/C/D semantics)
+# -------------------------------------
+# Controls channel semantics independent of output_mode.
+# If null/omitted, defaults are:
+#   - immersion_level full/unbounded -> A
+#   - otherwise -> C
+# response_template: A
+
 # LLM SETTINGS (Preferred Model Override)
 # ----------------------------------------
 # Override system defaults for this character

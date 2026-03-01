@@ -13,7 +13,7 @@ from typing import Optional, List
 from pathlib import Path
 
 from chorus_engine.models.conversation import Conversation, Message, MessageRole, ConversationSummary
-from chorus_engine.services.structured_response import parse_structured_response
+from chorus_engine.services.assistant_content import framelines_to_segments, normalize_to_framelines_v2
 from chorus_engine.services.tool_payload import extract_tool_payload
 from chorus_engine.config.loader import ConfigLoader
 
@@ -322,13 +322,16 @@ class ConversationExportService:
         raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
-        
-        parsed = parse_structured_response(raw)
-        if not parsed.segments:
+
+        meta = message.meta_data if isinstance(message.meta_data, dict) else {}
+        template_id = str(((meta.get("structured_response") or {}).get("template") or "C")).strip().upper() or "C"
+        normalized = normalize_to_framelines_v2(raw, template_id=template_id, metadata=meta)
+        segments = framelines_to_segments(normalized.canonical_text, template_id=template_id)
+        if not segments:
             return self._append_visual_context_snapshot(raw, message)
         
         lines: List[str] = []
-        for seg in parsed.segments:
+        for seg in segments:
             if seg.channel == "speech":
                 lines.append(seg.text)
             elif seg.channel == "innerthought":
@@ -350,13 +353,16 @@ class ConversationExportService:
         raw = extract_tool_payload(raw).display_text.strip()
         if not raw:
             return ""
-        
-        parsed = parse_structured_response(raw)
-        if not parsed.segments:
+
+        meta = message.meta_data if isinstance(message.meta_data, dict) else {}
+        template_id = str(((meta.get("structured_response") or {}).get("template") or "C")).strip().upper() or "C"
+        normalized = normalize_to_framelines_v2(raw, template_id=template_id, metadata=meta)
+        segments = framelines_to_segments(normalized.canonical_text, template_id=template_id)
+        if not segments:
             return self._append_visual_context_snapshot(raw, message)
         
         lines: List[str] = []
-        for seg in parsed.segments:
+        for seg in segments:
             if seg.channel == "speech":
                 lines.append(seg.text)
             elif seg.channel == "innerthought":

@@ -316,6 +316,7 @@ class ENSRuntime:
                     "attachments.process_vision",
                     "media.gating.evaluate",
                     "llm.invoke.chat",
+                    "llm.invoke.chat_stream",
                     "tool_payload.adjudicate",
                     "message.write_assistant",
                 ):
@@ -349,9 +350,11 @@ class ENSRuntime:
                         action.params["user_message_id"] = user_message_id
                         action.params["surface_id"] = resolved_signal.payload.get("surface_id")
                         action.params["surface_instance_id"] = resolved_signal.payload.get("surface_instance_id")
-                    if action.kind == "llm.invoke.chat" and user_message_id:
+                    if action.kind in ("llm.invoke.chat", "llm.invoke.chat_stream") and user_message_id:
                         action.idempotency_key = f"llm:chat:{resolved_signal.session_id}:{user_message_id}"
                         action.params["user_message_id"] = user_message_id
+                        if action.kind == "llm.invoke.chat_stream":
+                            action.params["stream_callback"] = (ctx.data or {}).get("stream_callback")
                         segment_result = next(
                             (
                                 r
@@ -370,13 +373,19 @@ class ENSRuntime:
                             None,
                         )
                         action.params["media_gate_snapshot"] = (media_gate or {}).get("output", {}).get("media_gate_snapshot", {})
+                    if action.kind == "loop.progression.step":
+                        stream_callback = (ctx.data or {}).get("stream_callback")
+                        if stream_callback:
+                            action.params["stream_callback"] = stream_callback
+                            action.params["streaming"] = bool((ctx.data or {}).get("streaming", True))
                     if action.kind == "tool_payload.adjudicate" and user_message_id:
                         action.idempotency_key = f"gate:adjudicate:{resolved_signal.session_id}:{user_message_id}"
                         llm_result = next(
                             (
                                 r
                                 for r in action_results
-                                if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                                if r.get("kind") in ("llm.invoke.chat", "llm.invoke.chat_stream")
+                                and r.get("status") in ("success", "skipped")
                             ),
                             None,
                         )
@@ -408,7 +417,8 @@ class ENSRuntime:
                             (
                                 r
                                 for r in action_results
-                                if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                                if r.get("kind") in ("llm.invoke.chat", "llm.invoke.chat_stream")
+                                and r.get("status") in ("success", "skipped")
                             ),
                             None,
                         )
@@ -520,7 +530,8 @@ class ENSRuntime:
                                 (
                                     r
                                     for r in action_results
-                                    if r.get("kind") == "llm.invoke.chat" and r.get("status") in ("success", "skipped")
+                                    if r.get("kind") in ("llm.invoke.chat", "llm.invoke.chat_stream")
+                                    and r.get("status") in ("success", "skipped")
                                 ),
                                 None,
                             )
@@ -639,6 +650,24 @@ class ENSRuntime:
 
                 result = await self.dispatcher.execute(db, action, decision_id=decision_id)
                 action_results.append(result)
+                if (
+                    resolved_signal.type == "user.message.stream"
+                    and action.kind == "message.write_user"
+                    and result.get("status") in ("success", "skipped")
+                ):
+                    stream_callback = (ctx.data or {}).get("stream_callback")
+                    if stream_callback:
+                        try:
+                            payload = {
+                                "type": "user_message",
+                                "id": ((result.get("output") or {}).get("message_id")),
+                                "content": str(resolved_signal.payload.get("content") or ""),
+                            }
+                            cb_out = stream_callback(payload)
+                            if hasattr(cb_out, "__await__"):
+                                await cb_out
+                        except Exception:
+                            logger.exception("Failed emitting user_message stream callback")
                 if result["status"] == "failure":
                     break
 
@@ -802,7 +831,7 @@ class ENSRuntime:
                 )
             ]
 
-        if signal.type == "user.message":
+        if signal.type in ("user.message", "user.message.stream"):
             ens_cfg = getattr(self.app_state.get("system_config"), "ens", None)
             slice2_tool_parsing_ownership = bool(
                 ens_cfg and getattr(ens_cfg, "enabled", False) and getattr(ens_cfg, "slice2_tool_parsing_ownership", False)
@@ -818,6 +847,7 @@ class ENSRuntime:
             message_external_id = signal.payload.get("message_external_id")
             id_key = message_external_id or client_message_id
             user_key = self.dispatcher.user_message_key(signal.session_id or "na", content, id_key)
+            llm_action_kind = "llm.invoke.chat_stream" if signal.type == "user.message.stream" else "llm.invoke.chat"
 
             actions = [
                 ENSAction(
@@ -874,7 +904,7 @@ class ENSRuntime:
             actions.extend(
                 [
                 ENSAction(
-                    kind="llm.invoke.chat",
+                    kind=llm_action_kind,
                     params={
                         "thread_id": thread_id,
                         "character_id": signal.assistant_id,
@@ -885,6 +915,7 @@ class ENSRuntime:
                         "surface_instance_id": signal.payload.get("surface_instance_id"),
                         "target_hint": signal.payload.get("target_hint"),
                         "slice2_tool_parsing_ownership": slice2_tool_parsing_ownership,
+                        "streaming": signal.type == "user.message.stream",
                     },
                 ),
                 ENSAction(
@@ -1678,7 +1709,7 @@ class ENSRuntime:
         for item in action_results:
             row = dict(item)
             output = row.get("output")
-            if row.get("kind") == "llm.invoke.chat" and isinstance(output, dict):
+            if row.get("kind") in ("llm.invoke.chat", "llm.invoke.chat_stream") and isinstance(output, dict):
                 full_content = output.get("content") or ""
                 sanitized_output = {k: v for k, v in output.items() if k != "content"}
                 sanitized_output.setdefault("content_length", len(full_content))

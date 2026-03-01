@@ -359,7 +359,7 @@ class ConversationContextRetrievalService:
         if not summaries:
             return ""
         
-        lines = ["**RELEVANT PAST CONVERSATIONS:**"]
+        lines = ["## Relevant Past Conversations"]
         lines.append("(You may reference these if relevant to the current topic)\n")
         
         for i, ctx in enumerate(summaries, 1):

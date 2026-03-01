@@ -11,7 +11,7 @@ import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from chorus_engine.ens.assistant_result import normalize_assistant_result
 from chorus_engine.llm.request_debug_context import (
@@ -717,6 +717,356 @@ class LLMInvocationService:
                         "output_empty": not bool((output_text or "").strip()),
                         "completion_flags": completion_flags,
                         "cost": response.get("cost"),
+                        "provider": request.provider,
+                        "engine": request.engine,
+                        "model_id": request.model_id,
+                        "timing_ms": latency_ms,
+                        "attempts": attempts,
+                        "replayed": False,
+                        "request_fingerprint": request_fingerprint,
+                        "native_transport": {
+                            "attempted": native_attempted,
+                            "plan": dict(native_plan or {}),
+                            "requested_tools": req_tools or [],
+                            "requested_tool_choice": req_tool_choice,
+                            "provider_tool_calls_raw": provider_tool_calls,
+                            "provider_raw_message": provider_raw_message,
+                        },
+                        "error": None,
+                    }
+                except asyncio.TimeoutError:
+                    if request_debug_token is not None:
+                        try:
+                            reset_request_debug_context(request_debug_token)
+                        except Exception:
+                            pass
+                    last_error = {
+                        "code": "timeout",
+                        "type": "timeout",
+                        "message": f"LLM invocation timed out after {timeout_s}s",
+                        "retryable": True,
+                    }
+                except Exception as exc:
+                    if request_debug_token is not None:
+                        try:
+                            reset_request_debug_context(request_debug_token)
+                        except Exception:
+                            pass
+                    msg = str(exc)
+                    retryable = any(token in msg.lower() for token in ["timeout", "temporar", "connection", "503", "502"])
+                    last_error = {
+                        "code": "llm_error",
+                        "type": exc.__class__.__name__,
+                        "message": msg,
+                        "retryable": retryable,
+                    }
+                if not last_error or not last_error.get("retryable") or attempt > max_retries:
+                    break
+                await asyncio.sleep((0.25 * (2 ** (attempt - 1))) + random.uniform(0.01, 0.1))
+        finally:
+            _IN_INVOKER_CONTEXT.reset(token)
+
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        status = "timeout" if (last_error or {}).get("code") == "timeout" else "error"
+        return {
+            "status": status,
+            "output_text": "",
+            "raw_response_excerpt": None,
+            "token_usage": None,
+            "finish_reason": None,
+            "output_empty": True,
+            "completion_flags": [],
+            "cost": None,
+            "provider": request.provider,
+            "engine": request.engine,
+            "model_id": request.model_id,
+            "timing_ms": latency_ms,
+            "attempts": attempts,
+            "replayed": False,
+            "request_fingerprint": request_fingerprint,
+            "error": last_error,
+        }
+
+    async def _emit_stream_event(
+        self,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]],
+        event: Dict[str, Any],
+    ) -> None:
+        if not on_event:
+            return
+        out = on_event(event)
+        if hasattr(out, "__await__"):
+            await out
+
+    async def invoke_stream(
+        self,
+        request: InvocationRequest,
+        on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Dict[str, Any]:
+        llm_client = self.app_state.get("llm_client")
+        if not llm_client:
+            raise RuntimeError("LLM client not initialized")
+
+        request.engine = request.engine or self._engine_from_client(llm_client)
+        request_fingerprint = self.request_fingerprint(request)
+        timeout_s = 120 if request.invocation_kind == "chat" else 240
+        max_retries = 2
+        attempts = 0
+        started = time.perf_counter()
+        last_error: Optional[Dict[str, Any]] = None
+
+        token = _IN_INVOKER_CONTEXT.set(True)
+        try:
+            for attempt in range(1, max_retries + 2):
+                attempts = attempt
+                request_debug_token = None
+                try:
+                    req_tools, req_tool_choice, native_plan = self._prepare_native_transport(request)
+                    native_plan = self._annotate_prompt_tool_alignment(
+                        request=request,
+                        requested_tools=req_tools,
+                        native_plan=native_plan,
+                    )
+                    request.tools = req_tools
+                    request.tool_choice = req_tool_choice
+                    request_debug_token = set_request_debug_context(
+                        {
+                            "conversation_id": request.conversation_id,
+                            "thread_id": request.thread_id,
+                            "character_id": request.character_id,
+                            "invocation_kind": request.invocation_kind,
+                            "chat_type": (
+                                "loopstep"
+                                if bool((request.metadata or {}).get("loop_id"))
+                                else "normal"
+                            ),
+                            "loop_id": (request.metadata or {}).get("loop_id"),
+                            "loop_kind": (request.metadata or {}).get("loop_kind"),
+                            "model_id": request.model_id,
+                            "engine": request.engine,
+                        }
+                    )
+
+                    async def _stream_once() -> Dict[str, Any]:
+                        accumulated = ""
+                        provider_tool_calls: List[Dict[str, Any]] = []
+                        finish_reason = None
+                        usage = None
+                        stream_fn = getattr(llm_client, "stream_with_history_events", None)
+                        stream_chunks_fn = getattr(llm_client, "stream_with_history", None)
+                        kwargs = dict(
+                            messages=request.messages,
+                            temperature=request.temperature,
+                            max_tokens=request.max_tokens,
+                            top_p=request.top_p,
+                            top_k=request.top_k,
+                            repeat_penalty=request.repeat_penalty,
+                            presence_penalty=request.presence_penalty,
+                            frequency_penalty=request.frequency_penalty,
+                            model=request.model_id,
+                        )
+                        async def _iterate_events():
+                            if callable(stream_fn):
+                                async for event in stream_fn(**kwargs):
+                                    yield event
+                                return
+                            if callable(stream_chunks_fn):
+                                async for chunk in stream_chunks_fn(**kwargs):
+                                    yield {"content_delta": str(chunk or "")}
+                                return
+                            raise RuntimeError("LLM client does not support streaming APIs")
+                        try:
+                            async for event in _iterate_events():
+                                delta = str(
+                                    (getattr(event, "content_delta", None) if not isinstance(event, dict) else event.get("content_delta"))
+                                    or ""
+                                )
+                                if delta:
+                                    accumulated += delta
+                                    await self._emit_stream_event(
+                                        on_event,
+                                        {
+                                            "type": "content_delta",
+                                            "content_delta": delta,
+                                            "provider_raw_event": (
+                                                getattr(event, "provider_raw_event", None)
+                                                if not isinstance(event, dict)
+                                                else event.get("provider_raw_event")
+                                            ),
+                                        },
+                                    )
+                                tool_delta = (
+                                    getattr(event, "provider_tool_calls_delta", None)
+                                    if not isinstance(event, dict)
+                                    else event.get("provider_tool_calls_delta")
+                                )
+                                if isinstance(tool_delta, list):
+                                    for item in tool_delta:
+                                        if isinstance(item, dict):
+                                            provider_tool_calls.append(dict(item))
+                                event_finish = (
+                                    getattr(event, "finish_reason", None)
+                                    if not isinstance(event, dict)
+                                    else event.get("finish_reason")
+                                )
+                                event_usage = (
+                                    getattr(event, "usage", None)
+                                    if not isinstance(event, dict)
+                                    else event.get("usage")
+                                )
+                                if event_finish:
+                                    finish_reason = event_finish
+                                if event_usage:
+                                    usage = event_usage
+                        except TypeError:
+                            # Backward compatibility for test doubles/providers without event stream kwargs support.
+                            fallback_keys = [
+                                "top_p",
+                                "top_k",
+                                "repeat_penalty",
+                                "presence_penalty",
+                                "frequency_penalty",
+                            ]
+                            for key in fallback_keys:
+                                kwargs.pop(key, None)
+                            if callable(stream_fn):
+                                iterator = stream_fn(**kwargs)
+                            elif callable(stream_chunks_fn):
+                                iterator = stream_chunks_fn(**kwargs)
+                            else:
+                                raise
+                            async for event in iterator:
+                                if isinstance(event, str):
+                                    delta = str(event or "")
+                                else:
+                                    delta = str(
+                                        (getattr(event, "content_delta", None) if not isinstance(event, dict) else event.get("content_delta"))
+                                        or ""
+                                    )
+                                if delta:
+                                    accumulated += delta
+                                    await self._emit_stream_event(
+                                        on_event,
+                                        {"type": "content_delta", "content_delta": delta},
+                                    )
+                                tool_delta = (
+                                    getattr(event, "provider_tool_calls_delta", None)
+                                    if not isinstance(event, str) and not isinstance(event, dict)
+                                    else (event.get("provider_tool_calls_delta") if isinstance(event, dict) else None)
+                                )
+                                if isinstance(tool_delta, list):
+                                    for item in tool_delta:
+                                        if isinstance(item, dict):
+                                            provider_tool_calls.append(dict(item))
+                                if not isinstance(event, str):
+                                    event_finish = (
+                                        getattr(event, "finish_reason", None)
+                                        if not isinstance(event, dict)
+                                        else event.get("finish_reason")
+                                    )
+                                    event_usage = (
+                                        getattr(event, "usage", None)
+                                        if not isinstance(event, dict)
+                                        else event.get("usage")
+                                    )
+                                    if event_finish:
+                                        finish_reason = event_finish
+                                    if event_usage:
+                                        usage = event_usage
+
+                        return {
+                            "output_text": accumulated,
+                            "provider_tool_calls": provider_tool_calls or None,
+                            "finish_reason": finish_reason,
+                            "token_usage": usage,
+                            "provider_raw_message": None,
+                        }
+
+                    response = await asyncio.wait_for(_stream_once(), timeout=timeout_s)
+                    if request_debug_token is not None:
+                        reset_request_debug_context(request_debug_token)
+                    output_text = response.get("output_text", "")
+                    finish_reason = response.get("finish_reason")
+                    provider_tool_calls = response.get("provider_tool_calls")
+                    provider_raw_message = response.get("provider_raw_message")
+                    completion_flags = self._compute_completion_flags(output_text, finish_reason)
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+
+                    provider_control = None
+                    provider_tool_requests = None
+                    native_counts = {
+                        "native_tool_calls_total": 0,
+                        "native_control_calls": 0,
+                        "native_tool_requests": 0,
+                        "native_tool_parse_failures": 0,
+                    }
+                    native_attempted = bool(native_plan.get("attempted"))
+                    if native_attempted:
+                        provider_control, mapped_tool_requests, native_counts = self._map_native_tool_calls(
+                            tool_calls=provider_tool_calls,
+                        )
+                        has_native_content = bool(provider_control) or bool(mapped_tool_requests)
+                        if has_native_content:
+                            provider_tool_requests = mapped_tool_requests
+                        elif not self._sentinel_fallback_enabled():
+                            provider_tool_requests = []
+
+                    normalized = normalize_assistant_result(
+                        raw_content=output_text,
+                        provider_control=provider_control,
+                        provider_tool_requests=provider_tool_requests,
+                        provider_raw={
+                            "finish_reason": finish_reason,
+                            "raw_message": provider_raw_message,
+                            "provider_tool_calls_raw": provider_tool_calls,
+                            "native_transport_attempted": native_attempted,
+                            "native_transport_plan": dict(native_plan or {}),
+                            "native_tool_calls_total": native_counts["native_tool_calls_total"],
+                            "native_control_calls": native_counts["native_control_calls"],
+                            "native_tool_requests": native_counts["native_tool_requests"],
+                            "native_tool_parse_failures": native_counts["native_tool_parse_failures"],
+                            "native_tools_requested": bool(req_tools),
+                            "requested_tool_choice": req_tool_choice,
+                            "requested_tool_names": [
+                                str(((tool.get("function") or {}).get("name")) or "")
+                                for tool in (req_tools or [])
+                                if isinstance(tool, dict)
+                            ],
+                        },
+                    )
+
+                    return {
+                        "status": "success",
+                        "output_text": output_text,
+                        "assistant_result": {
+                            "display_text": normalized.display_text,
+                            "control": (
+                                {
+                                    "action": normalized.control.action,
+                                    "args": dict(normalized.control.args or {}),
+                                }
+                                if normalized.control
+                                else None
+                            ),
+                            "tool_requests": [
+                                {
+                                    "tool_name": item.tool_name,
+                                    "payload": dict(item.payload or {}),
+                                    "request_id": item.request_id,
+                                }
+                                for item in normalized.tool_requests
+                            ],
+                            "payload_present": bool(normalized.payload_present),
+                            "payload_parseable": bool(normalized.payload_parseable),
+                            "payload_obj": dict(normalized.payload_obj or {}) if normalized.payload_obj else None,
+                            "provider_raw": dict(normalized.provider_raw or {}) if normalized.provider_raw else None,
+                        },
+                        "raw_response_excerpt": output_text[:240],
+                        "token_usage": response.get("token_usage"),
+                        "finish_reason": finish_reason,
+                        "output_empty": not bool((output_text or "").strip()),
+                        "completion_flags": completion_flags,
+                        "cost": None,
                         "provider": request.provider,
                         "engine": request.engine,
                         "model_id": request.model_id,

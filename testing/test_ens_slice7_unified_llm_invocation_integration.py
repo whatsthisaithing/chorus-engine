@@ -71,7 +71,7 @@ def test_slice7_unified_analysis_invocation_works(helpers):
     assert result["request_fingerprint"]
 
 
-def test_slice7_blocks_legacy_nonstream_generation_path(client, helpers):
+def test_slice7_nonstream_generation_is_ens_owned(client, helpers):
     helpers.set_ens_flags(
         enabled=True,
         slice1_chat_ownership=False,
@@ -84,11 +84,12 @@ def test_slice7_blocks_legacy_nonstream_generation_path(client, helpers):
         f"/threads/{thread_id}/messages",
         json={"message": "legacy path should be blocked", "metadata": {"client_message_id": "slice7-block-001"}},
     )
-    assert resp.status_code == 409, resp.text
-    assert "disabled" in (resp.json().get("detail") or "").lower()
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["assistant_message"]["content"]
 
 
-def test_slice7_blocks_legacy_stream_generation_path(client, helpers):
+def test_slice7_stream_generation_is_ens_owned(client, helpers):
     helpers.set_ens_flags(
         enabled=True,
         slice1_chat_ownership=False,
@@ -101,8 +102,9 @@ def test_slice7_blocks_legacy_stream_generation_path(client, helpers):
         f"/threads/{thread_id}/messages/stream",
         json={"message": "legacy stream should be blocked", "metadata": {"client_message_id": "slice7-block-002"}},
     )
-    assert resp.status_code == 409, resp.text
-    assert "disabled" in (resp.json().get("detail") or "").lower()
+    assert resp.status_code == 200, resp.text
+    text = resp.text
+    assert '"type": "done"' in text
 
 
 def test_slice7_direct_generate_call_is_blocked_in_tests(helpers):

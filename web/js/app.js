@@ -1057,9 +1057,21 @@ window.App = {
         const rerender = !!options.rerender;
         if (!this.state.selectedConversationId) return;
         try {
+            const previousSegments = Array.isArray(this.state.conversationSegments)
+                ? this.state.conversationSegments
+                : [];
             const segments = await API.listConversationSegments(this.state.selectedConversationId);
-            this.state.conversationSegments = segments || [];
-            if (rerender) {
+            const nextSegments = Array.isArray(segments) ? segments : [];
+            const toSignature = (list) => list.map((seg) => [
+                seg && seg.id ? String(seg.id) : '',
+                seg && seg.start_message_id ? String(seg.start_message_id) : '',
+                seg && seg.segment_kind ? String(seg.segment_kind) : '',
+                seg && seg.started_at ? String(seg.started_at) : '',
+                seg && seg.ended_at ? String(seg.ended_at) : '',
+            ]);
+            const segmentsChanged = JSON.stringify(toSignature(previousSegments)) !== JSON.stringify(toSignature(nextSegments));
+            this.state.conversationSegments = nextSegments;
+            if (rerender && segmentsChanged) {
                 UI.renderMessages(this.state.messages, this.state.conversationSegments);
                 this.clearMessageSelection();
                 setTimeout(() => UI.scrollToBottom(), 0);
@@ -1643,6 +1655,12 @@ window.App = {
         return !!(character && character.features && character.features.interactive_narrative);
     },
 
+    shouldStreamInteractiveNarrativeLoop() {
+        const character = this.state.characters.find((c) => c.id === this.state.selectedCharacterId);
+        const mode = String((character && character.output_mode) || 'markdown_v1').trim().toLowerCase();
+        return mode === 'markdown_v1';
+    },
+
     clearInteractiveNarrativeTimer() {
         const timerId = this.state.interactiveNarrative.pendingTickTimerId;
         if (timerId) {
@@ -1762,13 +1780,14 @@ window.App = {
         await this.startInteractiveNarrativeAutoplay();
     },
 
-    appendInteractiveNarrativeMessage(content, messageId = null, controlAction = null) {
+    appendInteractiveNarrativeMessage(content, messageId = null, controlAction = null, renderContent = null) {
         const text = (content || '').trim();
         if (!text) return;
         if (messageId && this.state.messages.some((msg) => msg && msg.id === messageId)) return;
         const assistantMsg = {
             role: 'assistant',
             content: text,
+            render_content: renderContent || null,
             created_at: new Date().toISOString(),
             id: messageId || null,
             metadata: {
@@ -1803,12 +1822,62 @@ window.App = {
             this.state.interactiveNarrative.tickInFlight = true;
             try {
                 UI.showTypingIndicator(this.state.interactiveNarrative.progressStatusText || 'Processing loop step...');
-                const result = await API.advanceInteractiveNarrative(loopId);
+                let result = null;
+                let streamingMessageEl = null;
+                if (this.shouldStreamInteractiveNarrativeLoop()) {
+                    let streamedContent = '';
+                    result = await new Promise((resolve, reject) => {
+                        API.advanceInteractiveNarrativeStream(
+                            loopId,
+                            (chunk) => {
+                                if (!chunk) return;
+                                UI.hideTypingIndicator();
+                                streamedContent += chunk;
+                                if (!streamingMessageEl) {
+                                    streamingMessageEl = UI.appendStreamingMessage();
+                                }
+                                if (streamingMessageEl) {
+                                    UI.updateStreamingMessage(streamingMessageEl, streamedContent);
+                                }
+                            },
+                            (doneData) => resolve(doneData || {}),
+                            reject
+                        );
+                    });
+                    if (!result.display_text && streamedContent) {
+                        result.display_text = streamedContent;
+                        result.render_content = streamedContent;
+                    }
+                } else {
+                    result = await API.advanceInteractiveNarrative(loopId);
+                }
                 this.state.interactiveNarrative.state = result.state || this.state.interactiveNarrative.state;
                 const control = (result.last_step_control_action || '').toUpperCase();
                 const inFlight = !!result.in_flight;
                 if (result.display_text) {
-                    this.appendInteractiveNarrativeMessage(result.display_text, result.assistant_message_id || null, control || null);
+                    const assistantMsg = {
+                        role: 'assistant',
+                        content: result.display_text,
+                        render_content: result.render_content || null,
+                        created_at: new Date().toISOString(),
+                        id: result.assistant_message_id || null,
+                        metadata: {
+                            loop: {
+                                loop_id: this.state.interactiveNarrative.loopId,
+                                control_action: control || null,
+                            },
+                        },
+                    };
+                    this.state.messages.push(assistantMsg);
+                    if (this.shouldStreamInteractiveNarrativeLoop() && streamingMessageEl) {
+                        UI.finalizeStreamingAssistantMessage(streamingMessageEl, assistantMsg);
+                    } else {
+                        const element = UI.appendMessage(assistantMsg);
+                        if (element && assistantMsg.id) {
+                            UI.attachMessageId(element, assistantMsg.id, 'assistant');
+                        }
+                    }
+                    setTimeout(() => UI.scrollToBottom(), 0);
                 }
                 if (control === 'WAIT_FOR_USER' || control === 'YIELD' || control === 'COMPLETE') {
                     this.state.interactiveNarrative.autoplayActive = false;
@@ -1924,7 +1993,7 @@ window.App = {
             // Show typing indicator
             UI.showTypingIndicator();
             
-            // Non-streaming: show typing indicator, then render full response
+            // Keep a non-stream snapshot for explicit retry/fallback tooling.
             const clientMessageId = API.createClientMessageId();
             const payload = API.buildNonStreamMessagePayload(
                 message,
@@ -1933,83 +2002,110 @@ window.App = {
             );
             const requestSnapshot = API.buildNonStreamMessageRequest(this.state.selectedThreadId, payload);
             this.setLastSendAttempt(requestSnapshot);
+            let streamingMessageEl = null;
+            let streamedContent = '';
+            let streamedToolCalls = [];
 
-            const sendResult = await API.sendMessageWithPayload(this.state.selectedThreadId, payload);
-            const response = sendResult.response;
-            
-            UI.hideTypingIndicator();
-            
-            // Update user message with ID and attachments
-            if (response.user_message) {
-                if (userMessageElement && response.user_message.id) {
-                    const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
-                    if (msgIndex !== -1) {
-                        this.state.messages[msgIndex].id = response.user_message.id;
-                        this.state.messages[msgIndex].attachments = response.user_message.attachments || [];
-                    }
-                    
-                    UI.attachMessageId(userMessageElement, response.user_message.id, 'user');
-                    
-                    if (response.user_message.attachments && response.user_message.attachments.length > 0) {
-                        const contentDiv = userMessageElement.querySelector('.message-content');
-                        if (contentDiv) {
-                            contentDiv.innerHTML = UI.renderMarkdown(message);
-                            const attachmentsHtml = response.user_message.attachments.map(attachment => {
-                                return `
-                                    <div class="image-attachment" 
-                                         data-attachment-id="${attachment.id}"
-                                         onclick="UI.showImageModal('${attachment.id}')">
-                                        <img src="/api/attachments/${attachment.id}/file" 
-                                             alt="${UI.escapeHtml(attachment.file_name || 'Uploaded image')}" 
-                                             loading="lazy"
-                                             class="attachment-thumbnail">
-                                    </div>
-                                `;
-                            }).join('');
-                            contentDiv.insertAdjacentHTML('afterend', `<div class="message-attachments">${attachmentsHtml}</div>`);
-                        }
-                        setTimeout(() => UI.scrollToBottom(), 0);
-                    }
+            const onChunk = (chunk) => {
+                if (!chunk) return;
+                UI.hideTypingIndicator();
+                streamedContent += chunk;
+                if (!streamingMessageEl) {
+                    streamingMessageEl = UI.appendStreamingMessage();
                 }
-            }
-            
-            // Render assistant message
-            if (response.assistant_message) {
+                if (streamingMessageEl) {
+                    UI.updateStreamingMessage(streamingMessageEl, streamedContent);
+                }
+            };
+
+            onChunk.userMessageCallback = (data) => {
+                if (!data || !userMessageElement || !data.id) return;
+                const msgIndex = this.state.messages.findIndex(m => m.content === message && m.role === 'user');
+                if (msgIndex !== -1) {
+                    this.state.messages[msgIndex].id = data.id;
+                }
+                UI.attachMessageId(userMessageElement, data.id, 'user');
+            };
+            onChunk.toolCallsCallback = (toolCalls) => {
+                streamedToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
+            };
+            onChunk.titleCallback = (title) => {
+                if (title) {
+                    this.updateConversationTitle(this.state.selectedConversationId, title);
+                }
+            };
+
+            const doneData = await new Promise((resolve, reject) => {
+                API.sendMessageStream(
+                    this.state.selectedThreadId,
+                    message,
+                    onChunk,
+                    resolve,
+                    reject,
+                    attachmentIds.length > 0 ? attachmentIds : null
+                );
+            });
+
+            UI.hideTypingIndicator();
+
+            const assistantPayload = doneData && doneData.assistant_message ? doneData.assistant_message : null;
+            if (assistantPayload) {
                 const assistantMsg = {
                     role: 'assistant',
-                    content: response.assistant_message.content,
-                    created_at: response.assistant_message.created_at || new Date().toISOString(),
-                    id: response.assistant_message.id,
-                    metadata: response.assistant_message.metadata || null
+                    content: assistantPayload.content,
+                    render_content: assistantPayload.render_content || null,
+                    created_at: assistantPayload.created_at || new Date().toISOString(),
+                    id: assistantPayload.id,
+                    metadata: assistantPayload.metadata || null
                 };
                 this.state.messages.push(assistantMsg);
-                const assistantMessageElement = UI.appendMessage(assistantMsg);
-                if (assistantMessageElement && response.assistant_message.id) {
-                    UI.attachMessageId(assistantMessageElement, response.assistant_message.id, 'assistant');
+                if (streamingMessageEl) {
+                    UI.finalizeStreamingAssistantMessage(streamingMessageEl, assistantMsg);
+                } else {
+                    const assistantMessageElement = UI.appendMessage(assistantMsg);
+                    if (assistantMessageElement && assistantPayload.id) {
+                        UI.attachMessageId(assistantMessageElement, assistantPayload.id, 'assistant');
+                    }
                 }
-                setTimeout(() => UI.scrollToBottom(), 0);
-                
-                // Phase 6: Auto-generate audio if TTS is enabled
-                if (this.state.ttsEnabled && response.assistant_message.id) {
-                    this.autoGenerateAudio(response.assistant_message.id);
+                if (this.state.ttsEnabled && assistantPayload.id) {
+                    this.autoGenerateAudio(assistantPayload.id);
                 }
-
-                const usedPinIds = (response.assistant_message.metadata && response.assistant_message.metadata.used_moment_pin_ids) || [];
+                const usedPinIds = (assistantPayload.metadata && assistantPayload.metadata.used_moment_pin_ids) || [];
                 this.state.lastUsedMomentPinIds = usedPinIds;
+            } else if (streamedContent) {
+                const fallbackMsg = {
+                    role: 'assistant',
+                    content: streamedContent,
+                    render_content: streamedContent,
+                    created_at: new Date().toISOString(),
+                    id: (doneData && doneData.message_id) || null,
+                    metadata: null
+                };
+                this.state.messages.push(fallbackMsg);
+                if (streamingMessageEl) {
+                    UI.finalizeStreamingAssistantMessage(streamingMessageEl, fallbackMsg);
+                } else {
+                    const assistantMessageElement = UI.appendMessage(fallbackMsg);
+                    if (assistantMessageElement && fallbackMsg.id) {
+                        UI.attachMessageId(assistantMessageElement, fallbackMsg.id, 'assistant');
+                    }
+                }
             }
-            
-            // New tool payload flow
-            if (response.pending_tool_calls && response.pending_tool_calls.length > 0) {
-                for (const toolCall of response.pending_tool_calls) {
+
+            const pendingToolCalls = (doneData && Array.isArray(doneData.pending_tool_calls))
+                ? doneData.pending_tool_calls
+                : streamedToolCalls;
+            if (pendingToolCalls && pendingToolCalls.length > 0) {
+                for (const toolCall of pendingToolCalls) {
                     await this.handlePendingToolCall(toolCall);
                 }
             }
-            
-            if (response.conversation_title_updated) {
-                this.updateConversationTitle(this.state.selectedConversationId, response.conversation_title_updated);
+
+            if (doneData && doneData.conversation_title_updated) {
+                this.updateConversationTitle(this.state.selectedConversationId, doneData.conversation_title_updated);
             }
-            
-            // Start polling for new implicit memories
+
+            setTimeout(() => UI.scrollToBottom(), 0);
             this.startMemoryPolling();
             await this.refreshConversationSegments({ rerender: true });
             
@@ -2105,6 +2201,7 @@ window.App = {
                     const assistantMsg = {
                         role: 'assistant',
                         content: response.assistant_message.content,
+                        render_content: response.assistant_message.render_content || null,
                         created_at: response.assistant_message.created_at || new Date().toISOString(),
                         id: assistantMessageId,
                         metadata: response.assistant_message.metadata || null

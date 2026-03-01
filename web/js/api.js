@@ -269,6 +269,58 @@ class API {
         });
     }
 
+    static async advanceInteractiveNarrativeStream(loopId, onChunk, onComplete, onError, timeoutMs = 90000) {
+        const params = new URLSearchParams({ timeout_ms: String(timeoutMs) });
+        const url = `${API_BASE_URL}/interactive-narrative/${loopId}/advance/stream?${params.toString()}`;
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        if (data.type === 'content') {
+                            if (onChunk) onChunk(data.content || '');
+                        } else if (data.type === 'done') {
+                            if (onComplete) onComplete(data);
+                            return;
+                        } else if (data.type === 'error') {
+                            if (onError) onError(new Error(data.error || 'Interactive narrative streaming failed'));
+                            return;
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse interactive narrative SSE data:', e);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Interactive narrative streaming error:', error);
+            if (onError) onError(error);
+        }
+    }
+
     static async getInteractiveNarrativeProgress(loopId) {
         return this.request(`/interactive-narrative/${loopId}/progress`);
     }
@@ -559,7 +611,7 @@ class API {
                                 if (data.conversation_title_updated && onChunk.titleCallback) {
                                     onChunk.titleCallback(data.conversation_title_updated);
                                 }
-                                onComplete(data.message_id, data.normalized_content);
+                                onComplete(data);
                                 return;
                             } else if (data.type === 'error') {
                                 onError(new Error(data.error));

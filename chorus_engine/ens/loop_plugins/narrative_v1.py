@@ -86,7 +86,7 @@ class NarrativeV1LoopPlugin:
         stage_norm = str(stage or "full").strip().lower()
         native_transport = str(tool_transport_mode or "sentinel").strip().lower() == "native"
         lines: List[str] = [
-            "**Loop Step Mode (Mandatory):**",
+            "## Loop Step Mode (Mandatory)",
             "This message is part of an ENS loop progression step.",
             "",
             "You MUST:",
@@ -101,8 +101,8 @@ class NarrativeV1LoopPlugin:
 
             lines.extend(
                 [
-                    "- Output exactly **one** `<assistant_response>...</assistant_response>` root.",
-                    "- **Do not** start another `<assistant_response>` block.",
+                    "- Output only FrameLines v2 lines for the active template.",
+                    "- End with exactly one terminator line: `[[E]]`.",
                     "- Continue the scene with a single small update.",
                     "- Do not resolve major user-character decisions without input.",
                     "- Do not encode control decisions in prose.",
@@ -136,10 +136,10 @@ class NarrativeV1LoopPlugin:
                     # "- Continue the scene naturally.",
                     # "- Keep this continuation brief.",
                     # "- Do not resolve major user decisions.",
-                    # "- Output exactly one <assistant_response> block.",
+                    # "- Output one FrameLines block ending with [[E]].",
 
 
-                    "Scene Update Rules (Strict):",
+                    "### Scene Update Rules (Strict)",
 
                     "You are in single-update mode.",
 
@@ -177,7 +177,7 @@ class NarrativeV1LoopPlugin:
         if stage_norm != "beat":
             lines.extend(
                 [
-                    "**Interactive Narrative Control Selection Rules:**",
+                    "## Interactive Narrative Control Selection Rules",
                     "- The story should keep moving while autoplay is active; assume the user will interrupt when they want to.",
                     "- This is a \"watch it unfold\" mode. It is normal to advance the scene for a few beats without user input.",
                     "- Advance immediate consequences or NPC/environment beats without removing user agency.",
@@ -186,7 +186,7 @@ class NarrativeV1LoopPlugin:
                     "- Do not artificially prolong scenes.",
                     "- Do not generate multiple major beats in one step.",
                     "",
-                    "**Narrative.v1 Media Safeguard:**",
+                    "## Narrative.v1 Media Safeguard",
                 ]
             )
             if native_transport:
@@ -351,7 +351,7 @@ class GenericLoopPlugin:
         _ = stage
         _ = tool_transport_mode
         return (
-            "**Loop Step Mode (Mandatory):**\n"
+            "## Loop Step Mode (Mandatory)\n"
             "- This message is one loop step.\n"
             "- Write one narrative beat only.\n"
             "- Do not encode control decisions in prose."

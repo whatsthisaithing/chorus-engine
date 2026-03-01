@@ -934,7 +934,7 @@ window.CharacterManagement = {
                 this.showFormStatus('Please fill in all required fields', 'warning');
                 return;
             }
-            
+
             // Check if trying to modify immutable character
             if (this.isEditMode && IMMUTABLE_CHARACTERS.includes(character.id)) {
                 this.showFormStatus('Cannot modify immutable character. Clone it instead.', 'danger');
@@ -991,6 +991,7 @@ window.CharacterManagement = {
         } catch (error) {
             console.error('Failed to save character:', error);
             this.showFormStatus(`Error: ${error.message}`, 'danger');
+            UI.showToast(`Failed to save character: ${error.message}`, 'danger');
         }
     },
     
