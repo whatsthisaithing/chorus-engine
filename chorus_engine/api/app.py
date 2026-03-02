@@ -1983,7 +1983,10 @@ class MessageResponse(BaseModel):
                 fmt = FORMAT_LEGACY_XML_V1
             looks_like_framelines = ("[[E]]" in str(obj.content or "")) and ("[[" in str(obj.content or ""))
             looks_like_xml = "<assistant_response>" in str(obj.content or "")
-            looks_like_markdown = "---CHORUS_END---" in str(obj.content or "")
+            raw_content_text = str(obj.content or "")
+            looks_like_markdown = any(
+                marker in raw_content_text for marker in ("[CHORUS_END]", "CHORUS_END", "---CHORUS_END---")
+            )
             inferred_fmt = fmt
             if inferred_fmt not in {FORMAT_FRAMELINES_V2, FORMAT_LEGACY_XML_V1, FORMAT_MARKDOWN_V1}:
                 if looks_like_framelines:

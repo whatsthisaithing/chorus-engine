@@ -79,7 +79,7 @@ def test_parse_uses_marker_first_lines_not_blank_line_paragraphs():
 
 
 def test_markdown_inline_terminator_is_repaired_to_own_line():
-    raw = "Final sentence here. ---CHORUS_END---"
+    raw = "Final sentence here. [CHORUS_END]"
     parsed = normalize_to_markdown_v1(raw, template_id="A")
     assert parsed.canonical_text == "Final sentence here."
     assert parsed.had_end_marker is True
@@ -88,7 +88,7 @@ def test_markdown_inline_terminator_is_repaired_to_own_line():
 
 
 def test_markdown_trailing_text_after_inline_terminator_goes_to_tail():
-    raw = "Hello there. ---CHORUS_END--- extra tail text"
+    raw = "Hello there. [CHORUS_END] extra tail text"
     parsed = normalize_to_markdown_v1(raw, template_id="C")
     assert parsed.canonical_text == "Hello there."
     assert parsed.post_end_tail == "extra tail text"
@@ -123,7 +123,7 @@ def test_markdown_text_only_terminator_repaired_without_dashes():
 
 
 def test_markdown_strips_dash_only_line_before_exact_terminator():
-    raw = "Visible text.\n---\n---CHORUS_END---"
+    raw = "Visible text.\n---\n[CHORUS_END]"
     parsed = normalize_to_markdown_v1(raw, template_id="A")
     assert parsed.canonical_text == "Visible text."
     assert parsed.had_end_marker is True
@@ -131,8 +131,16 @@ def test_markdown_strips_dash_only_line_before_exact_terminator():
 
 
 def test_markdown_strips_dash_only_line_after_exact_terminator():
-    raw = "Visible text.\n---CHORUS_END---\n---"
+    raw = "Visible text.\n[CHORUS_END]\n---"
     parsed = normalize_to_markdown_v1(raw, template_id="A")
     assert parsed.canonical_text == "Visible text."
     assert parsed.had_end_marker is True
     assert parsed.post_end_tail == ""
+
+
+def test_markdown_inline_text_only_terminator_is_repaired():
+    raw = "Visible text. CHORUS_END"
+    parsed = normalize_to_markdown_v1(raw, template_id="A")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.diagnostics.get("inline_terminator_repaired") is True

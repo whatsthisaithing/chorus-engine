@@ -23,10 +23,13 @@ _FRAME_MARKER_RE = re.compile(r"^\[\[([A-Z])\]\]\s+(.+?)\s*$")
 _EXACT_END_RE = re.compile(r"^\[\[E\]\]\s*$")
 _SECONDARY_MARKER_RE = re.compile(r"\s(\[\[[A-Z]\]\])\s")
 _INLINE_MARKER_RE = re.compile(r"\[\[([A-Z])\]\]")
-_MARKDOWN_END_RE = re.compile(r"^\s*---CHORUS_END---\s*$")
-_MARKDOWN_END_TOKEN = "---CHORUS_END---"
+_MARKDOWN_END_RE = re.compile(r"^\s*\[CHORUS_END\]\s*$")
+_MARKDOWN_END_TOKEN = "[CHORUS_END]"
 _MARKDOWN_END_TEXT_ONLY_RE = re.compile(r"^\s*CHORUS_END\s*$")
 _MARKDOWN_DASH_ONLY_RE = re.compile(r"^\s*---+\s*$")
+_MARKDOWN_END_INLINE_RE = re.compile(
+    r"\[CHORUS_END\]|---CHORUS_END---|(?<![\w\[])CHORUS_END(?![\w\]])"
+)
 
 
 @dataclass
@@ -113,7 +116,7 @@ def detect_assistant_output_format(raw_text: str, metadata: Optional[Dict[str, A
         return FORMAT_LEGACY_XML_V1
     if "[[E]]" in text and any(line.strip().startswith("[[") for line in text.splitlines()):
         return FORMAT_FRAMELINES_V2
-    if "---CHORUS_END---" in text:
+    if _find_markdown_end_marker(text) is not None:
         return FORMAT_MARKDOWN_V1
     return FORMAT_PLAIN_V0
 
@@ -156,6 +159,10 @@ def _safe_lines(text: str) -> List[str]:
     return [line.rstrip() for line in normalized.split("\n") if line.strip()]
 
 
+def _find_markdown_end_marker(text: str) -> Optional[re.Match[str]]:
+    return _MARKDOWN_END_INLINE_RE.search(str(text or ""))
+
+
 def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
     text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
     repaired = False
@@ -176,7 +183,7 @@ def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
     # ---
     # ...or...
     # CHORUS_END
-    if _MARKDOWN_END_TOKEN not in text:
+    if _find_markdown_end_marker(text) is None:
         lines = text.split("\n")
         for i, line in enumerate(lines):
             if not _MARKDOWN_END_TEXT_ONLY_RE.match(line):
@@ -196,9 +203,15 @@ def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
             repaired = True
             break
 
-    idx = text.find(_MARKDOWN_END_TOKEN)
-    if idx < 0:
+    marker_match = _find_markdown_end_marker(text)
+    if marker_match is None:
         return text, repaired
+    marker_start, marker_end = marker_match.span()
+    marker_text = marker_match.group(0)
+    if marker_text != _MARKDOWN_END_TOKEN:
+        text = text[:marker_start] + _MARKDOWN_END_TOKEN + text[marker_end:]
+        repaired = True
+    idx = marker_start
 
     # Ensure the terminator starts on its own line.
     if idx > 0 and text[idx - 1] != "\n":
@@ -226,9 +239,9 @@ def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
     # Remove stray dash-only lines directly adjacent (possibly with blank lines)
     # to the end marker, e.g.:
     # ---
-    # ---CHORUS_END---
+    # [CHORUS_END]
     # or:
-    # ---CHORUS_END---
+    # [CHORUS_END]
     # ---
     lines = text.split("\n")
     marker_idx: Optional[int] = None

@@ -24,7 +24,7 @@ from chorus_engine.services.structured_response import (
 _XML_ROOT_OPEN = "<assistant_response>"
 _XML_ROOT_CLOSE = "</assistant_response>"
 _FRAME_TERMINATOR = "[[E]]"
-_MARKDOWN_TERMINATOR = "---CHORUS_END---"
+_MARKDOWN_TERMINATOR = "[CHORUS_END]"
 
 
 def _truncate_at_terminator(raw_text: str) -> tuple[str, Optional[str], bool]:
@@ -168,7 +168,7 @@ class MarkdownParsedContract:
 
 
 class MarkdownContractAdapter:
-    """Markdown v1 adapter with ---CHORUS_END--- terminator handling."""
+    """Markdown v1 adapter with [CHORUS_END] terminator handling."""
 
     def parse(self, raw_text: str, *, template_id: Optional[str] = None, **kwargs: Any) -> MarkdownParsedContract:
         _ = kwargs

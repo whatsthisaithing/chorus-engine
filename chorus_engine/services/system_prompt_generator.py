@@ -967,9 +967,9 @@ Only one tool call is recommended."""
             "## Markdown Response Contract (Mandatory):",
             "- Output ONLY Markdown using the formatting rules for the active template below.",
             "- Do NOT include headings, meta commentary, XML/HTML tags, JSON, or code fences unless explicitly requested by the user.",
-            "- End the visible response with EXACTLY one terminator line on its own line: ---CHORUS_END---",
+            "- End the visible response with EXACTLY one terminator line on its own line: [CHORUS_END]",
             "- The terminator MUST be:",
-            "  - Exact text, all caps, with three dashes on each side.",
+            "  - Exact text: [CHORUS_END]",
             "  - On its own line.",
             "  - NOT wrapped in backticks, quotes, parentheses, or any other markdown.",
             "  - NOT inside a code block (no ``` fences).",
@@ -1047,7 +1047,7 @@ Only one tool call is recommended."""
                     "**She steadies her breathing.**",
                     "We can do this.",
                     "*Keep it together. He can't see your uncertainty.*",
-                    "---CHORUS_END---",
+                    "[CHORUS_END]",
                 ]
             )
         elif template == "B":
@@ -1061,7 +1061,7 @@ Only one tool call is recommended."""
                     "### Template B Example (do not copy content):",
                     "> Rain rattles against the window.",
                     "We should leave before dusk.",
-                    "---CHORUS_END---",
+                    "[CHORUS_END]",
                 ]
             )
         elif template == "D":
@@ -1075,7 +1075,7 @@ Only one tool call is recommended."""
                     "### Template D Example (do not copy content):",
                     "**She leans on the desk and exhales slowly.**",
                     "All right, let's hear the plan. And it better be good",
-                    "---CHORUS_END---",
+                    "[CHORUS_END]",
                 ]
             )
         else:
@@ -1087,7 +1087,7 @@ Only one tool call is recommended."""
                     "",
                     "### Template C Example (do not copy content):",
                     "Tell me what happened.",
-                    "---CHORUS_END---",
+                    "[CHORUS_END]",
                 ]
             )
         return "\n".join(lines)

@@ -168,38 +168,47 @@ class _ToolPayloadDeltaSuppressor:
 
 
 class _MarkdownTerminatorSuppressor:
-    """Stops visible stream output at first standalone ---CHORUS_END--- line."""
+    """Stops visible stream output at first [CHORUS_END]-style marker."""
 
-    _END = "---CHORUS_END---"
+    _END_MARKER_RE = re.compile(
+        r"\[CHORUS_END\]|---CHORUS_END---|(?<![\w\[])CHORUS_END(?![\w\]])"
+    )
+    _TAIL_KEEP = len("---CHORUS_END---") - 1
 
     def __init__(self) -> None:
-        self._line_buffer = ""
+        self._buffer = ""
         self._done = False
 
     def process(self, delta: str) -> str:
         if self._done:
             return ""
-        self._line_buffer += str(delta or "")
-        out: List[str] = []
-        while "\n" in self._line_buffer:
-            line, rest = self._line_buffer.split("\n", 1)
-            self._line_buffer = rest
-            if line.strip() == self._END:
-                self._done = True
-                self._line_buffer = ""
-                break
-            out.append(line + "\n")
-        return "".join(out)
+        self._buffer += str(delta or "")
+        marker_match = self._END_MARKER_RE.search(self._buffer)
+        if marker_match is not None:
+            self._done = True
+            visible = self._buffer[: marker_match.start()]
+            self._buffer = ""
+            return visible
+        keep = min(self._TAIL_KEEP, len(self._buffer))
+        emit_until = len(self._buffer) - keep
+        if emit_until <= 0:
+            return ""
+        visible = self._buffer[:emit_until]
+        self._buffer = self._buffer[emit_until:]
+        return visible
 
     def finalize(self) -> str:
         if self._done:
-            self._line_buffer = ""
+            self._buffer = ""
             return ""
-        tail = self._line_buffer
-        if tail.strip() == self._END:
+        marker_match = self._END_MARKER_RE.search(self._buffer)
+        if marker_match is not None:
             self._done = True
-            tail = ""
-        self._line_buffer = ""
+            tail = self._buffer[: marker_match.start()]
+            self._buffer = ""
+            return tail
+        tail = self._buffer
+        self._buffer = ""
         return tail
 
 

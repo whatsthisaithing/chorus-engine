@@ -50,5 +50,5 @@ def test_archival_rerun_prompt_includes_interpretation_mode_rules():
     assert "## ARCHIVAL INTERPRETATION MODE (Mandatory)" in prompt
     assert "Tools are not available in this pass." in prompt
     assert "Do not say you are retrieving the transcript." in prompt
-    assert "---CHORUS_END---" in prompt
-    assert prompt.rfind("## ARCHIVAL INTERPRETATION MODE (Mandatory)") > prompt.rfind("---CHORUS_END---")
+    assert "[CHORUS_END]" in prompt
+    assert prompt.rfind("## ARCHIVAL INTERPRETATION MODE (Mandatory)") > prompt.rfind("[CHORUS_END]")
