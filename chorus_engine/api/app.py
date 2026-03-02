@@ -2739,6 +2739,20 @@ def _scenario_to_response_dict(record) -> Dict[str, Any]:
     }
 
 
+def _save_scenario_image_bytes(character_id: str, scenario_id: str, image_data: bytes) -> str:
+    if not image_data:
+        raise ValueError("image data is required")
+    image_name = f"{character_id}_scenario_{scenario_id}.png"
+    image_path = Path("data/scenario_images") / image_name
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    from PIL import Image
+    from io import BytesIO
+
+    img = Image.open(BytesIO(image_data))
+    img.save(str(image_path), format="PNG")
+    return image_name
+
+
 def _require_scenarios_enabled(character_id: str) -> None:
     character = app_state["characters"].get(character_id)
     if character is None:
@@ -2961,6 +2975,7 @@ async def preview_scenario_card_import(character_id: str, file: UploadFile = Fil
     app_state.setdefault("scenario_card_previews", {})[preview_id] = {
         "character_id": character_id,
         "scenario_data": scenario_data,
+        "png_data": png_data,
     }
     return {"preview_id": preview_id, "scenario_data": scenario_data, "warnings": warnings}
 
@@ -2976,6 +2991,7 @@ async def confirm_scenario_card_import(character_id: str, request: dict):
     if not preview or preview.get("character_id") != character_id:
         raise HTTPException(status_code=404, detail="Scenario card preview not found")
     scenario_data = dict(preview.get("scenario_data") or {})
+    png_data = preview.get("png_data")
     scenario_id = str(scenario_data.get("id") or "")
     service = ScenarioService()
     existing = service.get_scenario(character_id, scenario_id) if scenario_id else None
@@ -2994,8 +3010,29 @@ async def confirm_scenario_card_import(character_id: str, request: dict):
                 },
                 assistant_id=character_id,
             )
+            scenario_response = _scenario_response_from_ens_outcome(outcome)
+            final_scenario_id = str(scenario_response.get("id") or scenario_id or "").strip()
+            if final_scenario_id and png_data:
+                try:
+                    image_name = _save_scenario_image_bytes(character_id, final_scenario_id, png_data)
+                    image_outcome = await _ens_config_change(
+                        signal_type="config.scenario.change_requested",
+                        payload={
+                            "operation": "set_image_ref",
+                            "character_id": character_id,
+                            "payload": {
+                                "character_id": character_id,
+                                "scenario_id": final_scenario_id,
+                                "image_ref": image_name,
+                            },
+                        },
+                        assistant_id=character_id,
+                    )
+                    scenario_response = _scenario_response_from_ens_outcome(image_outcome)
+                except Exception as e:
+                    logger.warning(f"Scenario card image import failed for {character_id}/{final_scenario_id}: {e}")
             app_state["scenario_card_previews"].pop(preview_id, None)
-            return {"success": True, "mode": "update", "scenario": _scenario_response_from_ens_outcome(outcome)}
+            return {"success": True, "mode": "update", "scenario": scenario_response}
         if existing:
             scenario_data["id"] = str(uuid.uuid4())
         outcome = await _ens_config_change(
@@ -3010,17 +3047,50 @@ async def confirm_scenario_card_import(character_id: str, request: dict):
             },
             assistant_id=character_id,
         )
+        scenario_response = _scenario_response_from_ens_outcome(outcome)
+        final_scenario_id = str(scenario_response.get("id") or scenario_data.get("id") or "").strip()
+        if final_scenario_id and png_data:
+            try:
+                image_name = _save_scenario_image_bytes(character_id, final_scenario_id, png_data)
+                image_outcome = await _ens_config_change(
+                    signal_type="config.scenario.change_requested",
+                    payload={
+                        "operation": "set_image_ref",
+                        "character_id": character_id,
+                        "payload": {
+                            "character_id": character_id,
+                            "scenario_id": final_scenario_id,
+                            "image_ref": image_name,
+                        },
+                    },
+                    assistant_id=character_id,
+                )
+                scenario_response = _scenario_response_from_ens_outcome(image_outcome)
+            except Exception as e:
+                logger.warning(f"Scenario card image import failed for {character_id}/{final_scenario_id}: {e}")
         app_state["scenario_card_previews"].pop(preview_id, None)
         mode = "duplicate" if existing else "create"
-        return {"success": True, "mode": mode, "scenario": _scenario_response_from_ens_outcome(outcome)}
+        return {"success": True, "mode": mode, "scenario": scenario_response}
 
     if existing and collision_mode == "update":
         updated = service.update_scenario(character_id, scenario_id, scenario_data)
+        if png_data:
+            try:
+                image_name = _save_scenario_image_bytes(character_id, updated.id, png_data)
+                updated = service.update_scenario(character_id, updated.id, {"image_ref": image_name})
+            except Exception as e:
+                logger.warning(f"Scenario card image import failed for {character_id}/{updated.id}: {e}")
         app_state["scenario_card_previews"].pop(preview_id, None)
         return {"success": True, "mode": "update", "scenario": _scenario_to_response_dict(updated)}
     if existing:
         scenario_data["id"] = str(uuid.uuid4())
     created = service.create_scenario(character_id, scenario_data)
+    if png_data:
+        try:
+            image_name = _save_scenario_image_bytes(character_id, created.id, png_data)
+            created = service.update_scenario(character_id, created.id, {"image_ref": image_name})
+        except Exception as e:
+            logger.warning(f"Scenario card image import failed for {character_id}/{created.id}: {e}")
     app_state["scenario_card_previews"].pop(preview_id, None)
     return {"success": True, "mode": "duplicate" if existing else "create", "scenario": _scenario_to_response_dict(created)}
 

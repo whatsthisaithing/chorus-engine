@@ -137,3 +137,43 @@ def test_scenario_image_upload_uses_scenario_images_directory(client, helpers):
     assert body["image_url"].startswith("/scenario_images/")
     filename = Path(str(body["image_ref"])).name
     assert (Path("data/scenario_images") / filename).exists()
+
+
+def test_scenario_card_import_persists_image_to_scenario_images(client, helpers):
+    _enable_scenarios(helpers)
+    create_resp = client.post(
+        "/characters/test_char/scenarios",
+        json={
+            "title": "Card Source",
+            "description": "Export/import image persistence",
+            "scenario_text": "Card source scenario text.",
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    source_id = create_resp.json()["id"]
+
+    export_resp = client.post(
+        "/characters/test_char/scenarios/cards/export",
+        data={"scenario_id": source_id},
+    )
+    assert export_resp.status_code == 200, export_resp.text
+    card_bytes = export_resp.content
+    assert len(card_bytes) > 0
+
+    preview_resp = client.post(
+        "/characters/test_char/scenarios/cards/import/preview",
+        files={"file": ("scenario.card.png", card_bytes, "image/png")},
+    )
+    assert preview_resp.status_code == 200, preview_resp.text
+    preview_id = preview_resp.json()["preview_id"]
+
+    confirm_resp = client.post(
+        "/characters/test_char/scenarios/cards/import/confirm",
+        json={"preview_id": preview_id, "collision_mode": "duplicate"},
+    )
+    assert confirm_resp.status_code == 200, confirm_resp.text
+    imported = confirm_resp.json()["scenario"]
+    assert imported.get("image_ref")
+    assert str(imported.get("image_url", "")).startswith("/scenario_images/")
+    image_name = Path(str(imported["image_ref"])).name
+    assert (Path("data/scenario_images") / image_name).exists()
