@@ -817,7 +817,9 @@ class ENSRuntime:
             is_private = bool(signal.payload.get("is_private", False))
             client_message_id = signal.payload.get("client_message_id")
             message_external_id = signal.payload.get("message_external_id")
-            id_key = message_external_id or client_message_id
+            # Preserve explicit idempotency (client/external IDs) while ensuring
+            # distinct user turns with identical text do not collapse to replay.
+            id_key = message_external_id or client_message_id or signal.signal_id
             user_key = self.dispatcher.user_message_key(signal.session_id or "na", content, id_key)
             llm_action_kind = "llm.invoke.chat_stream" if signal.type == "user.message.stream" else "llm.invoke.chat"
 

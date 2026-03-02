@@ -1,5 +1,7 @@
+import asyncio
 from pathlib import Path
 
+from chorus_engine.ens.models import Signal
 from chorus_engine.models.conversation import Message, MessageRole
 from chorus_engine.models.ens import ENSActionResult, ENSDecision, ENSSession
 from chorus_engine.repositories import ConversationRepository
@@ -115,6 +117,90 @@ def test_slice1_same_text_different_client_message_id_creates_new_turns(client, 
     )
     assert assistant_count == 2
     assert user_count == 2
+
+
+def test_slice1_same_text_without_client_message_id_creates_new_turns(client, db, helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    _conversation_id, thread_id = helpers.create_conversation_thread()
+
+    payload = {
+        "message": "continue",
+    }
+
+    r1 = client.post(f"/threads/{thread_id}/messages", json=payload)
+    r2 = client.post(f"/threads/{thread_id}/messages", json=payload)
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+
+    b1 = r1.json()
+    b2 = r2.json()
+    assert b1["user_message"]["id"] != b2["user_message"]["id"]
+    assert b1["assistant_message"]["id"] != b2["assistant_message"]["id"]
+
+    assistant_count = (
+        db.query(Message)
+        .filter(Message.thread_id == thread_id, Message.role == MessageRole.ASSISTANT)
+        .count()
+    )
+    user_count = (
+        db.query(Message)
+        .filter(Message.thread_id == thread_id, Message.role == MessageRole.USER)
+        .count()
+    )
+    assert assistant_count == 2
+    assert user_count == 2
+
+
+def test_slice1_stream_same_text_without_client_message_id_creates_new_turns(helpers):
+    helpers.set_ens_flags(
+        enabled=True,
+        slice1_chat_ownership=True,
+        nonstream_intake_only=False,
+        streaming_intake_only=True,
+    )
+    conversation_id, thread_id = helpers.create_conversation_thread()
+    runtime = helpers.app_module.app_state["ens_runtime"]
+
+    s1 = Signal(
+        type="user.message.stream",
+        scope="SESSION",
+        source="external",
+        assistant_id="test_char",
+        payload={
+            "thread_id": thread_id,
+            "conversation_id": conversation_id,
+            "content": "continue",
+            "metadata": {},
+            "is_private": False,
+            "conversation_source": "web",
+        },
+    )
+    s2 = Signal(
+        type="user.message.stream",
+        scope="SESSION",
+        source="external",
+        assistant_id="test_char",
+        payload={
+            "thread_id": thread_id,
+            "conversation_id": conversation_id,
+            "content": "continue",
+            "metadata": {},
+            "is_private": False,
+            "conversation_source": "web",
+        },
+    )
+
+    o1 = asyncio.run(runtime.ingest(s1))
+    o2 = asyncio.run(runtime.ingest(s2))
+    assert o1.response_payload.get("user_message_id")
+    assert o2.response_payload.get("user_message_id")
+    assert o1.response_payload["user_message_id"] != o2.response_payload["user_message_id"]
+    assert o1.response_payload["assistant_message_id"] != o2.response_payload["assistant_message_id"]
 
 
 def test_messages_add_history_write_no_llm_action(client, db, helpers):
