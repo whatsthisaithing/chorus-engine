@@ -774,6 +774,7 @@ window.CharacterManagement = {
         
         document.getElementById('charImageGenEnabled').checked = Boolean(imageGen.enabled);
         document.getElementById('charVideoGenEnabled').checked = Boolean(videoGen.enabled);
+        document.getElementById('charInteractiveNarrativeEnabled').checked = Boolean(features.interactive_narrative);
         document.getElementById('charScenariosEnabled').checked = Boolean(features.scenarios_enabled);
         this.updateScenarioManagerVisibility();
         const proactiveOffers = character.proactive_offers || {};
@@ -973,6 +974,7 @@ window.CharacterManagement = {
         document.getElementById('charTtsChatterboxChunkThreshold').value = '200';
         document.getElementById('charImageOfferEnabledMode').value = 'inherit';
         document.getElementById('charVideoOfferEnabledMode').value = 'inherit';
+        document.getElementById('charInteractiveNarrativeEnabled').checked = false;
         document.getElementById('charScenariosEnabled').checked = false;
         document.getElementById('charImageOfferMinConfidence').value = '';
         document.getElementById('charVideoOfferMinConfidence').value = '';
@@ -1084,6 +1086,7 @@ window.CharacterManagement = {
             
             // Features
             features: {
+                interactive_narrative: document.getElementById('charInteractiveNarrativeEnabled').checked,
                 scenarios_enabled: document.getElementById('charScenariosEnabled').checked
             },
             image_generation: {
