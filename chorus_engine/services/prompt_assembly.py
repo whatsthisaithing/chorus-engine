@@ -472,9 +472,12 @@ class PromptAssemblyService:
                 include_cold_recall=bool(include_cold_recall_tool and used_moment_pin_ids),
             )
 
+        scenario_block = self._build_scenario_snapshot_block(conversation_id=conversation_id)
+
         # Generate system prompt with immersion guidance and explicit contract tool scope.
         system_prompt = self.system_prompt_generator.generate(
             character_config,
+            scenario_block=scenario_block,
             primary_user=primary_user,
             conversation_source=conversation_source,
             conversation_kind=conversation_kind,
@@ -964,8 +967,10 @@ class PromptAssemblyService:
                 allowed_media_tools=allowed_media_tools,
                 include_cold_recall=bool(include_cold_recall_tool),
             )
+        scenario_block = self._build_scenario_snapshot_block(conversation_id=conversation_id)
         system_prompt = self.system_prompt_generator.generate(
             character_config,
+            scenario_block=scenario_block,
             primary_user=primary_user,
             conversation_source=conversation_source,
             conversation_kind=conversation_kind,
@@ -1225,8 +1230,25 @@ class PromptAssemblyService:
             user_info_section = "\n".join([user_info_section] + user_info_lines)
         
         character_section = "## Your Character Context\n" + system_prompt
-        
+
         return "\n\n".join([user_info_section, character_section])
+
+    def _build_scenario_snapshot_block(
+        self,
+        *,
+        conversation_id: Optional[str],
+    ) -> Optional[str]:
+        if not conversation_id:
+            return None
+        conversation = self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
+        if not conversation:
+            return None
+        source = str(getattr(conversation, "scenario_source", "none") or "none").strip().lower()
+        scenario_text = str(getattr(conversation, "scenario_text", "") or "").strip()
+        if source == "none" or not scenario_text:
+            return None
+        scenario_title = str(getattr(conversation, "scenario_title", "") or "").strip() or "Scenario"
+        return f"## Scenario: {scenario_title}\n{scenario_text}"
 
     def _build_identity_header(
         self,

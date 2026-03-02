@@ -8,6 +8,9 @@ const IMMUTABLE_CHARACTERS = ['nova', 'alex', 'aria', 'marcus'];
 window.CharacterManagement = {
     currentCharacter: null,
     isEditMode: false,
+    scenarios: [],
+    selectedScenarioId: null,
+    scenarioReadOnly: false,
     llmProvider: 'ollama', // Default, will be updated when config loads
     initialized: false, // Track if already initialized
     
@@ -136,6 +139,27 @@ window.CharacterManagement = {
                 roleFields.style.display = e.target.value === 'role' ? 'block' : 'none';
             }
         });
+
+        // Scenario feature/library controls
+        document.getElementById('charScenariosEnabled')?.addEventListener('change', () => {
+            this.updateScenarioManagerVisibility();
+        });
+        document.getElementById('refreshScenariosBtn')?.addEventListener('click', () => this.loadScenarioLibrary());
+        document.getElementById('newScenarioBtn')?.addEventListener('click', () => this.startNewScenarioEditor());
+        document.getElementById('saveScenarioBtn')?.addEventListener('click', () => this.saveScenarioFromEditor());
+        document.getElementById('duplicateScenarioBtn')?.addEventListener('click', () => this.duplicateSelectedScenario());
+        document.getElementById('deleteScenarioBtn')?.addEventListener('click', () => this.deleteSelectedScenario());
+        document.getElementById('uploadScenarioImageBtn')?.addEventListener('click', () => {
+            document.getElementById('scenarioImageFileInput')?.click();
+        });
+        document.getElementById('removeScenarioImageBtn')?.addEventListener('click', () => this.removeSelectedScenarioImage());
+        document.getElementById('exportScenarioCardBtn')?.addEventListener('click', () => this.exportSelectedScenarioCard());
+        document.getElementById('importScenarioCardBtn')?.addEventListener('click', () => {
+            document.getElementById('scenarioCardImportInput')?.click();
+        });
+        document.getElementById('scenarioImageFileInput')?.addEventListener('change', (e) => this.uploadSelectedScenarioImage(e));
+        document.getElementById('scenarioCardImportInput')?.addEventListener('change', (e) => this.importScenarioCard(e));
+        document.getElementById('scenarioEditText')?.addEventListener('input', () => this.updateScenarioEditCharCount());
     },
     
     /**
@@ -283,6 +307,8 @@ window.CharacterManagement = {
                 element.disabled = isImmutable;
             }
         }
+        this.scenarioReadOnly = isImmutable;
+        this.setScenarioEditorEnabled(!isImmutable);
         
         if (isImmutable) {
             this.showFormStatus('This is an immutable default character. Clone it to make changes.', 'info');
@@ -319,6 +345,323 @@ window.CharacterManagement = {
         document.getElementById('deleteCharacterBtn').style.display = 'none';
         
         this.hideFormStatus();
+    },
+
+    updateScenarioManagerVisibility() {
+        const manager = document.getElementById('charScenarioManager');
+        if (!manager) return;
+        const enabled = Boolean(document.getElementById('charScenariosEnabled')?.checked);
+        const hasCharacter = Boolean(this.currentCharacter?.id);
+        const show = enabled && hasCharacter;
+        manager.style.display = show ? 'block' : 'none';
+        const list = document.getElementById('charScenariosList');
+        if (!show) {
+            this.scenarios = [];
+            this.selectedScenarioId = null;
+            this.renderScenarioList();
+            this.clearScenarioEditor();
+            return;
+        }
+        this.scenarioReadOnly = IMMUTABLE_CHARACTERS.includes(this.currentCharacter?.id || '');
+        const persistedEnabled = Boolean(this.currentCharacter?.features?.scenarios_enabled);
+        if (!persistedEnabled) {
+            this.setScenarioEditorEnabled(false);
+            this.scenarios = [];
+            this.selectedScenarioId = null;
+            if (list) {
+                list.innerHTML = '<div class="text-theme-secondary small">Save character changes to enable scenario library access.</div>';
+            }
+            this.clearScenarioEditor();
+            return;
+        }
+        this.setScenarioEditorEnabled(!this.scenarioReadOnly);
+        this.loadScenarioLibrary();
+    },
+
+    setScenarioEditorEnabled(enabled) {
+        const ids = [
+            'refreshScenariosBtn',
+            'newScenarioBtn',
+            'saveScenarioBtn',
+            'duplicateScenarioBtn',
+            'deleteScenarioBtn',
+            'uploadScenarioImageBtn',
+            'removeScenarioImageBtn',
+            'exportScenarioCardBtn',
+            'importScenarioCardBtn',
+            'scenarioEditTitle',
+            'scenarioEditDescription',
+            'scenarioEditText',
+            'scenarioEditTags',
+        ];
+        ids.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = !enabled;
+        });
+    },
+
+    updateScenarioEditCharCount() {
+        const text = document.getElementById('scenarioEditText')?.value || '';
+        const counter = document.getElementById('scenarioEditCharCount');
+        if (counter) counter.textContent = `${text.length} / 6000`;
+    },
+
+    clearScenarioEditor() {
+        const title = document.getElementById('scenarioEditTitle');
+        const description = document.getElementById('scenarioEditDescription');
+        const text = document.getElementById('scenarioEditText');
+        const tags = document.getElementById('scenarioEditTags');
+        const preview = document.getElementById('scenarioEditImagePreview');
+        if (title) title.value = '';
+        if (description) description.value = '';
+        if (text) text.value = '';
+        if (tags) tags.value = '';
+        if (preview) preview.src = '/character_images/default.svg';
+        this.updateScenarioEditCharCount();
+    },
+
+    renderScenarioList() {
+        const list = document.getElementById('charScenariosList');
+        if (!list) return;
+        if (!Array.isArray(this.scenarios) || this.scenarios.length === 0) {
+            list.innerHTML = '<div class="text-theme-secondary small">No scenarios yet.</div>';
+            return;
+        }
+        list.innerHTML = this.scenarios.map((scenario) => {
+            const active = scenario.id === this.selectedScenarioId ? ' active' : '';
+            const title = scenario.title || scenario.id;
+            const desc = scenario.description || '';
+            return `
+                <button type="button" class="list-group-item list-group-item-action${active}" data-scenario-id="${scenario.id}">
+                    <div class="d-flex w-100 justify-content-between">
+                        <strong class="mb-1">${UI.escapeHtml(title)}</strong>
+                    </div>
+                    <small class="text-theme-secondary">${UI.escapeHtml(desc)}</small>
+                </button>
+            `;
+        }).join('');
+        list.querySelectorAll('[data-scenario-id]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const scenarioId = btn.getAttribute('data-scenario-id');
+                this.selectScenarioInEditor(scenarioId);
+            });
+        });
+    },
+
+    selectScenarioInEditor(scenarioId) {
+        this.selectedScenarioId = scenarioId || null;
+        this.renderScenarioList();
+        const scenario = this.scenarios.find((s) => s.id === this.selectedScenarioId);
+        if (!scenario) {
+            this.clearScenarioEditor();
+            return;
+        }
+        document.getElementById('scenarioEditTitle').value = scenario.title || '';
+        document.getElementById('scenarioEditDescription').value = scenario.description || '';
+        document.getElementById('scenarioEditText').value = scenario.scenario_text || '';
+        document.getElementById('scenarioEditTags').value = Array.isArray(scenario.tags) ? scenario.tags.join(', ') : '';
+        document.getElementById('scenarioEditImagePreview').src = scenario.image_url || '/character_images/default.svg';
+        this.updateScenarioEditCharCount();
+    },
+
+    startNewScenarioEditor() {
+        this.selectedScenarioId = null;
+        this.renderScenarioList();
+        this.clearScenarioEditor();
+    },
+
+    getScenarioPayloadFromEditor() {
+        const title = document.getElementById('scenarioEditTitle')?.value?.trim() || '';
+        const description = document.getElementById('scenarioEditDescription')?.value?.trim() || '';
+        const scenarioText = document.getElementById('scenarioEditText')?.value?.trim() || '';
+        const tags = (document.getElementById('scenarioEditTags')?.value || '')
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter((tag) => tag.length > 0);
+        if (!title) throw new Error('Scenario title is required.');
+        if (!scenarioText) throw new Error('Scenario text is required.');
+        if (scenarioText.length > 6000) throw new Error('Scenario text exceeds 6000 characters.');
+        return {
+            title,
+            description,
+            scenario_text: scenarioText,
+            tags,
+        };
+    },
+
+    async loadScenarioLibrary() {
+        if (!this.currentCharacter?.id) return;
+        if (!document.getElementById('charScenariosEnabled')?.checked) return;
+        try {
+            const data = await API.listScenarios(this.currentCharacter.id);
+            this.scenarios = Array.isArray(data?.scenarios) ? data.scenarios : [];
+            if (this.selectedScenarioId && !this.scenarios.some((s) => s.id === this.selectedScenarioId)) {
+                this.selectedScenarioId = null;
+            }
+            if (!this.selectedScenarioId && this.scenarios.length > 0) {
+                this.selectedScenarioId = this.scenarios[0].id;
+            }
+            this.renderScenarioList();
+            if (this.selectedScenarioId) this.selectScenarioInEditor(this.selectedScenarioId);
+            else this.clearScenarioEditor();
+        } catch (error) {
+            console.error('Failed to load scenarios:', error);
+            UI.showToast(`Failed to load scenarios: ${error.message}`, 'error');
+            this.scenarios = [];
+            this.selectedScenarioId = null;
+            this.renderScenarioList();
+            this.clearScenarioEditor();
+        }
+    },
+
+    async saveScenarioFromEditor() {
+        if (!this.currentCharacter?.id) return;
+        if (this.scenarioReadOnly) return;
+        try {
+            const payload = this.getScenarioPayloadFromEditor();
+            if (this.selectedScenarioId) {
+                await API.updateScenario(this.currentCharacter.id, this.selectedScenarioId, payload);
+                UI.showToast('Scenario updated.', 'success');
+            } else {
+                const created = await API.createScenario(this.currentCharacter.id, payload);
+                this.selectedScenarioId = created?.id || null;
+                UI.showToast('Scenario created.', 'success');
+            }
+            await this.loadScenarioLibrary();
+        } catch (error) {
+            console.error('Failed to save scenario:', error);
+            UI.showToast(`Failed to save scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async duplicateSelectedScenario() {
+        if (!this.currentCharacter?.id || !this.selectedScenarioId) return;
+        if (this.scenarioReadOnly) return;
+        try {
+            const duplicated = await API.duplicateScenario(this.currentCharacter.id, this.selectedScenarioId);
+            this.selectedScenarioId = duplicated?.id || null;
+            await this.loadScenarioLibrary();
+            UI.showToast('Scenario duplicated.', 'success');
+        } catch (error) {
+            console.error('Failed to duplicate scenario:', error);
+            UI.showToast(`Failed to duplicate scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async deleteSelectedScenario() {
+        if (!this.currentCharacter?.id || !this.selectedScenarioId) return;
+        if (this.scenarioReadOnly) return;
+        if (!confirm('Delete this scenario? This cannot be undone.')) return;
+        try {
+            const deletingId = this.selectedScenarioId;
+            await API.deleteScenario(this.currentCharacter.id, deletingId);
+            if (this.selectedScenarioId === deletingId) {
+                this.selectedScenarioId = null;
+            }
+            await this.loadScenarioLibrary();
+            UI.showToast('Scenario deleted.', 'success');
+        } catch (error) {
+            console.error('Failed to delete scenario:', error);
+            UI.showToast(`Failed to delete scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async uploadSelectedScenarioImage(event) {
+        const input = event?.target;
+        const file = input?.files?.[0];
+        if (!file) return;
+        if (!this.currentCharacter?.id || !this.selectedScenarioId) {
+            UI.showToast('Save or select a scenario first.', 'warning');
+            input.value = '';
+            return;
+        }
+        if (this.scenarioReadOnly) {
+            input.value = '';
+            return;
+        }
+        try {
+            await API.uploadScenarioImage(this.currentCharacter.id, this.selectedScenarioId, file);
+            await this.loadScenarioLibrary();
+            UI.showToast('Scenario image updated.', 'success');
+        } catch (error) {
+            console.error('Failed to upload scenario image:', error);
+            UI.showToast(`Failed to upload image: ${error.message}`, 'error');
+        } finally {
+            input.value = '';
+        }
+    },
+
+    async removeSelectedScenarioImage() {
+        if (!this.currentCharacter?.id || !this.selectedScenarioId) return;
+        if (this.scenarioReadOnly) return;
+        try {
+            await API.deleteScenarioImage(this.currentCharacter.id, this.selectedScenarioId);
+            await this.loadScenarioLibrary();
+            UI.showToast('Scenario image removed.', 'success');
+        } catch (error) {
+            console.error('Failed to remove scenario image:', error);
+            UI.showToast(`Failed to remove image: ${error.message}`, 'error');
+        }
+    },
+
+    async exportSelectedScenarioCard() {
+        if (!this.currentCharacter?.id || !this.selectedScenarioId) return;
+        try {
+            const blob = await API.exportScenarioCard(this.currentCharacter.id, this.selectedScenarioId);
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${this.currentCharacter.id}_${this.selectedScenarioId}.scenario.card.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            UI.showToast('Scenario card exported.', 'success');
+        } catch (error) {
+            console.error('Failed to export scenario card:', error);
+            UI.showToast(`Failed to export card: ${error.message}`, 'error');
+        }
+    },
+
+    async importScenarioCard(event) {
+        const input = event?.target;
+        const file = input?.files?.[0];
+        if (!file || !this.currentCharacter?.id) return;
+        if (this.scenarioReadOnly) {
+            input.value = '';
+            return;
+        }
+        try {
+            const preview = await API.previewScenarioCardImport(this.currentCharacter.id, file);
+            const data = preview?.scenario_data || {};
+            const incomingTitle = data.title || data.id || 'Imported scenario';
+            const existing = this.scenarios.find((s) => s.id && data.id && s.id === data.id);
+            let collisionMode = 'duplicate';
+            if (existing) {
+                const useUpdate = confirm(`A scenario with id "${data.id}" already exists.\n\nPress OK to update it, or Cancel to import as duplicate.`);
+                collisionMode = useUpdate ? 'update' : 'duplicate';
+            }
+            const confirmed = await API.confirmScenarioCardImport(this.currentCharacter.id, {
+                preview_id: preview.preview_id,
+                collision_mode: collisionMode,
+            });
+            await this.loadScenarioLibrary();
+            const importedId = confirmed?.scenario?.id || null;
+            if (importedId && this.scenarios.some((s) => s.id === importedId)) {
+                this.selectedScenarioId = importedId;
+            } else {
+                const loaded = this.scenarios.find((s) => s.title === incomingTitle);
+                if (loaded) this.selectedScenarioId = loaded.id;
+            }
+            this.renderScenarioList();
+            if (this.selectedScenarioId) this.selectScenarioInEditor(this.selectedScenarioId);
+            UI.showToast('Scenario card imported.', 'success');
+        } catch (error) {
+            console.error('Failed to import scenario card:', error);
+            UI.showToast(`Failed to import card: ${error.message}`, 'error');
+        } finally {
+            input.value = '';
+        }
     },
     
     /**
@@ -427,9 +770,12 @@ window.CharacterManagement = {
         const videoGen = character.video_generation || {};
         const docAnalysis = character.document_analysis || {};
         const codeExec = character.code_execution || {};
+        const features = character.features || {};
         
         document.getElementById('charImageGenEnabled').checked = Boolean(imageGen.enabled);
         document.getElementById('charVideoGenEnabled').checked = Boolean(videoGen.enabled);
+        document.getElementById('charScenariosEnabled').checked = Boolean(features.scenarios_enabled);
+        this.updateScenarioManagerVisibility();
         const proactiveOffers = character.proactive_offers || {};
         const imageOffers = proactiveOffers.image || {};
         const videoOffers = proactiveOffers.video || {};
@@ -627,6 +973,7 @@ window.CharacterManagement = {
         document.getElementById('charTtsChatterboxChunkThreshold').value = '200';
         document.getElementById('charImageOfferEnabledMode').value = 'inherit';
         document.getElementById('charVideoOfferEnabledMode').value = 'inherit';
+        document.getElementById('charScenariosEnabled').checked = false;
         document.getElementById('charImageOfferMinConfidence').value = '';
         document.getElementById('charVideoOfferMinConfidence').value = '';
         document.getElementById('charOfferCooldownMinutes').value = '';
@@ -640,6 +987,9 @@ window.CharacterManagement = {
         document.getElementById('charBackupIncludeWorkflows').checked = true;
         document.getElementById('charBackupNotesTemplate').value = '';
         document.getElementById('charBackupSettings').style.display = 'none';
+        this.scenarios = [];
+        this.selectedScenarioId = null;
+        this.updateScenarioManagerVisibility();
         
         // User identity defaults
         document.getElementById('charUserIdentityMode').value = 'canonical';
@@ -733,6 +1083,9 @@ window.CharacterManagement = {
             },
             
             // Features
+            features: {
+                scenarios_enabled: document.getElementById('charScenariosEnabled').checked
+            },
             image_generation: {
                 enabled: document.getElementById('charImageGenEnabled').checked
             },
@@ -976,10 +1329,14 @@ window.CharacterManagement = {
             if (this.isEditMode) {
                 // Update existing character
                 await API.updateCharacter(character.id, character);
+                const refreshed = await API.getCharacter(character.id);
+                await this.selectCharacter(refreshed);
                 this.showFormStatus('Character updated successfully!', 'success');
             } else {
                 // Create new character
                 await API.createCharacter(character);
+                const refreshed = await API.getCharacter(character.id);
+                await this.selectCharacter(refreshed);
                 this.showFormStatus('Character created successfully!', 'success');
             }
             

@@ -93,3 +93,30 @@ def test_markdown_trailing_text_after_inline_terminator_goes_to_tail():
     assert parsed.canonical_text == "Hello there."
     assert parsed.post_end_tail == "extra tail text"
     assert parsed.had_end_marker is True
+
+
+def test_markdown_split_terminator_repaired_when_dash_precedes_text_only_marker():
+    raw = "Visible text.\n---\n\nCHORUS_END"
+    parsed = normalize_to_markdown_v1(raw, template_id="D")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.diagnostics.get("missing_end_marker") is False
+    assert parsed.diagnostics.get("inline_terminator_repaired") is True
+
+
+def test_markdown_split_terminator_repaired_when_dash_follows_text_only_marker():
+    raw = "Visible text.\nCHORUS_END\n---"
+    parsed = normalize_to_markdown_v1(raw, template_id="D")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.diagnostics.get("missing_end_marker") is False
+    assert parsed.diagnostics.get("inline_terminator_repaired") is True
+
+
+def test_markdown_text_only_terminator_repaired_without_dashes():
+    raw = "Visible text.\nCHORUS_END"
+    parsed = normalize_to_markdown_v1(raw, template_id="D")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.diagnostics.get("missing_end_marker") is False
+    assert parsed.diagnostics.get("inline_terminator_repaired") is True

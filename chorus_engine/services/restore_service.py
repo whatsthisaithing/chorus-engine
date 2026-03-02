@@ -707,7 +707,12 @@ class CharacterRestoreService:
                     last_analyzed_at=datetime.fromisoformat(conv_data['last_analyzed_at']) if conv_data.get('last_analyzed_at') else None,
                     last_summary_analyzed_at=datetime.fromisoformat(conv_data['last_summary_analyzed_at']) if conv_data.get('last_summary_analyzed_at') else None,
                     last_memories_analyzed_at=datetime.fromisoformat(conv_data['last_memories_analyzed_at']) if conv_data.get('last_memories_analyzed_at') else None,
-                    source=conv_data.get('source', 'web')
+                    source=conv_data.get('source', 'web'),
+                    scenario_source=conv_data.get('scenario_source', 'none'),
+                    scenario_id=conv_data.get('scenario_id'),
+                    scenario_title=conv_data.get('scenario_title'),
+                    scenario_text=conv_data.get('scenario_text'),
+                    scenario_settings_json=conv_data.get('scenario_settings_json'),
                 )
                 self.db.add(conv)
                 counts['conversations'] += 1
@@ -1317,6 +1322,20 @@ class CharacterRestoreService:
             documents_dest = self.data_dir / "documents"
             documents_dest.mkdir(parents=True, exist_ok=True)
             file_count += self._copy_directory_tree(document_src, documents_dest)
+
+        # Restore scenario YAML libraries
+        scenarios_src = temp_dir / "scenarios" / character_id
+        if scenarios_src.exists():
+            scenarios_dest = self.data_dir / "scenarios" / character_id
+            scenarios_dest.mkdir(parents=True, exist_ok=True)
+            file_count += self._copy_directory_tree(scenarios_src, scenarios_dest)
+
+        # Restore scenario title images
+        scenario_images_src = temp_dir / "scenario_images" / character_id
+        if scenario_images_src.exists():
+            scenario_images_dest = self.data_dir / "scenario_images"
+            scenario_images_dest.mkdir(parents=True, exist_ok=True)
+            file_count += self._copy_directory_tree(scenario_images_src, scenario_images_dest)
         
         logger.info(f"Restored {file_count} media files")
         return file_count

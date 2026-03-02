@@ -131,6 +131,12 @@ const UI = {
                 badge.innerHTML = '<i class="bi bi-mic"></i> Voice';
                 capabilitiesContainer.appendChild(badge);
             }
+            if (character.capabilities.scenarios_enabled) {
+                const badge = document.createElement('span');
+                badge.className = 'capability-badge';
+                badge.innerHTML = '<i class="bi bi-map"></i> Scenarios';
+                capabilitiesContainer.appendChild(badge);
+            }
         }
     },
     

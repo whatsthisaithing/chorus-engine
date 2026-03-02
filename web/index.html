@@ -93,6 +93,9 @@
                     <button id="manageWorkflowsBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
                         <i class="bi bi-diagram-3-fill me-1"></i> Workflows
                     </button>
+                    <button id="scenarioManagerBtn" class="btn btn-outline-light btn-sm w-100 mb-2" disabled>
+                        <i class="bi bi-map-fill me-1"></i> Scenario Manager
+                    </button>
                     <button id="documentLibraryBtn" class="btn btn-outline-light btn-sm w-100 mb-2" style="display: none;">
                         <i class="bi bi-file-earmark-text me-1"></i> Document Library
                     </button>
@@ -750,6 +753,169 @@
                     <button type="button" class="btn btn-outline-secondary" id="refreshContinuityBtn">Refresh Context</button>
                     <button type="button" class="btn btn-secondary" id="startFreshBtn">Start Fresh</button>
                     <button type="button" class="btn btn-primary" id="continueWithContextBtn">Continue With Context</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scenario Create Modal -->
+    <div class="modal fade" id="scenarioCreateModal" tabindex="-1" aria-labelledby="scenarioCreateModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="scenarioCreateModalLabel">
+                        <i class="bi bi-map me-2"></i>Choose a Scenario
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-theme-secondary small mb-3">Select one scenario mode for this conversation.</p>
+                    <div class="vstack gap-2">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="scenarioCreateMode" id="scenarioModeNone" value="none" checked>
+                            <label class="form-check-label" for="scenarioModeNone">
+                                No scenario
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="scenarioCreateMode" id="scenarioModeLibrary" value="library">
+                            <label class="form-check-label" for="scenarioModeLibrary">
+                                Use a saved scenario
+                            </label>
+                        </div>
+                        <div id="scenarioCreateLibraryPanel" class="ps-4 mt-2" style="display: none;">
+                            <label class="form-label">Scenario Library</label>
+                            <select class="form-select" id="scenarioLibrarySelect">
+                                <option value="">Loading scenarios...</option>
+                            </select>
+                        </div>
+                        <div class="form-check mt-1">
+                            <input class="form-check-input" type="radio" name="scenarioCreateMode" id="scenarioModeCustom" value="custom">
+                            <label class="form-check-label" for="scenarioModeCustom">
+                                Write a custom scenario
+                            </label>
+                        </div>
+                        <div id="scenarioCreateCustomPanel" class="ps-4 mt-2" style="display: none;">
+                            <label class="form-label">Custom Scenario Text</label>
+                            <textarea class="form-control" id="scenarioCustomText" rows="6" maxlength="6000" placeholder="Describe the setup, context, and constraints for this conversation."></textarea>
+                            <div class="d-flex justify-content-between mt-1">
+                                <small class="text-theme-secondary">Max 6000 characters</small>
+                                <small class="text-theme-secondary" id="scenarioCustomCharCount">0 / 6000</small>
+                            </div>
+                        </div>
+                        <div id="scenarioSaveCustomWrap" class="form-check ps-4 mt-2" style="display: none;">
+                            <input class="form-check-input" type="checkbox" id="scenarioSaveCustom">
+                            <label class="form-check-label" for="scenarioSaveCustom">
+                                Also save custom scenario to library
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" id="cancelScenarioCreateBtn" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmScenarioCreateBtn">Create Conversation</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scenario Manager Modal -->
+    <div class="modal fade" id="scenarioManagerModal" tabindex="-1" aria-labelledby="scenarioManagerModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="scenarioManagerModalLabel">
+                        <i class="bi bi-map-fill me-2"></i>Scenario Manager: <span id="scenarioManagerCharacterName"></span>
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="text-theme-secondary small">Manage saved scenarios and start new conversations directly.</div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-info btn-sm" id="scenarioManagerImportBtn">
+                                <i class="bi bi-box-arrow-in-down me-1"></i>Import Card
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="scenarioManagerRefreshBtn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                            <button type="button" class="btn btn-primary btn-sm" id="scenarioManagerNewBtn">
+                                <i class="bi bi-plus-circle me-1"></i>New Scenario
+                            </button>
+                        </div>
+                    </div>
+                    <input type="file" id="scenarioManagerImportInput" accept="image/png" style="display: none;">
+                    <div id="scenarioManagerEmpty" class="text-theme-secondary text-center py-4" style="display: none;">
+                        No scenarios yet.
+                    </div>
+                    <div id="scenarioManagerGrid" class="scenario-manager-grid"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scenario Edit Modal -->
+    <div class="modal fade" id="scenarioEditModal" tabindex="-1" aria-labelledby="scenarioEditModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-white">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="scenarioEditModalLabel">
+                        <i class="bi bi-gear me-2"></i>Edit Scenario
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="smScenarioEditId">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-5">
+                            <label class="form-label">Scenario Image</label>
+                            <img id="smScenarioEditImagePreview" src="/character_images/default.svg" alt="Scenario image" class="scenario-edit-image-preview mb-2">
+                            <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="smScenarioEditUploadImageBtn">
+                                    <i class="bi bi-upload me-1"></i>Upload
+                                </button>
+                                <button type="button" class="btn btn-outline-danger btn-sm" id="smScenarioEditRemoveImageBtn" style="display: none;">
+                                    <i class="bi bi-trash me-1"></i>Remove
+                                </button>
+                            </div>
+                            <input type="file" id="smScenarioEditImageInput" accept="image/png,image/jpeg,image/webp" style="display: none;">
+                        </div>
+                        <div class="col-12 col-md-7">
+                            <div class="mb-3">
+                                <label class="form-label" for="smScenarioEditTitle">Title</label>
+                                <input type="text" class="form-control" id="smScenarioEditTitle" maxlength="120" placeholder="Scenario title">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="smScenarioEditDescription">Description</label>
+                                <input type="text" class="form-control" id="smScenarioEditDescription" maxlength="500" placeholder="Optional short description">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="smScenarioEditTags">Tags</label>
+                                <input type="text" class="form-control" id="smScenarioEditTags" placeholder="comma, separated, tags">
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="smScenarioEditText">Scenario Text</label>
+                            <textarea class="form-control" id="smScenarioEditText" rows="8" maxlength="6000" placeholder="Describe the setup, context, and constraints."></textarea>
+                            <small class="text-theme-secondary">Max 6000 characters</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary d-flex justify-content-between">
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary" id="smScenarioEditDuplicateBtn" style="display: none;">
+                            <i class="bi bi-files me-1"></i>Duplicate
+                        </button>
+                        <button type="button" class="btn btn-outline-danger" id="smScenarioEditDeleteBtn" style="display: none;">
+                            <i class="bi bi-trash me-1"></i>Delete
+                        </button>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-primary" id="smScenarioEditSaveBtn">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2428,6 +2594,18 @@
                                     
                                     <!-- FEATURES TAB -->
                                     <div class="tab-pane fade" id="features-panel" role="tabpanel">
+                                        <h6 class="mb-3">Conversation Features</h6>
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="charScenariosEnabled">
+                                                <label class="form-check-label" for="charScenariosEnabled">
+                                                    <strong>Enable Scenarios</strong>
+                                                </label>
+                                            </div>
+                                            <small class="text-theme-secondary d-block mt-1">Enable scenario selection and scenario library for this character.</small>
+                                        </div>
+                                        <small class="text-theme-secondary d-block mb-3">Manage scenarios from the left sidebar using <strong>Scenario Manager</strong>.</small>
+
                                         <h6 class="mb-3">Media Generation</h6>
                                         <div class="mb-2">
                                             <div class="form-check">

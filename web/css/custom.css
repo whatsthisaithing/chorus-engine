@@ -1513,6 +1513,82 @@ button:disabled {
     position: relative;
 }
 
+/* Scenario Manager */
+.scenario-manager-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.scenario-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.scenario-card-media-wrap {
+    position: relative;
+    aspect-ratio: 3 / 2;
+    border-radius: 10px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--bg-elevated) 82%, #ffffff 18%);
+}
+
+.scenario-card-media {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    display: block;
+}
+
+.scenario-card-media-fallback {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent-primary) 35%, #121212), color-mix(in srgb, var(--bg-elevated) 75%, #000000));
+}
+
+.scenario-card-title {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.95rem;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.scenario-card-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 0.35rem;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.scenario-card:hover .scenario-card-actions {
+    opacity: 1;
+}
+
+.scenario-card-actions .btn {
+    background-color: rgba(255, 255, 255, 0.92);
+    color: #202020;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(4px);
+}
+
+.scenario-edit-image-preview {
+    width: 100%;
+    aspect-ratio: 3 / 2;
+    border-radius: 10px;
+    object-fit: cover;
+    object-position: center;
+    border: 1px solid var(--border-color);
+    background: color-mix(in srgb, var(--bg-elevated) 82%, #ffffff 18%);
+}
+
 /* === Workflow Management === */
 
 #workflowManagementModal .list-group-item {

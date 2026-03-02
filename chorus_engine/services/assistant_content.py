@@ -25,6 +25,8 @@ _SECONDARY_MARKER_RE = re.compile(r"\s(\[\[[A-Z]\]\])\s")
 _INLINE_MARKER_RE = re.compile(r"\[\[([A-Z])\]\]")
 _MARKDOWN_END_RE = re.compile(r"^\s*---CHORUS_END---\s*$")
 _MARKDOWN_END_TOKEN = "---CHORUS_END---"
+_MARKDOWN_END_TEXT_ONLY_RE = re.compile(r"^\s*CHORUS_END\s*$")
+_MARKDOWN_DASH_ONLY_RE = re.compile(r"^\s*---+\s*$")
 
 
 @dataclass
@@ -156,11 +158,47 @@ def _safe_lines(text: str) -> List[str]:
 
 def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
     text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    repaired = False
+
+    def _nearest_nonempty(lines: List[str], start: int, step: int) -> Optional[int]:
+        i = start
+        while 0 <= i < len(lines):
+            if lines[i].strip():
+                return i
+            i += step
+        return None
+
+    # Repair marker layouts such as:
+    # ---
+    # CHORUS_END
+    # ...or...
+    # CHORUS_END
+    # ---
+    # ...or...
+    # CHORUS_END
+    if _MARKDOWN_END_TOKEN not in text:
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if not _MARKDOWN_END_TEXT_ONLY_RE.match(line):
+                continue
+            prev_idx = _nearest_nonempty(lines, i - 1, -1)
+            next_idx = _nearest_nonempty(lines, i + 1, +1)
+            prev_dash = prev_idx is not None and _MARKDOWN_DASH_ONLY_RE.match(lines[prev_idx] or "")
+            next_dash = next_idx is not None and _MARKDOWN_DASH_ONLY_RE.match(lines[next_idx] or "")
+            if not prev_dash and not next_dash:
+                start_idx = i
+                end_idx = i
+            else:
+                start_idx = prev_idx if prev_dash else i
+                end_idx = next_idx if next_dash else i
+            lines = lines[:start_idx] + [_MARKDOWN_END_TOKEN] + lines[end_idx + 1 :]
+            text = "\n".join(lines)
+            repaired = True
+            break
+
     idx = text.find(_MARKDOWN_END_TOKEN)
     if idx < 0:
-        return text, False
-
-    repaired = False
+        return text, repaired
 
     # Ensure the terminator starts on its own line.
     if idx > 0 and text[idx - 1] != "\n":

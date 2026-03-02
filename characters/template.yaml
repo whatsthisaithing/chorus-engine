@@ -262,6 +262,7 @@ profile_image: character_name_profile.png
 # Feature-level capability toggles.
 features:
   interactive_narrative: false
+  scenarios_enabled: false
 
 # IMAGE GENERATION
 # ----------------

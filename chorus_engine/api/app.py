@@ -111,6 +111,8 @@ from chorus_engine.services.media_offer_policy import (
 )
 from chorus_engine.services.relationship_resolution_service import RelationshipResolutionService
 from chorus_engine.repositories.relationship_repository import RelationshipRepository
+from chorus_engine.services.scenario_service import ScenarioService, MAX_SCENARIO_TEXT_LEN
+from chorus_engine.services.scenario_cards import ScenarioCardExporter, ScenarioCardImporter
 
 # Startup sync utilities
 from chorus_engine.utils.startup_sync import (
@@ -1799,6 +1801,10 @@ class ConversationCreate(BaseModel):
     conversation_kind: Optional[str] = "standard"
     relationship_id: Optional[str] = None
     origin_conversation_id: Optional[str] = None
+    scenario_mode: Optional[str] = "none"  # none | library | custom
+    scenario_id: Optional[str] = None
+    custom_scenario_text: Optional[str] = None
+    save_custom_to_library: Optional[bool] = False
 
 
 class ConversationResponse(BaseModel):
@@ -1814,6 +1820,11 @@ class ConversationResponse(BaseModel):
     origin_segment_id: Optional[str] = None
     origin_segment_ids_json: Optional[List[str]] = None
     branch_created_at: Optional[datetime] = None
+    scenario_source: str = "none"
+    scenario_id: Optional[str] = None
+    scenario_title: Optional[str] = None
+    scenario_text: Optional[str] = None
+    scenario_settings_json: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     
@@ -2527,12 +2538,14 @@ async def list_characters():
                 } if char.video_generation else None,
                 "features": {
                     "interactive_narrative": bool(getattr(getattr(char, "features", None), "interactive_narrative", False)),
+                    "scenarios_enabled": bool(getattr(getattr(char, "features", None), "scenarios_enabled", False)),
                 },
                 "capabilities": {
                     "image_generation": char.image_generation.enabled if char.image_generation else False,
                     "video_generation": char.video_generation.enabled if char.video_generation else False,
                     "audio_generation": char.voice is not None,
                     "interactive_narrative": bool(getattr(getattr(char, "features", None), "interactive_narrative", False)),
+                    "scenarios_enabled": bool(getattr(getattr(char, "features", None), "scenarios_enabled", False)),
                 },
                 "document_analysis": {
                     "enabled": char.document_analysis.enabled if char.document_analysis else False,
@@ -2704,6 +2717,309 @@ async def get_character(character_id: str):
     payload = char.model_dump()
     payload["effective_reasoning_visibility_mode"] = _get_effective_reasoning_visibility_mode(char)
     return payload
+
+
+def _scenario_to_response_dict(record) -> Dict[str, Any]:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "description": record.description,
+        "scenario_text": record.scenario_text,
+        "tags": record.tags or [],
+        "version": record.version,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        "image_ref": record.image_ref,
+        "image_url": f"/scenario_images/{record.image_ref}" if record.image_ref else None,
+        "facts": record.facts,
+        "injection": record.injection,
+    }
+
+
+def _require_scenarios_enabled(character_id: str) -> None:
+    character = app_state["characters"].get(character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail=f"Character '{character_id}' not found")
+    enabled = bool(getattr(getattr(character, "features", None), "scenarios_enabled", False))
+    if not enabled:
+        raise HTTPException(status_code=400, detail="Scenarios are disabled for this character")
+
+
+def _scenario_response_from_ens_outcome(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    if str(outcome.get("reason") or "") == "validation_failed":
+        errors = outcome.get("errors") or []
+        detail = ", ".join([str(e) for e in errors if str(e).strip()]) or "Validation failed"
+        raise HTTPException(status_code=400, detail=detail)
+    scenario_data = outcome.get("scenario")
+    if isinstance(scenario_data, dict):
+        record = ScenarioService().parse_scenario_payload(scenario_data)
+        return _scenario_to_response_dict(record)
+    return outcome
+
+
+@app.get("/characters/{character_id}/scenarios")
+async def list_character_scenarios(character_id: str):
+    _require_scenarios_enabled(character_id)
+    service = ScenarioService()
+    items = service.list_scenarios(character_id)
+    return {"character_id": character_id, "scenarios": [_scenario_to_response_dict(item) for item in items]}
+
+
+@app.post("/characters/{character_id}/scenarios")
+async def create_character_scenario(character_id: str, request: dict):
+    _require_scenarios_enabled(character_id)
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "create",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "scenario_data": request or {}},
+            },
+            assistant_id=character_id,
+        )
+        return _scenario_response_from_ens_outcome(outcome)
+    service = ScenarioService()
+    try:
+        created = service.create_scenario(character_id, request or {})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _scenario_to_response_dict(created)
+
+
+@app.patch("/characters/{character_id}/scenarios/{scenario_id}")
+async def update_character_scenario(character_id: str, scenario_id: str, request: dict):
+    _require_scenarios_enabled(character_id)
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "update",
+                "character_id": character_id,
+                "payload": {
+                    "character_id": character_id,
+                    "scenario_id": scenario_id,
+                    "updates": request or {},
+                },
+            },
+            assistant_id=character_id,
+        )
+        return _scenario_response_from_ens_outcome(outcome)
+    service = ScenarioService()
+    try:
+        updated = service.update_scenario(character_id, scenario_id, request or {})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _scenario_to_response_dict(updated)
+
+
+@app.delete("/characters/{character_id}/scenarios/{scenario_id}")
+async def delete_character_scenario(character_id: str, scenario_id: str):
+    _require_scenarios_enabled(character_id)
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "delete",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "scenario_id": scenario_id},
+            },
+            assistant_id=character_id,
+        )
+        if str(outcome.get("reason") or "") == "validation_failed":
+            errors = outcome.get("errors") or []
+            raise HTTPException(status_code=400, detail=", ".join([str(e) for e in errors if str(e).strip()]) or "Validation failed")
+        return {"success": True, "scenario_id": scenario_id}
+    service = ScenarioService()
+    deleted = service.delete_scenario(character_id, scenario_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    return {"success": True, "scenario_id": scenario_id}
+
+
+@app.post("/characters/{character_id}/scenarios/{scenario_id}/duplicate")
+async def duplicate_character_scenario(character_id: str, scenario_id: str):
+    _require_scenarios_enabled(character_id)
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "duplicate",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "scenario_id": scenario_id},
+            },
+            assistant_id=character_id,
+        )
+        return _scenario_response_from_ens_outcome(outcome)
+    service = ScenarioService()
+    try:
+        duplicated = service.duplicate_scenario(character_id, scenario_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _scenario_to_response_dict(duplicated)
+
+
+@app.post("/characters/{character_id}/scenarios/{scenario_id}/image")
+async def upload_character_scenario_image(
+    character_id: str,
+    scenario_id: str,
+    file: UploadFile = File(...),
+):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    _require_scenarios_enabled(character_id)
+    image_data = await file.read()
+    image_name = f"{character_id}_scenario_{scenario_id}.png"
+    image_path = Path("data/scenario_images") / image_name
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image
+        from io import BytesIO
+        img = Image.open(BytesIO(image_data))
+        img.save(str(image_path), format="PNG")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
+
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "set_image_ref",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "scenario_id": scenario_id, "image_ref": image_name},
+            },
+            assistant_id=character_id,
+        )
+        return _scenario_response_from_ens_outcome(outcome)
+
+    service = ScenarioService()
+    try:
+        updated = service.update_scenario(character_id, scenario_id, {"image_ref": image_name})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _scenario_to_response_dict(updated)
+
+
+@app.delete("/characters/{character_id}/scenarios/{scenario_id}/image")
+async def delete_character_scenario_image(character_id: str, scenario_id: str):
+    _require_scenarios_enabled(character_id)
+    if _ens_slice4_enabled():
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "clear_image_ref",
+                "character_id": character_id,
+                "payload": {"character_id": character_id, "scenario_id": scenario_id},
+            },
+            assistant_id=character_id,
+        )
+        return _scenario_response_from_ens_outcome(outcome)
+    service = ScenarioService()
+    current = service.get_scenario(character_id, scenario_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    if current.image_ref:
+        img_path = Path("data/scenario_images") / Path(current.image_ref).name
+        if img_path.exists():
+            img_path.unlink()
+    updated = service.update_scenario(character_id, scenario_id, {"image_ref": None})
+    return _scenario_to_response_dict(updated)
+
+
+@app.post("/characters/{character_id}/scenarios/cards/export")
+async def export_scenario_card(character_id: str, scenario_id: str = Form(...)):
+    _require_scenarios_enabled(character_id)
+    service = ScenarioService()
+    scenario = service.get_scenario(character_id, scenario_id)
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    exporter = ScenarioCardExporter()
+    card_png = exporter.export_card(scenario.model_dump(mode="json", exclude_none=True))
+    filename = f"{character_id}_{scenario_id}.scenario.card.png"
+    return Response(
+        content=card_png,
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/characters/{character_id}/scenarios/cards/import/preview")
+async def preview_scenario_card_import(character_id: str, file: UploadFile = File(...)):
+    _require_scenarios_enabled(character_id)
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be a PNG image")
+    importer = ScenarioCardImporter()
+    png_data = await file.read()
+    try:
+        scenario_data, warnings = importer.import_card(png_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    preview_id = str(uuid.uuid4())
+    app_state.setdefault("scenario_card_previews", {})[preview_id] = {
+        "character_id": character_id,
+        "scenario_data": scenario_data,
+    }
+    return {"preview_id": preview_id, "scenario_data": scenario_data, "warnings": warnings}
+
+
+@app.post("/characters/{character_id}/scenarios/cards/import/confirm")
+async def confirm_scenario_card_import(character_id: str, request: dict):
+    _require_scenarios_enabled(character_id)
+    preview_id = request.get("preview_id")
+    collision_mode = str(request.get("collision_mode") or "duplicate").strip().lower()
+    if collision_mode not in ("update", "duplicate"):
+        raise HTTPException(status_code=400, detail="collision_mode must be 'update' or 'duplicate'")
+    preview = (app_state.get("scenario_card_previews") or {}).get(preview_id)
+    if not preview or preview.get("character_id") != character_id:
+        raise HTTPException(status_code=404, detail="Scenario card preview not found")
+    scenario_data = dict(preview.get("scenario_data") or {})
+    scenario_id = str(scenario_data.get("id") or "")
+    service = ScenarioService()
+    existing = service.get_scenario(character_id, scenario_id) if scenario_id else None
+    if _ens_slice4_enabled():
+        if existing and collision_mode == "update":
+            outcome = await _ens_config_change(
+                signal_type="config.scenario.change_requested",
+                payload={
+                    "operation": "update",
+                    "character_id": character_id,
+                    "payload": {
+                        "character_id": character_id,
+                        "scenario_id": scenario_id,
+                        "updates": scenario_data,
+                    },
+                },
+                assistant_id=character_id,
+            )
+            app_state["scenario_card_previews"].pop(preview_id, None)
+            return {"success": True, "mode": "update", "scenario": _scenario_response_from_ens_outcome(outcome)}
+        if existing:
+            scenario_data["id"] = str(uuid.uuid4())
+        outcome = await _ens_config_change(
+            signal_type="config.scenario.change_requested",
+            payload={
+                "operation": "create",
+                "character_id": character_id,
+                "payload": {
+                    "character_id": character_id,
+                    "scenario_data": scenario_data,
+                },
+            },
+            assistant_id=character_id,
+        )
+        app_state["scenario_card_previews"].pop(preview_id, None)
+        mode = "duplicate" if existing else "create"
+        return {"success": True, "mode": mode, "scenario": _scenario_response_from_ens_outcome(outcome)}
+
+    if existing and collision_mode == "update":
+        updated = service.update_scenario(character_id, scenario_id, scenario_data)
+        app_state["scenario_card_previews"].pop(preview_id, None)
+        return {"success": True, "mode": "update", "scenario": _scenario_to_response_dict(updated)}
+    if existing:
+        scenario_data["id"] = str(uuid.uuid4())
+    created = service.create_scenario(character_id, scenario_data)
+    app_state["scenario_card_previews"].pop(preview_id, None)
+    return {"success": True, "mode": "duplicate" if existing else "create", "scenario": _scenario_to_response_dict(created)}
 
 
 @app.get("/characters/{character_id}/immersion-notice")
@@ -5538,6 +5854,63 @@ async def create_conversation(
         )
     
     source = request.source or "web"
+    scenario_mode = str(request.scenario_mode or "none").strip().lower()
+    if scenario_mode not in ("none", "library", "custom"):
+        raise HTTPException(status_code=400, detail="Invalid scenario_mode")
+
+    character = app_state["characters"][request.character_id]
+    scenarios_enabled = bool(getattr(getattr(character, "features", None), "scenarios_enabled", False))
+    scenario_snapshot = {
+        "scenario_source": "none",
+        "scenario_id": None,
+        "scenario_title": None,
+        "scenario_text": None,
+        "scenario_settings_json": None,
+    }
+
+    if scenario_mode != "none":
+        if not scenarios_enabled:
+            raise HTTPException(status_code=400, detail="Scenarios are disabled for this character")
+        scenario_service = ScenarioService()
+        if scenario_mode == "library":
+            if not request.scenario_id:
+                raise HTTPException(status_code=400, detail="scenario_id is required for library scenario mode")
+            scenario = scenario_service.get_scenario(request.character_id, request.scenario_id)
+            if not scenario:
+                raise HTTPException(status_code=404, detail="Scenario not found")
+            scenario_snapshot = {
+                "scenario_source": "library",
+                "scenario_id": scenario.id,
+                "scenario_title": scenario.title,
+                "scenario_text": scenario.scenario_text,
+                "scenario_settings_json": {"injection": scenario.injection} if scenario.injection else None,
+            }
+        else:
+            text = str(request.custom_scenario_text or "").strip()
+            if not text:
+                raise HTTPException(status_code=400, detail="custom_scenario_text is required for custom scenario mode")
+            if len(text) > MAX_SCENARIO_TEXT_LEN:
+                raise HTTPException(status_code=400, detail=f"custom_scenario_text exceeds max length ({MAX_SCENARIO_TEXT_LEN})")
+
+            saved_scenario_id = None
+            if request.save_custom_to_library:
+                created = scenario_service.create_scenario(
+                    request.character_id,
+                    {
+                        "title": "Custom Scenario",
+                        "description": "Saved from conversation creation",
+                        "scenario_text": text,
+                    },
+                )
+                saved_scenario_id = created.id
+
+            scenario_snapshot = {
+                "scenario_source": "custom",
+                "scenario_id": saved_scenario_id,
+                "scenario_title": "Custom Scenario",
+                "scenario_text": text,
+                "scenario_settings_json": None,
+            }
     resolved_relationship_id = request.relationship_id
     if not resolved_relationship_id:
         relationship_repo = RelationshipRepository(db)
@@ -5563,11 +5936,39 @@ async def create_conversation(
         relationship_id=resolved_relationship_id,
         conversation_kind=request.conversation_kind or "standard",
         origin_conversation_id=request.origin_conversation_id,
+        scenario_source="none",
     )
     
     # Create default thread
     thread_repo = ThreadRepository(db)
     thread_repo.create(conversation_id=conversation.id, title="Main Thread")
+
+    if scenario_snapshot["scenario_source"] != "none":
+        if _ens_slice4_enabled():
+            await _ens_config_change(
+                signal_type="config.conversation.change_requested",
+                payload={
+                    "operation": "set_scenario_snapshot",
+                    "conversation_id": conversation.id,
+                    "payload": {
+                        "conversation_id": conversation.id,
+                        **scenario_snapshot,
+                    },
+                },
+                assistant_id=conversation.character_id,
+                surface=source,
+                source=source,
+            )
+            db.expire_all()
+            conversation = repo.get_by_id(conversation.id)
+        else:
+            conversation.scenario_source = scenario_snapshot["scenario_source"]
+            conversation.scenario_id = scenario_snapshot["scenario_id"]
+            conversation.scenario_title = scenario_snapshot["scenario_title"]
+            conversation.scenario_text = scenario_snapshot["scenario_text"]
+            conversation.scenario_settings_json = scenario_snapshot["scenario_settings_json"]
+            db.commit()
+            db.refresh(conversation)
     
     return conversation
 
@@ -5599,6 +6000,11 @@ async def resolve_general_chat(
             source=conversation.source,
             conversation_kind=conversation.conversation_kind,
             relationship_id=conversation.relationship_id,
+            scenario_source=getattr(conversation, "scenario_source", "none") or "none",
+            scenario_id=getattr(conversation, "scenario_id", None),
+            scenario_title=getattr(conversation, "scenario_title", None),
+            scenario_text=getattr(conversation, "scenario_text", None),
+            scenario_settings_json=getattr(conversation, "scenario_settings_json", None),
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
         ),
@@ -15499,6 +15905,12 @@ character_images_dir = Path(__file__).parent.parent.parent / "data" / "character
 if character_images_dir.exists():
     app.mount("/character_images", StaticFiles(directory=str(character_images_dir)), name="character_images")
     logger.info(f"Mounted character_images directory: {character_images_dir}")
+
+# Mount scenario images
+scenario_images_dir = Path(__file__).parent.parent.parent / "data" / "scenario_images"
+scenario_images_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/scenario_images", StaticFiles(directory=str(scenario_images_dir)), name="scenario_images")
+logger.info(f"Mounted scenario_images directory: {scenario_images_dir}")
 
 # Mount web UI static files LAST so API routes take precedence
 web_dir = Path(__file__).parent.parent.parent / "web"

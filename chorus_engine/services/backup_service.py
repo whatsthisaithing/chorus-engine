@@ -44,6 +44,7 @@ class CharacterBackupService:
         backup_dir: Path = Path("data/backups"),
         characters_dir: Path = Path("characters"),
         images_dir: Path = Path("data/character_images"),
+        scenario_images_dir: Path = Path("data/scenario_images"),
         media_images_dir: Path = Path("data/images"),
         media_videos_dir: Path = Path("data/videos"),
         media_audio_dir: Path = Path("data/audio"),
@@ -69,6 +70,7 @@ class CharacterBackupService:
         self.backup_dir = backup_dir
         self.characters_dir = characters_dir
         self.images_dir = images_dir
+        self.scenario_images_dir = scenario_images_dir
         self.media_images_dir = media_images_dir
         self.media_videos_dir = media_videos_dir
         self.media_audio_dir = media_audio_dir
@@ -244,6 +246,11 @@ class CharacterBackupService:
                 'last_summary_analyzed_at': conv.last_summary_analyzed_at.isoformat() if getattr(conv, 'last_summary_analyzed_at', None) else None,
                 'last_memories_analyzed_at': conv.last_memories_analyzed_at.isoformat() if getattr(conv, 'last_memories_analyzed_at', None) else None,
                 'source': getattr(conv, 'source', 'web'),  # Handle old schema
+                'scenario_source': getattr(conv, 'scenario_source', 'none'),
+                'scenario_id': getattr(conv, 'scenario_id', None),
+                'scenario_title': getattr(conv, 'scenario_title', None),
+                'scenario_text': getattr(conv, 'scenario_text', None),
+                'scenario_settings_json': getattr(conv, 'scenario_settings_json', None),
                 'threads': []
             }
             
@@ -814,6 +821,22 @@ class CharacterBackupService:
         profile_image = self._find_profile_image(character_id, character_config)
         if profile_image and profile_image.exists():
             media_files[f"profile_image{profile_image.suffix}"] = profile_image
+
+        # Collect scenario library YAML files and referenced title images
+        scenario_dir = self.data_dir / "scenarios" / character_id
+        if scenario_dir.exists():
+            for scenario_file in scenario_dir.glob("scn_*.yaml"):
+                media_files[f"scenarios/{character_id}/{scenario_file.name}"] = scenario_file
+                try:
+                    with open(scenario_file, "r", encoding="utf-8") as f:
+                        scenario_data = yaml.safe_load(f) or {}
+                    image_ref = scenario_data.get("image_ref")
+                    if image_ref:
+                        img_path = self.scenario_images_dir / Path(str(image_ref)).name
+                        if img_path.exists():
+                            media_files[f"scenario_images/{character_id}/{img_path.name}"] = img_path
+                except Exception:
+                    continue
         
         logger.info(f"Collected {len(media_files)} media files for backup")
         return media_files

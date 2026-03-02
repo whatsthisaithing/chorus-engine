@@ -1073,6 +1073,10 @@ class CharacterFeaturesConfig(BaseModel):
         default=False,
         description="Enable interactive narrative loop controls for this character",
     )
+    scenarios_enabled: bool = Field(
+        default=False,
+        description="Enable scenario selection and scenario library management for this character",
+    )
 
 class PreferredLLMConfig(BaseModel):
     """Character's preferred LLM settings."""

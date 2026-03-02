@@ -1232,6 +1232,25 @@ class ENSRuntime:
                 ),
             ]
 
+        if signal.type == "config.scenario.change_requested":
+            payload_hash = hashlib.sha256(
+                json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            character_id = signal.payload.get("character_id") or "global"
+            idempotency_key = f"scenario:update:{character_id}:{payload_hash}"
+            return [
+                ENSAction(
+                    kind="config.scenario.validate",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+                ENSAction(
+                    kind="config.scenario.apply",
+                    idempotency_key=idempotency_key,
+                    params=dict(signal.payload),
+                ),
+            ]
+
         if signal.type == "message.mutation_requested":
             operation = signal.payload.get("operation")
             payload = signal.payload.get("payload") or {}
@@ -1552,6 +1571,9 @@ class ENSRuntime:
                 response_payload["runtime_reloaded"] = bool(((reload_result or {}).get("output") or {}).get("reloaded"))
         elif signal.type == "config.conversation.change_requested":
             apply_result = next((r for r in action_results if r.get("kind") == "config.conversation.apply"), None)
+            response_payload = dict((apply_result or {}).get("output") or {})
+        elif signal.type == "config.scenario.change_requested":
+            apply_result = next((r for r in action_results if r.get("kind") == "config.scenario.apply"), None)
             response_payload = dict((apply_result or {}).get("output") or {})
         elif signal.type == "message.mutation_requested":
             apply_result = next((r for r in action_results if r.get("kind") == "message.mutation.apply"), None)

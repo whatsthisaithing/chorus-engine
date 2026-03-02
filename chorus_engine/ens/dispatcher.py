@@ -87,6 +87,7 @@ from chorus_engine.services.assistant_content import (
     segments_to_framelines_v2,
 )
 from chorus_engine.services.response_finalizer import ResponseFinalizer
+from chorus_engine.services.scenario_service import ScenarioService
 from chorus_engine.ens.metadata_policy import sanitize_metadata_patch
 from chorus_engine.ens.surface_identity import canonicalize_surface_id
 from chorus_engine.ens.llm_invocation_service import InvocationRequest, LLMInvocationService
@@ -809,6 +810,10 @@ class ENSDispatcher:
                 output = self._validate_conversation_config_change(db, action.params)
             elif action.kind == "config.conversation.apply":
                 output = self._apply_conversation_config_change(db, action.params)
+            elif action.kind == "config.scenario.validate":
+                output = self._validate_scenario_config_change(db, action.params)
+            elif action.kind == "config.scenario.apply":
+                output = self._apply_scenario_config_change(db, action.params)
             elif action.kind == "message.mutation.validate":
                 output = self._validate_message_mutation(db, action.params)
             elif action.kind == "message.mutation.apply":
@@ -5392,6 +5397,15 @@ class ENSDispatcher:
             )
         elif operation == "update_title":
             no_change = (conversation.title or "") == ((payload.get("title") or ""))
+        elif operation == "set_scenario_snapshot":
+            desired_source = str(payload.get("scenario_source") or "none")
+            no_change = (
+                str(conversation.scenario_source or "none") == desired_source
+                and (conversation.scenario_id or None) == (payload.get("scenario_id") or None)
+                and (conversation.scenario_title or None) == (payload.get("scenario_title") or None)
+                and (conversation.scenario_text or None) == (payload.get("scenario_text") or None)
+                and (conversation.scenario_settings_json or None) == (payload.get("scenario_settings_json") or None)
+            )
         elif operation == "delete_conversation":
             no_change = False
         else:
@@ -5492,6 +5506,36 @@ class ENSDispatcher:
                     "id": conversation.id,
                     "title": conversation.title,
                     "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+                }
+            if operation == "set_scenario_snapshot":
+                next_source = str(payload.get("scenario_source") or "none")
+                next_id = payload.get("scenario_id")
+                next_title = payload.get("scenario_title")
+                next_text = payload.get("scenario_text")
+                next_settings = payload.get("scenario_settings_json")
+                no_change = (
+                    str(conversation.scenario_source or "none") == next_source
+                    and (conversation.scenario_id or None) == (next_id or None)
+                    and (conversation.scenario_title or None) == (next_title or None)
+                    and (conversation.scenario_text or None) == (next_text or None)
+                    and (conversation.scenario_settings_json or None) == (next_settings or None)
+                )
+                if no_change:
+                    return {"_ens_action_status": "skipped", "reason": "no_change", "conversation_id": conversation_id}
+                conversation.scenario_source = next_source
+                conversation.scenario_id = next_id
+                conversation.scenario_title = next_title
+                conversation.scenario_text = next_text
+                conversation.scenario_settings_json = next_settings
+                conversation.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "conversation_id": conversation.id,
+                    "scenario_source": conversation.scenario_source,
+                    "scenario_id": conversation.scenario_id,
+                    "scenario_title": conversation.scenario_title,
+                    "scenario_text": conversation.scenario_text,
+                    "scenario_settings_json": conversation.scenario_settings_json,
                 }
             if operation == "delete_conversation":
                 from chorus_engine.models.conversation import Memory
@@ -5606,6 +5650,88 @@ class ENSDispatcher:
             errors.append(f"Unsupported message mutation operation: {operation}")
 
         return {"ok": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+    def _validate_scenario_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        from chorus_engine.config.loader import ConfigLoader
+
+        operation = str(params.get("operation") or "")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        scenario_id = payload.get("scenario_id")
+
+        errors: List[str] = []
+        if not character_id:
+            errors.append("character_id is required")
+        if character_id:
+            try:
+                character = ConfigLoader().load_character(character_id)
+                if not bool(getattr(getattr(character, "features", None), "scenarios_enabled", False)):
+                    errors.append("Scenarios are disabled for this character")
+            except Exception:
+                errors.append("Character not found")
+        if operation not in {
+            "create",
+            "update",
+            "delete",
+            "duplicate",
+            "set_image_ref",
+            "clear_image_ref",
+        }:
+            errors.append(f"Unsupported scenario operation: {operation}")
+        if operation in {"update", "delete", "duplicate", "set_image_ref", "clear_image_ref"} and not scenario_id:
+            errors.append("scenario_id is required")
+        if operation == "set_image_ref" and not payload.get("image_ref"):
+            errors.append("image_ref is required")
+        return {"ok": len(errors) == 0, "errors": errors, "warnings": []}
+
+    def _apply_scenario_config_change(self, db: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+        _ = db
+        if self._config_apply_mutex.locked():
+            return self._mutex_skipped()
+
+        operation = str(params.get("operation") or "")
+        payload = params.get("payload") or {}
+        character_id = params.get("character_id") or payload.get("character_id")
+        scenario_id = payload.get("scenario_id")
+        service = ScenarioService()
+
+        with self._config_apply_mutex:
+            if operation == "create":
+                created = service.create_scenario(character_id, payload.get("scenario_data") or {})
+                return {"success": True, "scenario": created.model_dump(mode="json", exclude_none=True)}
+
+            if operation == "update":
+                updated = service.update_scenario(character_id, scenario_id, payload.get("updates") or {})
+                return {"success": True, "scenario": updated.model_dump(mode="json", exclude_none=True)}
+
+            if operation == "delete":
+                deleted = service.delete_scenario(character_id, scenario_id)
+                if not deleted:
+                    raise RuntimeError("Scenario not found")
+                return {"success": True, "scenario_id": scenario_id}
+
+            if operation == "duplicate":
+                duplicated = service.duplicate_scenario(character_id, scenario_id)
+                return {"success": True, "scenario": duplicated.model_dump(mode="json", exclude_none=True)}
+
+            if operation == "set_image_ref":
+                updated = service.update_scenario(character_id, scenario_id, {"image_ref": payload.get("image_ref")})
+                return {"success": True, "scenario": updated.model_dump(mode="json", exclude_none=True)}
+
+            if operation == "clear_image_ref":
+                current = service.get_scenario(character_id, scenario_id)
+                if not current:
+                    raise RuntimeError("Scenario not found")
+                image_ref = current.image_ref
+                if image_ref:
+                    img_path = Path("data/scenario_images") / Path(str(image_ref)).name
+                    if img_path.exists():
+                        img_path.unlink()
+                updated = service.update_scenario(character_id, scenario_id, {"image_ref": None})
+                return {"success": True, "scenario": updated.model_dump(mode="json", exclude_none=True)}
+
+        raise RuntimeError(f"Unsupported scenario operation: {operation}")
 
     def _log_rejected_system_metadata(self, rejected: List[Dict[str, str]]) -> None:
         from time import time

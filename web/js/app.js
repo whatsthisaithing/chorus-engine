@@ -52,6 +52,8 @@ window.App = {
             inFlightEpoch: 0,
             streamingMessageElement: null,
         },
+        scenarioManagerItems: [],
+        scenarioManagerSelectedId: null,
     },
     
     /**
@@ -183,6 +185,9 @@ window.App = {
         // Phase 6: Voice sample management button
         document.getElementById('manageVoiceSamplesBtn').addEventListener('click', () => {
             this.showVoiceManagementModal();
+        });
+        document.getElementById('scenarioManagerBtn')?.addEventListener('click', () => {
+            this.openScenarioManagerModal();
         });
         
         // Phase 6: Voice upload form
@@ -634,6 +639,458 @@ window.App = {
         document.getElementById('refreshContinuityBtn').addEventListener('click', () => {
             this.refreshContinuityPreview();
         });
+
+        // Scenario create modal mode switching
+        const scenarioModeInputs = document.querySelectorAll('input[name="scenarioCreateMode"]');
+        scenarioModeInputs.forEach((input) => {
+            input.addEventListener('change', () => this.updateScenarioCreateModeUI());
+        });
+        document.getElementById('scenarioManagerRefreshBtn')?.addEventListener('click', () => this.loadScenarioManagerGrid());
+        document.getElementById('scenarioManagerNewBtn')?.addEventListener('click', () => this.openScenarioEditorModal());
+        document.getElementById('scenarioManagerImportBtn')?.addEventListener('click', () => {
+            document.getElementById('scenarioManagerImportInput')?.click();
+        });
+        document.getElementById('scenarioManagerImportInput')?.addEventListener('change', (e) => this.importScenarioCardFromManager(e));
+        document.getElementById('smScenarioEditSaveBtn')?.addEventListener('click', () => this.saveScenarioFromEditor());
+        document.getElementById('smScenarioEditDeleteBtn')?.addEventListener('click', () => this.deleteScenarioFromEditor());
+        document.getElementById('smScenarioEditDuplicateBtn')?.addEventListener('click', () => this.duplicateScenarioFromEditor());
+        document.getElementById('smScenarioEditUploadImageBtn')?.addEventListener('click', () => {
+            document.getElementById('smScenarioEditImageInput')?.click();
+        });
+        document.getElementById('smScenarioEditImageInput')?.addEventListener('change', (e) => this.uploadScenarioEditorImage(e));
+        document.getElementById('smScenarioEditRemoveImageBtn')?.addEventListener('click', () => this.removeScenarioEditorImage());
+    },
+
+    isScenarioFeatureEnabledForCharacter(character) {
+        if (!character) return false;
+        return Boolean(
+            (character.features && character.features.scenarios_enabled) ||
+            (character.capabilities && character.capabilities.scenarios_enabled)
+        );
+    },
+
+    updateScenarioCreateModeUI() {
+        const selectedMode = document.querySelector('input[name="scenarioCreateMode"]:checked')?.value || 'none';
+        const libraryPanel = document.getElementById('scenarioCreateLibraryPanel');
+        const customPanel = document.getElementById('scenarioCreateCustomPanel');
+        const saveCustomWrap = document.getElementById('scenarioSaveCustomWrap');
+        if (libraryPanel) libraryPanel.style.display = selectedMode === 'library' ? '' : 'none';
+        if (customPanel) customPanel.style.display = selectedMode === 'custom' ? '' : 'none';
+        if (saveCustomWrap) saveCustomWrap.style.display = selectedMode === 'custom' ? '' : 'none';
+    },
+
+    async loadScenarioCreateLibrary() {
+        const select = document.getElementById('scenarioLibrarySelect');
+        if (!select || !this.state.selectedCharacterId) return;
+        select.innerHTML = '<option value="">Loading scenarios...</option>';
+        try {
+            const response = await API.listScenarios(this.state.selectedCharacterId);
+            const scenarios = Array.isArray(response?.scenarios) ? response.scenarios : [];
+            if (scenarios.length === 0) {
+                select.innerHTML = '<option value="">No scenarios available</option>';
+                return;
+            }
+            select.innerHTML = '<option value="">Select a scenario...</option>';
+            scenarios.forEach((scenario) => {
+                const option = document.createElement('option');
+                option.value = scenario.id;
+                option.textContent = scenario.title || scenario.id;
+                select.appendChild(option);
+            });
+        } catch (error) {
+            console.error('Failed to load scenario library:', error);
+            select.innerHTML = '<option value="">Failed to load scenarios</option>';
+        }
+    },
+
+    async showScenarioCreateModal() {
+        const modalEl = document.getElementById('scenarioCreateModal');
+        if (!modalEl) {
+            return { scenario_mode: 'none' };
+        }
+        await this.loadScenarioCreateLibrary();
+
+        const noneRadio = document.getElementById('scenarioModeNone');
+        const libraryRadio = document.getElementById('scenarioModeLibrary');
+        const customRadio = document.getElementById('scenarioModeCustom');
+        const customText = document.getElementById('scenarioCustomText');
+        const saveCustomCheck = document.getElementById('scenarioSaveCustom');
+        const librarySelect = document.getElementById('scenarioLibrarySelect');
+        const charCount = document.getElementById('scenarioCustomCharCount');
+        const maxLen = 6000;
+
+        if (noneRadio) noneRadio.checked = true;
+        if (libraryRadio) libraryRadio.checked = false;
+        if (customRadio) customRadio.checked = false;
+        if (customText) customText.value = '';
+        if (saveCustomCheck) saveCustomCheck.checked = false;
+        if (librarySelect) librarySelect.value = '';
+        if (charCount) charCount.textContent = `0 / ${maxLen}`;
+        this.updateScenarioCreateModeUI();
+
+        if (customText && !customText.dataset.scenarioCountBound) {
+            customText.addEventListener('input', () => {
+                if (charCount) charCount.textContent = `${customText.value.length} / ${maxLen}`;
+            });
+            customText.dataset.scenarioCountBound = 'true';
+        }
+
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        const confirmBtn = document.getElementById('confirmScenarioCreateBtn');
+        const cancelBtn = document.getElementById('cancelScenarioCreateBtn');
+
+        return new Promise((resolve) => {
+            let finished = false;
+            const cleanup = () => {
+                confirmBtn?.removeEventListener('click', onConfirm);
+                cancelBtn?.removeEventListener('click', onCancel);
+                modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            };
+            const finish = (value) => {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                resolve(value);
+            };
+            const onCancel = () => {
+                modal.hide();
+                finish(null);
+            };
+            const onHidden = () => finish(null);
+            const onConfirm = () => {
+                const mode = document.querySelector('input[name="scenarioCreateMode"]:checked')?.value || 'none';
+                if (mode === 'none') {
+                    modal.hide();
+                    finish({ scenario_mode: 'none' });
+                    return;
+                }
+                if (mode === 'library') {
+                    const scenarioId = (librarySelect?.value || '').trim();
+                    if (!scenarioId) {
+                        UI.showToast('Select a scenario from the library.', 'warning');
+                        return;
+                    }
+                    modal.hide();
+                    finish({
+                        scenario_mode: 'library',
+                        scenario_id: scenarioId,
+                    });
+                    return;
+                }
+
+                const text = (customText?.value || '').trim();
+                if (!text) {
+                    UI.showToast('Custom scenario text is required.', 'warning');
+                    return;
+                }
+                if (text.length > maxLen) {
+                    UI.showToast(`Custom scenario exceeds max length (${maxLen}).`, 'warning');
+                    return;
+                }
+                modal.hide();
+                finish({
+                    scenario_mode: 'custom',
+                    custom_scenario_text: text,
+                    save_custom_to_library: Boolean(saveCustomCheck?.checked),
+                });
+            };
+
+            confirmBtn?.addEventListener('click', onConfirm);
+            cancelBtn?.addEventListener('click', onCancel);
+            modalEl.addEventListener('hidden.bs.modal', onHidden);
+            modal.show();
+        });
+    },
+
+    async openScenarioManagerModal() {
+        if (!this.state.selectedCharacterId) {
+            UI.showToast('Please select a character first', 'warning');
+            return;
+        }
+        const character = this.state.characters.find(c => c.id === this.state.selectedCharacterId);
+        if (!this.isScenarioFeatureEnabledForCharacter(character)) {
+            UI.showToast('Scenarios are disabled for this character.', 'warning');
+            return;
+        }
+        const nameEl = document.getElementById('scenarioManagerCharacterName');
+        if (nameEl) nameEl.textContent = character?.name || this.state.selectedCharacterId;
+        await this.loadScenarioManagerGrid();
+        const modalEl = document.getElementById('scenarioManagerModal');
+        if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    },
+
+    async loadScenarioManagerGrid() {
+        if (!this.state.selectedCharacterId) return;
+        const grid = document.getElementById('scenarioManagerGrid');
+        const empty = document.getElementById('scenarioManagerEmpty');
+        if (grid) grid.innerHTML = '';
+        if (empty) empty.style.display = 'none';
+        try {
+            const response = await API.listScenarios(this.state.selectedCharacterId);
+            const scenarios = Array.isArray(response?.scenarios) ? response.scenarios : [];
+            this.state.scenarioManagerItems = scenarios;
+            if (!grid) return;
+            if (scenarios.length === 0) {
+                if (empty) empty.style.display = '';
+                return;
+            }
+            grid.innerHTML = scenarios.map((scenario) => {
+                const title = scenario.title || scenario.id;
+                const safeTitle = this.escapeHtml(title);
+                const safeScenarioId = this.escapeHtml(scenario.id || '');
+                const image = scenario.image_url;
+                const media = image
+                    ? `<img class="scenario-card-media" src="${image}" alt="${safeTitle}">`
+                    : '<div class="scenario-card-media scenario-card-media-fallback"></div>';
+                return `
+                    <div class="scenario-card" data-scenario-id="${safeScenarioId}">
+                        <div class="scenario-card-media-wrap">
+                            ${media}
+                            <div class="scenario-card-actions">
+                                <button class="btn btn-sm btn-light scenario-card-start-btn" type="button" title="Start conversation">
+                                    <i class="bi bi-chat-dots"></i>
+                                </button>
+                                <button class="btn btn-sm btn-light scenario-card-export-btn" type="button" title="Export card image">
+                                    <i class="bi bi-download"></i>
+                                </button>
+                                <button class="btn btn-sm btn-light scenario-card-edit-btn" type="button" title="Edit scenario">
+                                    <i class="bi bi-gear"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="scenario-card-title" title="${safeTitle}">${safeTitle}</div>
+                    </div>
+                `;
+            }).join('');
+            grid.querySelectorAll('.scenario-card-start-btn').forEach((btn) => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = e.currentTarget.closest('.scenario-card');
+                    const scenarioId = card?.dataset?.scenarioId;
+                    if (scenarioId) this.startConversationWithScenario(scenarioId);
+                });
+            });
+            grid.querySelectorAll('.scenario-card-edit-btn').forEach((btn) => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const card = e.currentTarget.closest('.scenario-card');
+                    const scenarioId = card?.dataset?.scenarioId;
+                    this.openScenarioEditorModal(scenarioId || null);
+                });
+            });
+            grid.querySelectorAll('.scenario-card-export-btn').forEach((btn) => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const card = e.currentTarget.closest('.scenario-card');
+                    const scenarioId = card?.dataset?.scenarioId;
+                    if (!scenarioId) return;
+                    await this.exportScenarioCardFromManager(scenarioId);
+                });
+            });
+        } catch (error) {
+            console.error('Failed to load scenarios:', error);
+            UI.showToast(`Failed to load scenarios: ${error.message}`, 'error');
+        }
+    },
+
+    async exportScenarioCardFromManager(scenarioId) {
+        if (!this.state.selectedCharacterId || !scenarioId) return;
+        try {
+            const blob = await API.exportScenarioCard(this.state.selectedCharacterId, scenarioId);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${this.state.selectedCharacterId}_${scenarioId}.scenario.card.png`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            UI.showToast('Scenario card exported', 'success');
+        } catch (error) {
+            console.error('Failed to export scenario card:', error);
+            UI.showToast(`Failed to export scenario card: ${error.message}`, 'error');
+        }
+    },
+
+    async importScenarioCardFromManager(event) {
+        const file = event?.target?.files?.[0];
+        if (!this.state.selectedCharacterId || !file) return;
+        try {
+            const preview = await API.previewScenarioCardImport(this.state.selectedCharacterId, file);
+            const incoming = preview?.scenario_data || {};
+            const incomingTitle = incoming.title || incoming.id || 'Imported scenario';
+            const incomingId = incoming.id || '';
+            const existing = (this.state.scenarioManagerItems || []).find((s) => s.id && incomingId && s.id === incomingId);
+            let collisionMode = 'duplicate';
+            if (existing) {
+                const useUpdate = confirm(`A scenario with id "${incomingId}" already exists.\n\nPress OK to update it, or Cancel to import as duplicate.`);
+                collisionMode = useUpdate ? 'update' : 'duplicate';
+            }
+            await API.confirmScenarioCardImport(this.state.selectedCharacterId, {
+                preview_id: preview.preview_id,
+                collision_mode: collisionMode,
+            });
+            await this.loadScenarioManagerGrid();
+            const refreshed = (this.state.scenarioManagerItems || []).find((s) => s.id === incomingId)
+                || (this.state.scenarioManagerItems || []).find((s) => s.title === incomingTitle);
+            if (refreshed?.id) {
+                this.openScenarioEditorModal(refreshed.id);
+            }
+            UI.showToast(`Scenario card imported (${collisionMode}).`, 'success');
+        } catch (error) {
+            console.error('Failed to import scenario card:', error);
+            UI.showToast(`Failed to import scenario card: ${error.message}`, 'error');
+        } finally {
+            if (event?.target) event.target.value = '';
+        }
+    },
+
+    async startConversationWithScenario(scenarioId) {
+        if (!scenarioId || !this.state.selectedCharacterId) return;
+        try {
+            const character = this.state.characters.find(c => c.id === this.state.selectedCharacterId);
+            const title = `Chat with ${character?.name || this.state.selectedCharacterId}`;
+            const conversation = await API.createConversation(
+                this.state.selectedCharacterId,
+                title,
+                'web',
+                null,
+                { scenario_mode: 'library', scenario_id: scenarioId }
+            );
+            await this.loadConversations();
+            await this.selectConversation(conversation.id);
+            UI.showToast('New conversation created', 'success');
+            const managerModal = document.getElementById('scenarioManagerModal');
+            if (managerModal) bootstrap.Modal.getOrCreateInstance(managerModal).hide();
+        } catch (error) {
+            console.error('Failed to create scenario conversation:', error);
+            UI.showToast(`Failed to create conversation: ${error.message}`, 'error');
+        }
+    },
+
+    openScenarioEditorModal(scenarioId = null) {
+        const scenarios = Array.isArray(this.state.scenarioManagerItems) ? this.state.scenarioManagerItems : [];
+        const scenario = scenarioId ? scenarios.find((s) => s.id === scenarioId) : null;
+        const idEl = document.getElementById('smScenarioEditId');
+        const titleEl = document.getElementById('smScenarioEditTitle');
+        const descEl = document.getElementById('smScenarioEditDescription');
+        const textEl = document.getElementById('smScenarioEditText');
+        const tagsEl = document.getElementById('smScenarioEditTags');
+        const imageEl = document.getElementById('smScenarioEditImagePreview');
+        const removeImageBtn = document.getElementById('smScenarioEditRemoveImageBtn');
+        if (idEl) idEl.value = scenario?.id || '';
+        if (titleEl) titleEl.value = scenario?.title || '';
+        if (descEl) descEl.value = scenario?.description || '';
+        if (textEl) textEl.value = scenario?.scenario_text || '';
+        if (tagsEl) tagsEl.value = Array.isArray(scenario?.tags) ? scenario.tags.join(', ') : '';
+        if (imageEl) imageEl.src = scenario?.image_url || '/character_images/default.svg';
+        if (removeImageBtn) removeImageBtn.style.display = scenario?.image_ref ? '' : 'none';
+        const deleteBtn = document.getElementById('smScenarioEditDeleteBtn');
+        const duplicateBtn = document.getElementById('smScenarioEditDuplicateBtn');
+        if (deleteBtn) deleteBtn.style.display = scenario ? '' : 'none';
+        if (duplicateBtn) duplicateBtn.style.display = scenario ? '' : 'none';
+        const modalEl = document.getElementById('scenarioEditModal');
+        if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    },
+
+    collectScenarioEditorPayload() {
+        const title = (document.getElementById('smScenarioEditTitle')?.value || '').trim();
+        const description = (document.getElementById('smScenarioEditDescription')?.value || '').trim();
+        const scenarioText = (document.getElementById('smScenarioEditText')?.value || '').trim();
+        const tags = (document.getElementById('smScenarioEditTags')?.value || '')
+            .split(',')
+            .map((x) => x.trim())
+            .filter(Boolean);
+        if (!title) throw new Error('Title is required.');
+        if (!scenarioText) throw new Error('Scenario text is required.');
+        if (scenarioText.length > 6000) throw new Error('Scenario text exceeds 6000 characters.');
+        return { title, description, scenario_text: scenarioText, tags };
+    },
+
+    async saveScenarioFromEditor() {
+        if (!this.state.selectedCharacterId) return;
+        try {
+            const payload = this.collectScenarioEditorPayload();
+            const scenarioId = (document.getElementById('smScenarioEditId')?.value || '').trim();
+            if (scenarioId) {
+                await API.updateScenario(this.state.selectedCharacterId, scenarioId, payload);
+            } else {
+                const created = await API.createScenario(this.state.selectedCharacterId, payload);
+                if (document.getElementById('smScenarioEditId')) {
+                    document.getElementById('smScenarioEditId').value = created?.scenario?.id || '';
+                }
+            }
+            await this.loadScenarioManagerGrid();
+            UI.showToast('Scenario saved', 'success');
+        } catch (error) {
+            console.error('Failed to save scenario:', error);
+            UI.showToast(`Failed to save scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async deleteScenarioFromEditor() {
+        if (!this.state.selectedCharacterId) return;
+        const scenarioId = (document.getElementById('smScenarioEditId')?.value || '').trim();
+        if (!scenarioId) return;
+        if (!confirm('Delete this scenario? This cannot be undone.')) return;
+        try {
+            await API.deleteScenario(this.state.selectedCharacterId, scenarioId);
+            await this.loadScenarioManagerGrid();
+            const modalEl = document.getElementById('scenarioEditModal');
+            if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            UI.showToast('Scenario deleted', 'success');
+        } catch (error) {
+            console.error('Failed to delete scenario:', error);
+            UI.showToast(`Failed to delete scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async duplicateScenarioFromEditor() {
+        if (!this.state.selectedCharacterId) return;
+        const scenarioId = (document.getElementById('smScenarioEditId')?.value || '').trim();
+        if (!scenarioId) return;
+        try {
+            const result = await API.duplicateScenario(this.state.selectedCharacterId, scenarioId);
+            await this.loadScenarioManagerGrid();
+            this.openScenarioEditorModal(result?.scenario?.id || null);
+            UI.showToast('Scenario duplicated', 'success');
+        } catch (error) {
+            console.error('Failed to duplicate scenario:', error);
+            UI.showToast(`Failed to duplicate scenario: ${error.message}`, 'error');
+        }
+    },
+
+    async uploadScenarioEditorImage(event) {
+        if (!this.state.selectedCharacterId) return;
+        const scenarioId = (document.getElementById('smScenarioEditId')?.value || '').trim();
+        const file = event?.target?.files?.[0];
+        if (!scenarioId || !file) return;
+        try {
+            await API.uploadScenarioImage(this.state.selectedCharacterId, scenarioId, file);
+            await this.loadScenarioManagerGrid();
+            this.openScenarioEditorModal(scenarioId);
+            UI.showToast('Scenario image uploaded', 'success');
+        } catch (error) {
+            console.error('Failed to upload scenario image:', error);
+            UI.showToast(`Failed to upload scenario image: ${error.message}`, 'error');
+        } finally {
+            if (event?.target) event.target.value = '';
+        }
+    },
+
+    async removeScenarioEditorImage() {
+        if (!this.state.selectedCharacterId) return;
+        const scenarioId = (document.getElementById('smScenarioEditId')?.value || '').trim();
+        if (!scenarioId) return;
+        try {
+            await API.deleteScenarioImage(this.state.selectedCharacterId, scenarioId);
+            await this.loadScenarioManagerGrid();
+            this.openScenarioEditorModal(scenarioId);
+            UI.showToast('Scenario image removed', 'success');
+        } catch (error) {
+            console.error('Failed to remove scenario image:', error);
+            UI.showToast(`Failed to remove scenario image: ${error.message}`, 'error');
+        }
     },
     
     /**
@@ -721,6 +1178,7 @@ window.App = {
         document.getElementById('momentPinsBtn').disabled = false;
         document.getElementById('manageWorkflowsBtn').disabled = false;
         document.getElementById('manageVoiceSamplesBtn').disabled = false; // Phase 6
+        document.getElementById('scenarioManagerBtn').disabled = true;
         document.getElementById('searchConversationsBtn').disabled = false; // Conversation search
         document.getElementById('generalChatBtn').disabled = false;
         this.renderGeneralChatButton();
@@ -734,6 +1192,10 @@ window.App = {
         const character = this.state.characters.find(c => c.id === characterId);
         if (character) {
             await UI.updateProfileCard(character);
+            const scenarioBtn = document.getElementById('scenarioManagerBtn');
+            if (scenarioBtn) {
+                scenarioBtn.disabled = !this.isScenarioFeatureEnabledForCharacter(character);
+            }
             
             // Phase 1: Show/hide document library button based on character capability
             const docLibBtn = document.getElementById('documentLibraryBtn');
@@ -888,8 +1350,22 @@ window.App = {
         try {
             const character = this.state.characters.find(c => c.id === this.state.selectedCharacterId);
             const title = `Chat with ${character.name}`;
-            
-            const conversation = await API.createConversation(this.state.selectedCharacterId, title, 'web', null);
+            let scenarioPayload = { scenario_mode: 'none' };
+            if (this.isScenarioFeatureEnabledForCharacter(character)) {
+                const selectedScenario = await this.showScenarioCreateModal();
+                if (selectedScenario === null) {
+                    return;
+                }
+                scenarioPayload = selectedScenario;
+            }
+
+            const conversation = await API.createConversation(
+                this.state.selectedCharacterId,
+                title,
+                'web',
+                null,
+                scenarioPayload
+            );
             
             // Reload conversations
             await this.loadConversations();
@@ -3572,6 +4048,7 @@ window.App = {
             document.getElementById('generalChatBtn').disabled = true;
             this.renderGeneralChatButton();
             document.getElementById('manageWorkflowsBtn').disabled = true;
+            document.getElementById('scenarioManagerBtn').disabled = true;
             document.getElementById('privacyToggle').disabled = true;
             document.getElementById('actionsMenuBtn').disabled = true;
             

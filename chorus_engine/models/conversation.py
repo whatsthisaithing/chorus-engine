@@ -120,6 +120,13 @@ class Conversation(Base):
     origin_segment_ids_json = Column(JSON, nullable=True)
     branch_created_at = Column(DateTime, nullable=True, default=None, index=True)
     branch_origin_recap_injected_at = Column(DateTime, nullable=True, default=None)
+
+    # Scenario snapshot (v1)
+    scenario_source = Column(String(20), nullable=False, default="none")
+    scenario_id = Column(String(36), nullable=True, index=True)
+    scenario_title = Column(String(200), nullable=True)
+    scenario_text = Column(Text, nullable=True)
+    scenario_settings_json = Column(JSON, nullable=True)
     
     # Relationships
     threads = relationship("Thread", back_populates="conversation", cascade="all, delete-orphan")

@@ -140,16 +140,105 @@ class API {
     
     // === Conversations ===
     
-    static async createConversation(characterId, title = null, source = 'web', primaryUser = null) {
+    static async createConversation(characterId, title = null, source = 'web', primaryUser = null, scenario = null) {
+        const payload = {
+            character_id: characterId,
+            title: title,
+            source: source,
+            primary_user: primaryUser,
+            conversation_kind: 'standard',
+        };
+        if (scenario && typeof scenario === 'object') {
+            Object.assign(payload, scenario);
+        }
         return this.request('/conversations', {
             method: 'POST',
-            body: JSON.stringify({
-                character_id: characterId,
-                title: title,
-                source: source,
-                primary_user: primaryUser,
-                conversation_kind: 'standard',
-            }),
+            body: JSON.stringify(payload),
+        });
+    }
+
+    static async listScenarios(characterId) {
+        return this.request(`/characters/${characterId}/scenarios`);
+    }
+
+    static async createScenario(characterId, scenarioData) {
+        return this.request(`/characters/${characterId}/scenarios`, {
+            method: 'POST',
+            body: JSON.stringify(scenarioData),
+        });
+    }
+
+    static async updateScenario(characterId, scenarioId, updates) {
+        return this.request(`/characters/${characterId}/scenarios/${scenarioId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(updates),
+        });
+    }
+
+    static async deleteScenario(characterId, scenarioId) {
+        return this.request(`/characters/${characterId}/scenarios/${scenarioId}`, {
+            method: 'DELETE',
+        });
+    }
+
+    static async duplicateScenario(characterId, scenarioId) {
+        return this.request(`/characters/${characterId}/scenarios/${scenarioId}/duplicate`, {
+            method: 'POST',
+        });
+    }
+
+    static async uploadScenarioImage(characterId, scenarioId, file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`${API_BASE_URL}/characters/${characterId}/scenarios/${scenarioId}/image`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(this._detailToMessage(error.detail, `HTTP ${response.status}`));
+        }
+        return response.json();
+    }
+
+    static async deleteScenarioImage(characterId, scenarioId) {
+        return this.request(`/characters/${characterId}/scenarios/${scenarioId}/image`, {
+            method: 'DELETE',
+        });
+    }
+
+    static async exportScenarioCard(characterId, scenarioId) {
+        const formData = new FormData();
+        formData.append('scenario_id', scenarioId);
+        const response = await fetch(`${API_BASE_URL}/characters/${characterId}/scenarios/cards/export`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(this._detailToMessage(error.detail, `HTTP ${response.status}`));
+        }
+        return response.blob();
+    }
+
+    static async previewScenarioCardImport(characterId, file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`${API_BASE_URL}/characters/${characterId}/scenarios/cards/import/preview`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(this._detailToMessage(error.detail, `HTTP ${response.status}`));
+        }
+        return response.json();
+    }
+
+    static async confirmScenarioCardImport(characterId, payload) {
+        return this.request(`/characters/${characterId}/scenarios/cards/import/confirm`, {
+            method: 'POST',
+            body: JSON.stringify(payload || {}),
         });
     }
 

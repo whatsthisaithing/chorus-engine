@@ -28,6 +28,11 @@ class ConversationRepository:
         origin_segment_id: Optional[str] = None,
         origin_segment_ids_json: Optional[List[str]] = None,
         branch_created_at: Optional[datetime] = None,
+        scenario_source: str = "none",
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_text: Optional[str] = None,
+        scenario_settings_json: Optional[dict] = None,
     ) -> Conversation:
         """
         Create a new conversation.
@@ -55,6 +60,11 @@ class ConversationRepository:
             origin_segment_id=origin_segment_id,
             origin_segment_ids_json=origin_segment_ids_json,
             branch_created_at=branch_created_at,
+            scenario_source=(scenario_source or "none"),
+            scenario_id=scenario_id,
+            scenario_title=scenario_title,
+            scenario_text=scenario_text,
+            scenario_settings_json=scenario_settings_json,
         )
         if primary_user:
             conversation.primary_user = primary_user

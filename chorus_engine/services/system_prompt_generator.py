@@ -27,6 +27,7 @@ class SystemPromptGenerator:
         self, 
         character: CharacterConfig, 
         include_notice: bool = True,
+        scenario_block: Optional[str] = None,
         primary_user: Optional[str] = None,
         conversation_source: Optional[str] = None,
         conversation_kind: Optional[str] = None,
@@ -60,6 +61,13 @@ class SystemPromptGenerator:
         # 1. Base system prompt (always included)
         parts.append(character.system_prompt.strip())
         
+        # 1.5. Optional scenario snapshot block is injected immediately after
+        # the base character prompt and before role/type guidance sections.
+        if scenario_block:
+            scenario_text = str(scenario_block).strip()
+            if scenario_text:
+                parts.append(scenario_text)
+
         # 2. Add identity/alias awareness if character has aliases
         if hasattr(character, 'aliases') and character.aliases:
             identity_context = self._generate_identity_context(character.name, character.aliases)
