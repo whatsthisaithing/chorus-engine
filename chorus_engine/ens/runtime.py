@@ -1239,7 +1239,17 @@ class ENSRuntime:
                 json.dumps(signal.payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
             ).hexdigest()
             character_id = signal.payload.get("character_id") or "global"
-            idempotency_key = f"scenario:update:{character_id}:{payload_hash}"
+            operation = str(signal.payload.get("operation") or "").strip().lower()
+            payload = signal.payload.get("payload") or {}
+            scenario_id = str(payload.get("scenario_id") or "").strip() or "na"
+            if operation in {"create", "duplicate"}:
+                # Creation-like operations must not be replayed across separate user requests
+                # just because the payload matches a previous import/create.
+                idempotency_key = f"scenario:{operation}:{character_id}:{signal.signal_id}"
+            elif operation == "delete":
+                idempotency_key = f"scenario:delete:{character_id}:{scenario_id}"
+            else:
+                idempotency_key = f"scenario:{operation or 'update'}:{character_id}:{scenario_id}:{payload_hash}"
             return [
                 ENSAction(
                     kind="config.scenario.validate",
