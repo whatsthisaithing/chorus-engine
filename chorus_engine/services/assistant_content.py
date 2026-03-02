@@ -223,6 +223,37 @@ def _repair_markdown_terminator_layout(raw_text: str) -> Tuple[str, bool]:
         text = text[:end_idx] + "\n" + text[end_idx:]
         repaired = True
 
+    # Remove stray dash-only lines directly adjacent (possibly with blank lines)
+    # to the end marker, e.g.:
+    # ---
+    # ---CHORUS_END---
+    # or:
+    # ---CHORUS_END---
+    # ---
+    lines = text.split("\n")
+    marker_idx: Optional[int] = None
+    for i, line in enumerate(lines):
+        if _MARKDOWN_END_RE.match(line):
+            marker_idx = i
+            break
+    if marker_idx is not None:
+        while True:
+            changed = False
+            prev_idx = _nearest_nonempty(lines, marker_idx - 1, -1)
+            if prev_idx is not None and _MARKDOWN_DASH_ONLY_RE.match(lines[prev_idx] or ""):
+                del lines[prev_idx]
+                marker_idx -= 1
+                repaired = True
+                changed = True
+            next_idx = _nearest_nonempty(lines, marker_idx + 1, +1)
+            if next_idx is not None and _MARKDOWN_DASH_ONLY_RE.match(lines[next_idx] or ""):
+                del lines[next_idx]
+                repaired = True
+                changed = True
+            if not changed:
+                break
+        text = "\n".join(lines)
+
     return text, repaired
 
 

@@ -120,3 +120,19 @@ def test_markdown_text_only_terminator_repaired_without_dashes():
     assert parsed.had_end_marker is True
     assert parsed.diagnostics.get("missing_end_marker") is False
     assert parsed.diagnostics.get("inline_terminator_repaired") is True
+
+
+def test_markdown_strips_dash_only_line_before_exact_terminator():
+    raw = "Visible text.\n---\n---CHORUS_END---"
+    parsed = normalize_to_markdown_v1(raw, template_id="A")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.post_end_tail == ""
+
+
+def test_markdown_strips_dash_only_line_after_exact_terminator():
+    raw = "Visible text.\n---CHORUS_END---\n---"
+    parsed = normalize_to_markdown_v1(raw, template_id="A")
+    assert parsed.canonical_text == "Visible text."
+    assert parsed.had_end_marker is True
+    assert parsed.post_end_tail == ""
